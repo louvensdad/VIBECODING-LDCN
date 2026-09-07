@@ -29,7 +29,7 @@ public class OutputController {
   @PostMapping("/analyze")
   public OutputAnalysisResponse analyze(
       @PathVariable UUID projectId, @Valid @RequestBody AnalyzeOutputRequest request) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return OutputAnalysisResponse.from(
         analyzer.analyze(request.content()), request.kindOrDefault());
   }

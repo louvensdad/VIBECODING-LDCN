@@ -12,8 +12,11 @@ import com.vibecode.shared.domain.DomainRuleException;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.vibecode.support.TestIdentity;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
@@ -21,6 +24,18 @@ class RoadmapServiceTest {
 
   @Autowired ProjectService projects;
   @Autowired RoadmapService roadmaps;
+  @Autowired TestIdentity identity;
+
+  @BeforeEach
+  void authenticate() {
+    identity.createAndAuthenticate("Owner");
+  }
+
+  @AfterEach
+  void signOut() {
+    identity.clear();
+  }
+
 
   private UUID newProject(String name) {
     return projects.create(name, "", "Ideia de " + name).getId();

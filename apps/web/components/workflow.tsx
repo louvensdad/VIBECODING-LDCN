@@ -9,22 +9,22 @@ import { Pill, type Tone } from "./card";
 
 /** Status markers shared by the roadmap tree and the task lists. */
 const PHASE_MARK: Record<PhaseStatus, string> = {
-  COMPLETED: "✓",
-  IN_PROGRESS: "●",
-  BLOCKED: "▲",
-  READY: "○",
-  PLANNED: "○",
-  SKIPPED: "–",
+  COMPLETED: "âœ“",
+  IN_PROGRESS: "â—",
+  BLOCKED: "â–²",
+  READY: "â—‹",
+  PLANNED: "â—‹",
+  SKIPPED: "â€“",
 };
 
 const TASK_MARK: Record<TaskStatus, string> = {
-  COMPLETED: "✓",
-  IN_PROGRESS: "●",
-  NEEDS_VALIDATION: "◐",
-  BLOCKED: "▲",
-  READY: "○",
-  PLANNED: "○",
-  SKIPPED: "–",
+  COMPLETED: "âœ“",
+  IN_PROGRESS: "â—",
+  NEEDS_VALIDATION: "â—",
+  BLOCKED: "â–²",
+  READY: "â—‹",
+  PLANNED: "â—‹",
+  SKIPPED: "â€“",
 };
 
 export function phaseTone(status: PhaseStatus): Tone {
@@ -95,7 +95,7 @@ export function RoadmapTree({
   if (phases.length === 0) {
     return (
       <p className="text-sm text-ink-muted">
-        Nenhuma fase registrada ainda. O roadmap é criado manualmente — nenhuma IA o gera.
+        Nenhuma fase registrada ainda. O roadmap Ã© criado manualmente â€” nenhuma IA o gera.
       </p>
     );
   }
@@ -164,7 +164,7 @@ const PRIORITY_TONE: Record<NextStepResponse["priority"], Tone> = {
 /**
  * The next step, with its reasoning.
  *
- * The "por quê" is not decoration: it is the difference between guidance the user can check and a
+ * The "por quÃª" is not decoration: it is the difference between guidance the user can check and a
  * suggestion they have to take on faith.
  */
 export function NextStepCard({
@@ -177,21 +177,21 @@ export function NextStepCard({
   return (
     <article className="card border-accent/50 bg-accent/[0.07] p-6">
       <div className="flex items-start justify-between gap-3">
-        <p className="label">próximo passo</p>
+        <p className="label">prÃ³ximo passo</p>
         <Pill tone={PRIORITY_TONE[nextStep.priority]}>{nextStep.type}</Pill>
       </div>
 
       <h2 className="mt-3 text-xl font-bold text-white">{nextStep.title}</h2>
 
-      <p className="mt-4 label">por quê?</p>
+      <p className="mt-4 label">por quÃª?</p>
       <p className="mt-1 text-sm leading-6 text-ink">{nextStep.reason}</p>
 
       {nextStep.blockingIssues.length > 0 ? (
         <>
-          <p className="mt-4 label">o que está no caminho</p>
+          <p className="mt-4 label">o que estÃ¡ no caminho</p>
           <ul className="mt-1 space-y-1 text-sm text-signal-warn">
             {nextStep.blockingIssues.map((issue) => (
-              <li key={issue}>· {issue}</li>
+              <li key={issue}>Â· {issue}</li>
             ))}
           </ul>
         </>
@@ -199,7 +199,7 @@ export function NextStepCard({
 
       {nextStep.requiredActions.length > 0 ? (
         <>
-          <p className="mt-4 label">ações</p>
+          <p className="mt-4 label">aÃ§Ãµes</p>
           <ol className="mt-1 space-y-1 text-sm text-ink-muted">
             {nextStep.requiredActions.map((step, index) => (
               <li key={step}>
@@ -215,15 +215,28 @@ export function NextStepCard({
   );
 }
 
-/** Shown when the API is not running. A local tool being off is a normal state. */
-export function ApiOffline({ message }: { message: string }) {
+
+/** A safe, actionable state for failed authenticated reads. */
+export function LoadFailure({
+  reason,
+  message,
+}: {
+  reason: "unreachable" | "unauthenticated" | "denied" | "error";
+  message: string;
+}) {
+  const title =
+    reason === "unreachable"
+      ? "A API do VibeCode não está respondendo"
+      : reason === "unauthenticated"
+        ? "Sua sessão expirou"
+        : reason === "denied"
+          ? "Projeto não encontrado"
+          : "Não foi possível carregar estes dados";
+
   return (
     <div className="card border-signal-warn/40 bg-signal-warn/[0.06] p-6">
-      <p className="font-semibold text-white">A API do VibeCode não está respondendo</p>
+      <p className="font-semibold text-white">{title}</p>
       <p className="mt-2 text-sm leading-6 text-ink-muted">{message}</p>
-      <pre className="mt-4 overflow-x-auto rounded-lg bg-surface-sunken p-4 font-mono text-xs text-ink-muted">
-        {`docker compose up -d postgres\ncd apps/api && mvn spring-boot:run`}
-      </pre>
     </div>
   );
 }

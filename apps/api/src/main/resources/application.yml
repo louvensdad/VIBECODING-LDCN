@@ -11,15 +11,33 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+server:
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        # Off for local http development; set SESSION_COOKIE_SECURE=true wherever the app is
+        # served over TLS, which is everywhere that is not a developer's machine.
+        secure: ${SESSION_COOKIE_SECURE:false}
+        # The web app and the API share an origin, so Lax keeps the cookie off cross-site
+        # requests without breaking anything the app itself does.
+        same-site: lax
+      timeout: 12h
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # Only health is exposed at all. env, configprops, heapdump, beans and mappings would
+        # each hand out something an attacker wants, and none of them is needed to run the app.
+        include: health
   endpoint:
     health:
       probes:
         enabled: true
+      # No component detail to anonymous callers: it would report which datastores exist.
+      show-details: never
+      show-components: never
 info:
   app:
     name: VibeCode API

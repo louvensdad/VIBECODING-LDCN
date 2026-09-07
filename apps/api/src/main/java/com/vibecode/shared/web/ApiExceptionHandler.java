@@ -1,5 +1,9 @@
 package com.vibecode.shared.web;
 
+import com.vibecode.identity.application.EmailAlreadyRegisteredException;
+import com.vibecode.identity.domain.CurrentUserProvider;
+import com.vibecode.identity.domain.PasswordPolicy;
+import com.vibecode.identity.web.AuthController;
 import com.vibecode.shared.domain.DomainRuleException;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import java.util.List;
@@ -24,6 +28,33 @@ public class ApiExceptionHandler {
   @ExceptionHandler({ResourceNotFoundException.class, NoSuchElementException.class})
   ResponseEntity<ApiError> notFound(RuntimeException exception) {
     return build(HttpStatus.NOT_FOUND, "NOT_FOUND", exception.getMessage());
+  }
+
+  /**
+   * Authentication problems.
+   *
+   * <p>Bad password, unknown address and a disabled account all land here with the same body. A
+   * caller must not be able to tell which of the three happened, or the endpoint becomes a way to
+   * test which addresses have accounts.
+   */
+  @ExceptionHandler({
+    AuthController.InvalidCredentialsException.class,
+    CurrentUserProvider.NotAuthenticatedException.class
+  })
+  ResponseEntity<ApiError> unauthenticated(RuntimeException exception) {
+    return build(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Credenciais inválidas.");
+  }
+
+  /** Registration against an address that already has an account. */
+  @ExceptionHandler(EmailAlreadyRegisteredException.class)
+  ResponseEntity<ApiError> emailTaken(EmailAlreadyRegisteredException exception) {
+    return build(HttpStatus.CONFLICT, "EMAIL_ALREADY_REGISTERED", exception.getMessage());
+  }
+
+  /** The message states the rule that was broken and never echoes the password. */
+  @ExceptionHandler(PasswordPolicy.WeakPasswordException.class)
+  ResponseEntity<ApiError> weakPassword(PasswordPolicy.WeakPasswordException exception) {
+    return build(HttpStatus.UNPROCESSABLE_ENTITY, "WEAK_PASSWORD", exception.getMessage());
   }
 
   /** A well-formed request that would break a domain rule. */

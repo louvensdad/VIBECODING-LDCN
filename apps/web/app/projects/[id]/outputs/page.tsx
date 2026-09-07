@@ -1,7 +1,7 @@
 import { Pill } from "@/components/card";
 import { OutputPanel } from "@/components/output-panel";
-import { ApiOffline, analysisTone } from "@/components/workflow";
-import { api, tryLoad } from "@/lib/api";
+import { LoadFailure, analysisTone } from "@/components/workflow";
+import { serverApi as api, tryLoad } from "@/lib/api-server";
 
 /** Where output becomes evidence — or gets analysed without being stored. */
 export default async function OutputsPage({ params }: { params: Promise<{ id: string }> }) {
@@ -13,11 +13,7 @@ export default async function OutputsPage({ params }: { params: Promise<{ id: st
   });
 
   if (!loaded.ok) {
-    return loaded.unreachable ? (
-      <ApiOffline message={loaded.message} />
-    ) : (
-      <p className="text-ink-muted">{loaded.message}</p>
-    );
+    return <LoadFailure reason={loaded.reason} message={loaded.message} />;
   }
 
   const { state, recent } = loaded.data;

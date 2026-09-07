@@ -1,5 +1,6 @@
 package com.vibecode.brain.web;
 
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -7,6 +8,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.vibecode.project.web.ProjectTestSupport;
 import java.util.UUID;
+import com.vibecode.identity.domain.User;
+import com.vibecode.support.TestIdentity;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -19,13 +23,31 @@ import org.springframework.test.web.servlet.MockMvc;
 class BrainControllerTest {
 
   @Autowired MockMvc mvc;
+  @Autowired TestIdentity identity;
+
+  private User owner;
+
+  @BeforeEach
+  void signIn() {
+    owner = identity.createUser("BrainOwner");
+  }
+
+  private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder getAs(
+      String url, Object... vars) {
+    return get(url, vars).with(TestIdentity.as(owner));
+  }
+
+  private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder postAs(
+      String url, Object... vars) {
+    return post(url, vars).with(TestIdentity.as(owner)).with(csrf());
+  }
 
   @Test
   void writesAndReadsBackOfficialMemory() throws Exception {
-    String project = ProjectTestSupport.createProject(mvc, "Brain test", "Remember my decisions");
+    String project = ProjectTestSupport.createProject(mvc, owner, "Brain test", "Remember my decisions");
 
     mvc.perform(
-            post("/api/projects/{id}/brain/entries", project)
+            postAs("/api/projects/{id}/brain/entries", project)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -37,7 +59,7 @@ class BrainControllerTest {
         .andExpect(jsonPath("$.source").value("user"));
 
     mvc.perform(
-            post("/api/projects/{id}/brain/entries", project)
+            postAs("/api/projects/{id}/brain/entries", project)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -46,7 +68,7 @@ class BrainControllerTest {
                     """))
         .andExpect(status().isCreated());
 
-    mvc.perform(get("/api/projects/{id}/brain", project))
+    mvc.perform(getAs("/api/projects/{id}/brain", project))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.projectId").value(project))
         .andExpect(jsonPath("$.entryCount").value(2))
@@ -56,10 +78,10 @@ class BrainControllerTest {
 
   @Test
   void rejectsAnEntryWithoutASource() throws Exception {
-    String project = ProjectTestSupport.createProject(mvc, "Provenance", "Memory needs a source");
+    String project = ProjectTestSupport.createProject(mvc, owner, "Provenance", "Memory needs a source");
 
     mvc.perform(
-            post("/api/projects/{id}/brain/entries", project)
+            postAs("/api/projects/{id}/brain/entries", project)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"type\":\"NOTE\",\"title\":\"No source\",\"content\":\"Anonymous\"}"))
         .andExpect(status().isBadRequest())
@@ -68,10 +90,10 @@ class BrainControllerTest {
 
   @Test
   void rejectsAnUnknownEntryType() throws Exception {
-    String project = ProjectTestSupport.createProject(mvc, "Types", "Only known types");
+    String project = ProjectTestSupport.createProject(mvc, owner, "Types", "Only known types");
 
     mvc.perform(
-            post("/api/projects/{id}/brain/entries", project)
+            postAs("/api/projects/{id}/brain/entries", project)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -83,7 +105,7 @@ class BrainControllerTest {
   @Test
   void memoryCannotBeWrittenToAProjectThatDoesNotExist() throws Exception {
     mvc.perform(
-            post("/api/projects/{id}/brain/entries", UUID.randomUUID())
+            postAs("/api/projects/{id}/brain/entries", UUID.randomUUID())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """

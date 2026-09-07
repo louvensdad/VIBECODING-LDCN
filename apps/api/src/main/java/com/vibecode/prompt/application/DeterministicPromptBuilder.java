@@ -55,7 +55,7 @@ public class DeterministicPromptBuilder {
   }
 
   public GeneratedPrompt build(PromptRequest request) {
-    Project project = projects.get(request.projectId());
+    Project project = projects.requireReadable(request.projectId());
     NextStepContext context = nextStep.buildContext(request.projectId());
     NextStepRecommendation recommendation = nextStep.recommend(context);
 

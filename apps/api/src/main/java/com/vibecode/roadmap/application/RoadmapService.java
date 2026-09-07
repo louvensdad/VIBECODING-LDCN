@@ -30,13 +30,13 @@ public class RoadmapService {
 
   /** Creates the roadmap, or returns the existing one. A project has exactly one. */
   public Roadmap createOrGet(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireWritable(projectId);
     return roadmaps.findByProjectId(projectId).orElseGet(() -> roadmaps.save(new Roadmap(projectId)));
   }
 
   @Transactional(readOnly = true)
   public Roadmap require(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return roadmaps
         .findByProjectId(projectId)
         .orElseThrow(
@@ -45,7 +45,7 @@ public class RoadmapService {
 
   @Transactional(readOnly = true)
   public List<RoadmapPhase> listPhases(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return roadmaps
         .findByProjectId(projectId)
         .map(roadmap -> phases.findByRoadmapIdOrderByPosition(roadmap.getId()))
@@ -82,6 +82,7 @@ public class RoadmapService {
    * reorder can leave a gap or a duplicate behind.
    */
   public List<RoadmapPhase> movePhase(UUID projectId, UUID phaseId, int newPosition) {
+    projects.requireWritable(projectId);
     RoadmapPhase phase = requirePhase(projectId, phaseId);
     List<RoadmapPhase> ordered =
         new java.util.ArrayList<>(phases.findByRoadmapIdOrderByPosition(phase.getRoadmapId()));

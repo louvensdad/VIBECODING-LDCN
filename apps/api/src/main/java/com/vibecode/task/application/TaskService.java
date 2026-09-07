@@ -66,6 +66,7 @@ public class TaskService {
       String title,
       String objective,
       RiskLevel riskLevel) {
+    projects.requireWritable(projectId);
     roadmaps.requirePhase(projectId, phaseId);
     if (position < 1) {
       throw new DomainRuleException("Task position starts at 1");
@@ -85,6 +86,7 @@ public class TaskService {
    * unable to become READY, with nothing explaining why.
    */
   public void addDependency(UUID projectId, UUID taskId, UUID dependsOnTaskId) {
+    projects.requireWritable(projectId);
     Task task = require(projectId, taskId);
     Task dependency = require(projectId, dependsOnTaskId);
     if (task.getId().equals(dependency.getId())) {
@@ -106,6 +108,7 @@ public class TaskService {
 
   public TaskAcceptanceCriterion addCriterion(
       UUID projectId, UUID taskId, String description, boolean required) {
+    projects.requireWritable(projectId);
     require(projectId, taskId);
     return criteria.save(new TaskAcceptanceCriterion(taskId, description, required));
   }
@@ -119,6 +122,7 @@ public class TaskService {
    */
   public TaskAcceptanceCriterion decideCriterion(
       UUID projectId, UUID taskId, UUID criterionId, CriterionStatus status, String decidedBy) {
+    projects.requireWritable(projectId);
     require(projectId, taskId);
     TaskAcceptanceCriterion criterion =
         criteria
@@ -132,6 +136,7 @@ public class TaskService {
   }
 
   public Task start(UUID projectId, UUID taskId) {
+    projects.requireWritable(projectId);
     Task task = require(projectId, taskId);
     if (task.getStatus() == TaskStatus.PLANNED) {
       throw new DomainRuleException(
@@ -148,6 +153,7 @@ public class TaskService {
    */
   public CompletionAssessment tryComplete(
       UUID projectId, UUID taskId, Optional<OutputAnalysisRecord> latest) {
+    projects.requireWritable(projectId);
     Task task = require(projectId, taskId);
     CompletionAssessment assessment =
         completionPolicy.evaluate(mandatoryDependencies(taskId), criteriaOf(taskId), latest);
@@ -161,6 +167,7 @@ public class TaskService {
   }
 
   public void markBlocked(UUID projectId, UUID taskId) {
+    projects.requireWritable(projectId);
     require(projectId, taskId).transitionTo(TaskStatus.BLOCKED);
     recalculator.recalculate(projectId);
   }
@@ -170,6 +177,7 @@ public class TaskService {
    * calling it blocked would hide it from the recalculator and strand it.
    */
   public void markNeedsWork(UUID projectId, UUID taskId) {
+    projects.requireWritable(projectId);
     Task task = require(projectId, taskId);
     if (!task.getStatus().isFinished()) {
       task.transitionTo(TaskStatus.IN_PROGRESS);
@@ -179,6 +187,9 @@ public class TaskService {
 
   @Transactional(readOnly = true)
   public Task require(UUID projectId, UUID taskId) {
+    // Authorize the project before touching the task. Matching task.projectId against the path is
+    // not enough on its own: it only proves the pair is consistent, not that the caller owns it.
+    projects.requireReadable(projectId);
     Task task =
         tasks
             .findById(taskId)
@@ -191,7 +202,7 @@ public class TaskService {
 
   @Transactional(readOnly = true)
   public List<Task> listOrdered(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     Map<UUID, Integer> phaseOrder = phaseOrder(projectId);
     return tasks.findByProjectId(projectId).stream()
         .sorted(

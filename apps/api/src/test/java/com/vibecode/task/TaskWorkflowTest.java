@@ -18,8 +18,11 @@ import com.vibecode.task.domain.TaskAcceptanceCriterion;
 import com.vibecode.task.domain.TaskStatus;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.vibecode.support.TestIdentity;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
@@ -29,6 +32,18 @@ class TaskWorkflowTest {
   @Autowired RoadmapService roadmaps;
   @Autowired TaskService tasks;
   @Autowired EvidenceService evidence;
+  @Autowired TestIdentity identity;
+
+  @BeforeEach
+  void authenticate() {
+    identity.createAndAuthenticate("Owner");
+  }
+
+  @AfterEach
+  void signOut() {
+    identity.clear();
+  }
+
 
   private record Fixture(UUID projectId, RoadmapPhase phase) {}
 

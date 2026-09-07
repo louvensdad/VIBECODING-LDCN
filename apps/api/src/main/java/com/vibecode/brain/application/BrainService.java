@@ -30,25 +30,25 @@ public class BrainService {
 
   @Transactional(readOnly = true)
   public ProjectBrain load(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return new ProjectBrain(projectId, entries.findByProjectIdOrderByCreatedAtDesc(projectId));
   }
 
   @Transactional(readOnly = true)
   public List<BrainEntry> list(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return entries.findByProjectIdOrderByCreatedAtDesc(projectId);
   }
 
   @Transactional(readOnly = true)
   public List<BrainEntry> listByType(UUID projectId, BrainEntryType type) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return entries.findByProjectIdAndTypeOrderByCreatedAtDesc(projectId, type);
   }
 
   public BrainEntry add(
       UUID projectId, BrainEntryType type, String title, String content, String source) {
-    projects.requireExisting(projectId);
+    projects.requireWritable(projectId);
     return entries.save(new BrainEntry(projectId, type, title, content, source));
   }
 }

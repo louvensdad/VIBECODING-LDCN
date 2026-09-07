@@ -34,10 +34,13 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.MethodOrderer;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.vibecode.support.TestIdentity;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.boot.test.context.SpringBootTest;
 
 /**
@@ -61,6 +64,18 @@ class BarberFlowAcceptanceTest {
   @Autowired DeterministicProjectGuide guide;
   @Autowired DeterministicPromptBuilder prompts;
   @Autowired MemoryProposalService memory;
+  @Autowired TestIdentity identity;
+
+  @BeforeEach
+  void authenticate() {
+    identity.createAndAuthenticate("Alice");
+  }
+
+  @AfterEach
+  void signOut() {
+    identity.clear();
+  }
+
 
   @Test
   @Order(1)

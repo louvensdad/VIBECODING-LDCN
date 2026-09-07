@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Pill, ProgressBar, SectionCard } from "@/components/card";
-import { ApiOffline, NextStepCard, RoadmapTree, analysisTone, taskTone } from "@/components/workflow";
-import { api, tryLoad } from "@/lib/api";
+import { LoadFailure, NextStepCard, RoadmapTree, analysisTone, taskTone } from "@/components/workflow";
+import { serverApi as api, tryLoad } from "@/lib/api-server";
 import { projectHref } from "@/lib/navigation";
 
 /**
@@ -26,17 +26,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   });
 
   if (!loaded.ok) {
-    return loaded.unreachable ? (
-      <ApiOffline message={loaded.message} />
-    ) : (
-      <div className="card p-6">
-        <p className="font-semibold text-white">Projeto não encontrado</p>
-        <p className="mt-2 text-sm text-ink-muted">{loaded.message}</p>
-        <Link href="/projects" className="mt-4 inline-block text-sm text-accent-soft">
-          Ver todos os projetos
-        </Link>
-      </div>
-    );
+    return <LoadFailure reason={loaded.reason} message={loaded.message} />;
   }
 
   const { project, state, guide, recentEvidence, brain, roadmap } = loaded.data;

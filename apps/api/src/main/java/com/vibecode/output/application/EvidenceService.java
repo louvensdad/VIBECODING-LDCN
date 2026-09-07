@@ -4,6 +4,7 @@ import com.vibecode.brain.application.MemoryProposalService;
 import com.vibecode.brain.domain.BrainEntryType;
 import com.vibecode.brain.domain.MemoryProposalTrigger;
 import com.vibecode.output.domain.EvidenceType;
+import com.vibecode.project.application.ProjectService;
 import com.vibecode.output.domain.OutputAnalysis;
 import com.vibecode.output.domain.OutputAnalysisRecord;
 import com.vibecode.output.domain.TaskEvidence;
@@ -39,14 +40,17 @@ public class EvidenceService {
   private final OutputAnalysisRecordRepository analyses;
   private final OutputAnalyzer analyzer;
   private final MemoryProposalService memory;
+  private final ProjectService projects;
 
   public EvidenceService(
       TaskService tasks,
       TaskEvidenceRepository evidence,
       OutputAnalysisRecordRepository analyses,
       OutputAnalyzer analyzer,
-      MemoryProposalService memory) {
+      MemoryProposalService memory,
+      ProjectService projects) {
     this.tasks = tasks;
+    this.projects = projects;
     this.evidence = evidence;
     this.analyses = analyses;
     this.analyzer = analyzer;
@@ -62,6 +66,7 @@ public class EvidenceService {
 
   public EvidenceRecorded record(
       UUID projectId, UUID taskId, EvidenceType type, String rawContent, String source) {
+    projects.requireWritable(projectId);
     Task task = tasks.require(projectId, taskId);
     // Copy the status out of the entity rather than holding the entity: it is the same managed
     // instance the update below mutates, so a reference would report the new status as the old one.
@@ -166,13 +171,19 @@ public class EvidenceService {
 
   @Transactional(readOnly = true)
   public List<TaskEvidence> listForTask(UUID projectId, UUID taskId) {
+    projects.requireReadable(projectId);
     tasks.require(projectId, taskId);
     return evidence.findByTaskIdOrderByCreatedAtDescIdDesc(taskId);
   }
 
   @Transactional(readOnly = true)
   public List<TaskEvidence> listRecentForProject(UUID projectId, int limit) {
-    return evidence.findByProjectIdOrderByCreatedAtDescIdDesc(projectId).stream().limit(limit).toList();
+    // This query goes straight to a project id, so it has to authorize on its own; nothing
+    // upstream does it for us.
+    projects.requireReadable(projectId);
+    return evidence.findByProjectIdOrderByCreatedAtDescIdDesc(projectId).stream()
+        .limit(limit)
+        .toList();
   }
 
   @Transactional(readOnly = true)

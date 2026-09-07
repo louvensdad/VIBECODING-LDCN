@@ -21,6 +21,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.vibecode.support.TestIdentity;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
@@ -32,12 +34,21 @@ class PromptBuilderTest {
   @Autowired EvidenceService evidence;
   @Autowired BrainService brain;
   @Autowired DeterministicPromptBuilder prompts;
+  @Autowired TestIdentity identity;
+
+  @AfterEach
+  void signOut() {
+    identity.clear();
+  }
 
   private UUID projectId;
   private Task task;
 
   @BeforeEach
   void setUp() {
+    // Ordering between two @BeforeEach methods is not defined, so the fixture authenticates itself
+    // rather than relying on a separate hook having run first.
+    identity.createAndAuthenticate("Owner");
     projectId = projects.create("PromptProj", "", "Sistema de agendamento").getId();
     roadmaps.createOrGet(projectId);
     RoadmapPhase phase = roadmaps.addPhase(projectId, 1, "Authentication", "Login");

@@ -44,7 +44,7 @@ public class ProjectStateService {
   }
 
   public ProjectState of(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     List<Task> ordered = tasks.listOrdered(projectId);
     List<RoadmapPhase> phases = roadmaps.listPhases(projectId);
 

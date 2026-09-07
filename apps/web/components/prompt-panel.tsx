@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { GeneratedPromptResponse, PromptType, TaskSummary } from "@vibecode/contracts";
-import { api } from "@/lib/api";
+import { api } from "@/lib/api-client";
 
 const PROMPT_TYPES: PromptType[] = [
   "START_TASK",

@@ -7,7 +7,7 @@ import type {
   OutputAnalysisResponse,
   TaskSummary,
 } from "@vibecode/contracts";
-import { api } from "@/lib/api";
+import { api } from "@/lib/api-client";
 import { Pill } from "./card";
 import { analysisTone } from "./workflow";
 

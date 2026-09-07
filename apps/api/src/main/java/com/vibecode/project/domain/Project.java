@@ -7,6 +7,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -23,6 +24,16 @@ public class Project {
   public static final String INITIAL_PHASE = "Foundation";
 
   @Id private UUID id;
+
+  /**
+   * Who the project belongs to.
+   *
+   * <p>Nullable in the schema only to preserve projects created before identity existed; the
+   * constructor refuses to build one without an owner, so nothing new can be ownerless. A project
+   * with no owner is unreachable — see {@code ProjectAccessPolicy}.
+   */
+  @Column(name = "owner_user_id")
+  private UUID ownerUserId;
 
   @Column(nullable = false, length = 120)
   private String name;
@@ -49,7 +60,8 @@ public class Project {
   /** For JPA only. */
   protected Project() {}
 
-  public Project(String name, String description, String originalIdea) {
+  public Project(UUID ownerUserId, String name, String description, String originalIdea) {
+    this.ownerUserId = Objects.requireNonNull(ownerUserId, "A project must have an owner");
     this.id = UUID.randomUUID();
     this.name = name;
     this.description = description;
@@ -76,6 +88,10 @@ public class Project {
 
   public UUID getId() {
     return id;
+  }
+
+  public UUID getOwnerUserId() {
+    return ownerUserId;
   }
 
   public String getName() {

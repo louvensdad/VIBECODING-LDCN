@@ -33,11 +33,11 @@ public class ProjectController {
 
   @GetMapping
   public List<ProjectResponse> list() {
-    return projects.list().stream().map(ProjectResponse::from).toList();
+    return projects.listAccessible().stream().map(ProjectResponse::from).toList();
   }
 
   @GetMapping("/{id}")
   public ProjectResponse get(@PathVariable UUID id) {
-    return ProjectResponse.from(projects.get(id));
+    return ProjectResponse.from(projects.requireReadable(id));
   }
 }

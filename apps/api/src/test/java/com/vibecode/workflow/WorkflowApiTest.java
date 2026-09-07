@@ -1,5 +1,6 @@
 package com.vibecode.workflow;
 
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -8,7 +9,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vibecode.identity.domain.User;
 import com.vibecode.project.web.ProjectTestSupport;
+import com.vibecode.support.TestIdentity;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -27,22 +30,41 @@ class WorkflowApiTest {
 
   @Autowired MockMvc mvc;
   @Autowired ObjectMapper json;
+  @Autowired TestIdentity identity;
 
+  private User owner;
   private String project;
   private String phase;
 
   @BeforeEach
   void setUp() throws Exception {
-    project = ProjectTestSupport.createProject(mvc, "ApiFlow", "Fluxo guiado via HTTP");
-    mvc.perform(post("/api/projects/{id}/roadmap", project)).andExpect(status().isCreated());
+    owner = identity.createUser("ApiFlowOwner");
+    project = ProjectTestSupport.createProject(mvc, owner, "ApiFlow", "Fluxo guiado via HTTP");
+    mvc.perform(postAs("/api/projects/{id}/roadmap", project)).andExpect(status().isCreated());
     phase = idOf(postJson("/api/projects/" + project + "/roadmap/phases",
         """
         {"position":1,"title":"Authentication","description":"Login e sessão"}
         """));
   }
 
+  /** Every request in this test carries the owner's identity and a valid CSRF token. */
+  private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder getAs(
+      String url, Object... vars) {
+    return get(url, vars).with(TestIdentity.as(owner));
+  }
+
+  private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder postAs(
+      String url, Object... vars) {
+    return post(url, vars).with(TestIdentity.as(owner)).with(csrf());
+  }
+
+  private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder patchAs(
+      String url, Object... vars) {
+    return patch(url, vars).with(TestIdentity.as(owner)).with(csrf());
+  }
+
   private ResultActions postJson(String url, String body) throws Exception {
-    return mvc.perform(post(url).contentType(MediaType.APPLICATION_JSON).content(body));
+    return mvc.perform(postAs(url).contentType(MediaType.APPLICATION_JSON).content(body));
   }
 
   private String idOf(ResultActions actions) throws Exception {
@@ -66,7 +88,7 @@ class WorkflowApiTest {
   void roadmapTree() throws Exception {
     addTask(1, "Create User");
 
-    mvc.perform(get("/api/projects/{id}/roadmap", project))
+    mvc.perform(getAs("/api/projects/{id}/roadmap", project))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.totalPhases").value(1))
         .andExpect(jsonPath("$.phases[0].title").value("Authentication"))
@@ -89,7 +111,7 @@ class WorkflowApiTest {
         .andExpect(jsonPath("$.status").value("PLANNED"))
         .andExpect(jsonPath("$.dependsOn[0]").value(first));
 
-    mvc.perform(get("/api/projects/{id}/state", project))
+    mvc.perform(getAs("/api/projects/{id}/state", project))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.totalTasks").value(2))
         .andExpect(jsonPath("$.completedTasks").value(0))
@@ -133,7 +155,7 @@ class WorkflowApiTest {
         .andExpect(jsonPath("$.taskCompleted").value(false))
         .andExpect(jsonPath("$.taskStatus").value("IN_PROGRESS"));
 
-    mvc.perform(get("/api/projects/{p}/tasks/{t}/evidence", project, task))
+    mvc.perform(getAs("/api/projects/{p}/tasks/{t}/evidence", project, task))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.length()").value(1))
         .andExpect(jsonPath("$[0].analysis.signals[0]").value("TESTS_FAILED"));
@@ -149,7 +171,7 @@ class WorkflowApiTest {
         {"type":"BUILD_RESULT","rawContent":"BUILD FAILURE\\nCompilation error","source":"maven"}
         """);
 
-    mvc.perform(get("/api/projects/{id}/next-step", project))
+    mvc.perform(getAs("/api/projects/{id}/next-step", project))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.type").value("FIX_ERROR"))
         .andExpect(jsonPath("$.priority").value("CRITICAL"))
@@ -158,7 +180,7 @@ class WorkflowApiTest {
         .andExpect(jsonPath("$.suggestedPromptType").value("FIX_ERROR"))
         .andExpect(jsonPath("$.requiredActions").isNotEmpty());
 
-    mvc.perform(get("/api/projects/{id}/guide", project))
+    mvc.perform(getAs("/api/projects/{id}/guide", project))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.whereYouAre").value(org.hamcrest.Matchers.containsString("Authentication")))
         .andExpect(jsonPath("$.recommendedNextStep.type").value("FIX_ERROR"))
@@ -197,7 +219,7 @@ class WorkflowApiTest {
                 "{\"description\":\"Revisado\",\"required\":true}"));
 
     mvc.perform(
-            patch(
+            patchAs(
                     "/api/projects/{p}/tasks/{t}/criteria/{c}",
                     project,
                     task,
@@ -208,7 +230,7 @@ class WorkflowApiTest {
         .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
 
     mvc.perform(
-            patch("/api/projects/{p}/tasks/{t}/criteria/{c}", project, task, criterion)
+            patchAs("/api/projects/{p}/tasks/{t}/criteria/{c}", project, task, criterion)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"status\":\"SATISFIED\",\"decidedBy\":\"louvens\"}"))
         .andExpect(status().isOk())
@@ -227,12 +249,12 @@ class WorkflowApiTest {
         """);
 
     // The Brain is still empty: the event only produced a proposal.
-    mvc.perform(get("/api/projects/{id}/brain", project))
+    mvc.perform(getAs("/api/projects/{id}/brain", project))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.entryCount").value(0));
 
     String listed =
-        mvc.perform(get("/api/projects/{id}/brain/proposals?pendingOnly=true", project))
+        mvc.perform(getAs("/api/projects/{id}/brain/proposals?pendingOnly=true", project))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$[0].trigger").value("ERROR_FOUND"))
             .andExpect(jsonPath("$[0].status").value("PENDING"))
@@ -241,11 +263,11 @@ class WorkflowApiTest {
             .getContentAsString();
     String proposal = json.readTree(listed).get(0).get("id").asText();
 
-    mvc.perform(post("/api/projects/{p}/brain/proposals/{id}/accept", project, proposal))
+    mvc.perform(postAs("/api/projects/{p}/brain/proposals/{id}/accept", project, proposal))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.type").value("ERROR"));
 
-    mvc.perform(get("/api/projects/{id}/brain", project))
+    mvc.perform(getAs("/api/projects/{id}/brain", project))
         .andExpect(jsonPath("$.entryCount").value(1));
   }
 
@@ -261,7 +283,7 @@ class WorkflowApiTest {
         .andExpect(jsonPath("$.status").value("FAILURE"))
         .andExpect(jsonPath("$.shouldContinue").value(false));
 
-    mvc.perform(get("/api/projects/{id}/evidence", project))
+    mvc.perform(getAs("/api/projects/{id}/evidence", project))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.length()").value(0));
   }
@@ -270,13 +292,13 @@ class WorkflowApiTest {
   @DisplayName("a task from another project is refused")
   void crossProjectAccessIsRefused() throws Exception {
     String task = addTask(1, "Create User");
-    String otherProject = ProjectTestSupport.createProject(mvc, "Outro", "Outro projeto");
+    String otherProject = ProjectTestSupport.createProject(mvc, owner, "Outro", "Outro projeto");
 
-    mvc.perform(get("/api/projects/{p}/tasks/{t}", otherProject, task))
+    mvc.perform(getAs("/api/projects/{p}/tasks/{t}", otherProject, task))
         .andExpect(status().isUnprocessableEntity())
         .andExpect(jsonPath("$.code").value("DOMAIN_RULE_VIOLATION"));
 
-    mvc.perform(get("/api/projects/{p}/tasks/{t}", project, UUID.randomUUID()))
+    mvc.perform(getAs("/api/projects/{p}/tasks/{t}", project, UUID.randomUUID()))
         .andExpect(status().isNotFound());
   }
 }

@@ -52,13 +52,13 @@ public class MemoryProposalService {
 
   @Transactional(readOnly = true)
   public List<MemoryUpdateProposal> list(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return proposals.findByProjectIdOrderByCreatedAtDesc(projectId);
   }
 
   @Transactional(readOnly = true)
   public List<MemoryUpdateProposal> listPending(UUID projectId) {
-    projects.requireExisting(projectId);
+    projects.requireReadable(projectId);
     return proposals.findByProjectIdAndStatusOrderByCreatedAtDesc(
         projectId, MemoryProposalStatus.PENDING);
   }
@@ -79,6 +79,9 @@ public class MemoryProposalService {
   }
 
   private MemoryUpdateProposal require(UUID projectId, UUID proposalId) {
+    // Authorize the project first: without this, knowing a proposal id would be enough to review
+    // someone else's memory.
+    projects.requireWritable(projectId);
     MemoryUpdateProposal proposal =
         proposals
             .findById(proposalId)

@@ -1,17 +1,13 @@
 import Link from "next/link";
 import { Pill } from "@/components/card";
-import { ApiOffline } from "@/components/workflow";
-import { api, tryLoad } from "@/lib/api";
+import { LoadFailure } from "@/components/workflow";
+import { serverApi as api, tryLoad } from "@/lib/api-server";
 
 export default async function ProjectsPage() {
   const loaded = await tryLoad(() => api.listProjects());
 
   if (!loaded.ok) {
-    return loaded.unreachable ? (
-      <ApiOffline message={loaded.message} />
-    ) : (
-      <p className="text-ink-muted">{loaded.message}</p>
-    );
+    return <LoadFailure reason={loaded.reason} message={loaded.message} />;
   }
 
   const projects = loaded.data;
