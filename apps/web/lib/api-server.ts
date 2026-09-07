@@ -9,7 +9,7 @@ import { ApiRequestError, ApiUnreachableError, readResponse } from "./http";
  * forwarded explicitly. Without this a signed-in user's page would render as anonymous — and,
  * worse, would look like a bug rather than a security decision.
  */
-const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:8080";
+const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:9000";
 
 async function serverRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const cookieHeader = (await cookies()).toString();

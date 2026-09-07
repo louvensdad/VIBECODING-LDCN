@@ -15,4 +15,14 @@
 
 ## Explicit future rules
 
+## Security Guardian (fase 4)
+
+| Threat | Impact | Current mitigation | Remaining gap |
+|---|---|---|---|
+| Secret pasted into evidence | Credential stored by the platform and later handed to an external model | Deterministic inspection runs before persistence; evidence and findings store only redacted text; a test sweeps every column of every table for the raw value | Detection is pattern-based, so a secret in an unknown format is stored as pasted |
+| Secret leaving in a prompt | Credential handed to a third-party model by the user | Every prompt is inspected; the returned content is always redacted and copying is refused while a critical finding is open | The user can still retype a secret by hand into an external tool |
+| Security finding tampering | A risk decision is rewritten after the fact | Findings carry actor and reason; the audit trail is append-only with no update or delete route | No tamper-evident chaining; database access still implies full control |
+| Audit trail losing the events that matter | An attack leaves no record | Denied access and failed login are written in their own transaction, so the failure they document cannot roll them back | No retention, archival or off-host shipping |
+| Risk acceptance abuse | A critical problem is waved through | CRITICAL cannot be accepted as risk, in the backend and in the UI | Lower severities can be accepted by a single person with no review |
+
 Provider accounts will belong to an authenticated user or organization. API keys, OAuth tokens, and refresh tokens must never be stored as plaintext. Login and registration need rate limiting in the hardening phase; no rate limiter is claimed in the current implementation.

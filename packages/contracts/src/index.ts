@@ -337,7 +337,124 @@ export interface GeneratedPromptResponse {
   type: PromptType;
   taskId: string | null;
   taskTitle: string | null;
+  /** Always redacted. A blocked prompt still must not display a live secret. */
   content: string;
   contextSources: string[];
+  securityStatus: PromptSecurityStatus;
+  /** False when the prompt must not leave the platform. */
+  copyAllowed: boolean;
+  securityFindings: string[];
   generatedAt: string;
 }
+
+/* ------------------------------------------------------------------ *
+ * Security Guardian and audit trail.
+ * ------------------------------------------------------------------ */
+
+export type SecuritySeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+
+export type SecurityFindingStatus =
+  | "OPEN"
+  | "ACKNOWLEDGED"
+  | "RESOLVED"
+  | "FALSE_POSITIVE"
+  | "ACCEPTED_RISK";
+
+export type SecurityGateStatus =
+  | "PASS"
+  | "WARNING"
+  | "REQUIRES_APPROVAL"
+  | "BLOCKED";
+
+export type SecuritySourceType =
+  | "TASK_EVIDENCE"
+  | "PROMPT"
+  | "GENERIC_TEXT"
+  | "BRAIN_ENTRY";
+
+export type SecurityCategory =
+  | "SECRET_EXPOSURE"
+  | "INSECURE_CONFIGURATION"
+  | "DANGEROUS_OPERATION"
+  | "SENSITIVE_DATA_HANDLING";
+
+/**
+ * A recorded security problem.
+ *
+ * `evidence` is always the redacted form — the raw value is removed before the finding is
+ * stored, so there is no shape of this type that could carry a live secret.
+ */
+export interface SecurityFindingResponse {
+  id: string;
+  projectId: string;
+  sourceType: SecuritySourceType;
+  sourceId: string | null;
+  category: SecurityCategory;
+  severity: SecuritySeverity;
+  status: SecurityFindingStatus;
+  title: string;
+  description: string;
+  evidence: string;
+  location: string | null;
+  recommendation: string;
+  ruleId: string;
+  /** How many times the same problem was seen; the finding itself stays single. */
+  occurrenceCount: number;
+  resolutionReason: string | null;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
+  resolvedAt: string | null;
+}
+
+/** `score` is an operational indicator, not a percentage of safety. */
+export interface SecurityAssessmentResponse {
+  projectId: string;
+  score: number;
+  openFindings: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  gateStatus: SecurityGateStatus;
+  canProceed: boolean;
+  blockingReasons: string[];
+  warnings: string[];
+  evaluatedAt: string;
+}
+
+export interface InspectSecurityRequest {
+  sourceType: SecuritySourceType;
+  sourceId?: string | null;
+  content: string;
+}
+
+export interface FindingDecisionRequest {
+  reason?: string | null;
+}
+
+export type AuditEventType =
+  | "SECURITY_FINDING_CREATED"
+  | "SECURITY_FINDING_ACKNOWLEDGED"
+  | "SECURITY_FINDING_RESOLVED"
+  | "SECURITY_RISK_ACCEPTED"
+  | "SECURITY_GATE_BLOCKED"
+  | "PROMPT_BLOCKED"
+  | "CROSS_USER_ACCESS_DENIED"
+  | "LOGIN_SUCCESS"
+  | "LOGIN_FAILURE"
+  | "LOGOUT";
+
+/** Append-only. Never carries a credential, cookie, token or session id. */
+export interface AuditEventResponse {
+  id: string;
+  projectId: string | null;
+  actorUserId: string | null;
+  eventType: AuditEventType;
+  targetType: string | null;
+  targetId: string | null;
+  result: string | null;
+  metadata: string | null;
+  createdAt: string;
+}
+
+export type PromptSecurityStatus = "SAFE" | "WARNING" | "BLOCKED";

@@ -23,23 +23,33 @@ public class DeterministicProjectGuide {
 
   private final ProjectStateService state;
   private final DeterministicNextStepEngine nextStep;
+  private final com.vibecode.guardian.application.SecurityAssessmentService securityAssessment;
 
   public DeterministicProjectGuide(
-      ProjectStateService state, DeterministicNextStepEngine nextStep) {
+      ProjectStateService state,
+      DeterministicNextStepEngine nextStep,
+      com.vibecode.guardian.application.SecurityAssessmentService securityAssessment) {
     this.state = state;
     this.nextStep = nextStep;
+    this.securityAssessment = securityAssessment;
   }
 
   public GuidanceReport describe(UUID projectId) {
     ProjectState projectState = state.of(projectId);
     NextStepRecommendation recommendation = nextStep.recommend(projectId);
+    List<String> problems = new java.util.ArrayList<>(projectState.activeProblems());
+    com.vibecode.guardian.domain.ProjectSecurityAssessment secAssessment =
+        securityAssessment.assess(projectId);
+    if (secAssessment.critical() > 0) {
+      problems.add("Você possui " + secAssessment.critical() + " problema(s) crítico(s) de segurança em aberto.");
+    }
 
     return new GuidanceReport(
         projectId,
         whereYouAre(projectState),
         titlesOf(projectState, task -> task.getStatus().isFinished()),
         titlesOf(projectState, task -> !task.getStatus().isFinished()),
-        projectState.activeProblems(),
+        problems,
         recommendation,
         recommendation.reason(),
         projectState.progressPercentage());

@@ -42,16 +42,19 @@ public class DeterministicPromptBuilder {
   private final TaskService tasks;
   private final EvidenceService evidence;
   private final DeterministicNextStepEngine nextStep;
+  private final PromptSecurityInspector securityInspector;
 
   public DeterministicPromptBuilder(
       ProjectService projects,
       TaskService tasks,
       EvidenceService evidence,
-      DeterministicNextStepEngine nextStep) {
+      DeterministicNextStepEngine nextStep,
+      PromptSecurityInspector securityInspector) {
     this.projects = projects;
     this.tasks = tasks;
     this.evidence = evidence;
     this.nextStep = nextStep;
+    this.securityInspector = securityInspector;
   }
 
   public GeneratedPrompt build(PromptRequest request) {
@@ -66,12 +69,19 @@ public class DeterministicPromptBuilder {
     PromptContext promptContext = assemble(project, context.state(), task, recommendation, context);
     String content = PromptTemplates.render(type, promptContext);
 
+    PromptSecurityInspector.PromptInspectionResult inspection =
+        securityInspector.inspect(
+            request.projectId(), task.map(Task::getId).orElse(null), content);
+
     return new GeneratedPrompt(
         type,
         task.map(Task::getId).orElse(null),
         task.map(Task::getTitle).orElse(null),
-        content,
+        inspection.safeContent(),
         sourcesUsed(task, promptContext),
+        inspection.status(),
+        inspection.copyAllowed(),
+        inspection.findings(),
         Instant.now());
   }
 

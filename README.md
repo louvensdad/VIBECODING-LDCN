@@ -30,9 +30,9 @@ cd apps/web && npm install && npm run dev
 
 | | |
 | --- | --- |
-| API | http://localhost:8080 |
-| Web | http://localhost:3000 |
-| Saúde | http://localhost:8080/actuator/health |
+| API | http://localhost:9000 |
+| Web | http://localhost:4000 |
+| Saúde | http://localhost:9000/actuator/health |
 
 ## Endpoints
 
@@ -65,7 +65,7 @@ cd apps/web && npm install && npm run dev
 Exemplo — evidência técnica vence alegação de sucesso:
 
 ```bash
-curl -X POST http://localhost:8080/api/projects/$ID/outputs/analyze \
+curl -X POST http://localhost:9000/api/projects/$ID/outputs/analyze \
   -H 'Content-Type: application/json' \
   -d '{"content":"Tudo concluído com sucesso!\nTests run: 8, Failures: 2, Errors: 0"}'
 

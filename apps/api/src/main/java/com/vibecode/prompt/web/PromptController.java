@@ -45,6 +45,9 @@ public class PromptController {
       String taskTitle,
       String content,
       List<String> contextSources,
+      com.vibecode.prompt.domain.PromptSecurityStatus securityStatus,
+      boolean copyAllowed,
+      List<String> securityFindings,
       Instant generatedAt) {
 
     static GeneratedPromptResponse from(GeneratedPrompt prompt) {
@@ -54,6 +57,9 @@ public class PromptController {
           prompt.taskTitle(),
           prompt.content(),
           prompt.contextSources(),
+          prompt.securityStatus(),
+          prompt.copyAllowed(),
+          prompt.securityFindings(),
           prompt.generatedAt());
     }
   }

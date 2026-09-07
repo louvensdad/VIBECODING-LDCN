@@ -29,9 +29,10 @@ public final class NextStepRules {
     return List.of(
         new NoPlanRule(),
         new PlanNotDetailedRule(),
-        new ProjectCompleteRule(),
         new BlockedEvidenceRule(),
         new FailedEvidenceRule(),
+        new CriticalSecurityFindingRule(),
+        new ProjectCompleteRule(),
         new AwaitingValidationRule(),
         new ContinueInProgressRule(),
         new CriticalRiskReviewRule(),
@@ -384,6 +385,46 @@ public final class NextStepRules {
     @Override
     public String name() {
       return "dependencies-pending";
+    }
+  }
+
+  /**
+   * Blocks progress if there are open critical security findings in the project.
+   */
+  static final class CriticalSecurityFindingRule implements NextStepRule {
+
+    @Override
+    public Optional<NextStepRecommendation> evaluate(NextStepContext context) {
+      if (context.securityAssessment().isEmpty()) {
+        return Optional.empty();
+      }
+      com.vibecode.guardian.domain.ProjectSecurityAssessment assessment =
+          context.securityAssessment().get();
+      if (assessment.critical() <= 0) {
+        return Optional.empty();
+      }
+
+      Optional<Task> task = context.currentTask();
+      return Optional.of(
+          new NextStepRecommendation(
+              NextStepType.REVIEW_SECURITY,
+              "Revisar e resolver problemas críticos de segurança",
+              "O projeto possui "
+                  + assessment.critical()
+                  + " problema(s) crítico(s) de segurança em aberto. O avanço para novas etapas ou conclusão do projeto está bloqueado até a resolução.",
+              task.map(Task::getId).orElse(null),
+              NextStepPriority.CRITICAL,
+              assessment.blockingReasons(),
+              List.of(
+                  "Remover ou substituir credenciais e chaves privadas expostas",
+                  "Rotacionar credenciais reais no provedor correspondente",
+                  "Resolver formalmente os findings no painel de segurança"),
+              PromptType.FIX_ERROR));
+    }
+
+    @Override
+    public String name() {
+      return "critical-security-review";
     }
   }
 }

@@ -28,7 +28,7 @@ export default async function ProjectsPage() {
             desse momento.
           </p>
           <pre className="mt-4 overflow-x-auto rounded-lg bg-surface-sunken p-4 font-mono text-xs text-ink-muted">
-            {`curl -X POST http://localhost:8080/api/projects \\
+            {`curl -X POST http://localhost:9000/api/projects \\
   -H 'Content-Type: application/json' \\
   -d '{"name":"BarberFlow","originalIdea":"Agendamento para barbearias"}'`}
           </pre>

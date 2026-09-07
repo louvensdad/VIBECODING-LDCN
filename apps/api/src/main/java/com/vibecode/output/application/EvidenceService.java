@@ -41,6 +41,7 @@ public class EvidenceService {
   private final OutputAnalyzer analyzer;
   private final MemoryProposalService memory;
   private final ProjectService projects;
+  private final com.vibecode.guardian.application.SecurityGuardianService guardian;
 
   public EvidenceService(
       TaskService tasks,
@@ -48,13 +49,15 @@ public class EvidenceService {
       OutputAnalysisRecordRepository analyses,
       OutputAnalyzer analyzer,
       MemoryProposalService memory,
-      ProjectService projects) {
+      ProjectService projects,
+      com.vibecode.guardian.application.SecurityGuardianService guardian) {
     this.tasks = tasks;
     this.projects = projects;
     this.evidence = evidence;
     this.analyses = analyses;
     this.analyzer = analyzer;
     this.memory = memory;
+    this.guardian = guardian;
   }
 
   /** What recording one piece of evidence produced. */
@@ -75,8 +78,22 @@ public class EvidenceService {
     // is only knowable against the one that preceded it.
     Optional<OutputAnalysisRecord> previous = latestAnalysisForTask(taskId);
 
+    // Automatic Security Guardian inspection
+    com.vibecode.guardian.domain.SecurityInspectionContext secContext =
+        new com.vibecode.guardian.domain.SecurityInspectionContext(
+            projectId,
+            null,
+            com.vibecode.guardian.domain.SecuritySourceType.TASK_EVIDENCE,
+            taskId.toString(),
+            rawContent,
+            Optional.of(task),
+            Optional.empty(),
+            java.util.Map.of("taskId", taskId.toString(), "source", source));
+    guardian.inspect(secContext);
+
+    String safeContent = com.vibecode.guardian.domain.SensitiveDataRedactor.redact(rawContent);
     TaskEvidence stored =
-        evidence.save(new TaskEvidence(projectId, taskId, type, rawContent, source));
+        evidence.save(new TaskEvidence(projectId, taskId, type, safeContent, source));
     OutputAnalysis analysis = analyzer.analyze(rawContent);
     OutputAnalysisRecord record = analyses.save(new OutputAnalysisRecord(stored.getId(), analysis));
 

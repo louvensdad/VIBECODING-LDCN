@@ -26,15 +26,20 @@ public class ProjectStateController {
 
   private final ProjectStateService state;
   private final EvidenceService evidence;
+  private final com.vibecode.guardian.application.SecurityAssessmentService securityAssessment;
 
-  public ProjectStateController(ProjectStateService state, EvidenceService evidence) {
+  public ProjectStateController(
+      ProjectStateService state,
+      EvidenceService evidence,
+      com.vibecode.guardian.application.SecurityAssessmentService securityAssessment) {
     this.state = state;
     this.evidence = evidence;
+    this.securityAssessment = securityAssessment;
   }
 
   @GetMapping("/state")
   public ProjectStateResponse get(@PathVariable UUID projectId) {
-    return ProjectStateResponse.from(state.of(projectId));
+    return ProjectStateResponse.from(state.of(projectId), securityAssessment.assess(projectId));
   }
 
   @GetMapping("/evidence")
@@ -44,6 +49,18 @@ public class ProjectStateController {
     return evidence.listRecentForProject(projectId, Math.clamp(limit, 1, 50)).stream()
         .map(item -> RecentEvidenceResponse.from(item, evidence.analysisOf(item.getId()).orElse(null)))
         .toList();
+  }
+
+  public record SecuritySummary(
+      int score, String gate, int critical, int high, int medium, int openFindings) {
+
+    static SecuritySummary from(com.vibecode.guardian.domain.ProjectSecurityAssessment a) {
+      if (a == null) {
+        return new SecuritySummary(100, "PASS", 0, 0, 0, 0);
+      }
+      return new SecuritySummary(
+          a.score(), a.gateStatus().name(), a.critical(), a.high(), a.medium(), a.openFindings());
+    }
   }
 
   public record PhaseSummary(UUID id, String title, String status) {}
@@ -91,9 +108,15 @@ public class ProjectStateController {
       int progressPercentage,
       List<String> activeProblems,
       EvidenceSummary lastEvidence,
-      List<TaskSummary> nextCandidateTasks) {
+      List<TaskSummary> nextCandidateTasks,
+      SecuritySummary security) {
 
     static ProjectStateResponse from(ProjectState state) {
+      return from(state, null);
+    }
+
+    static ProjectStateResponse from(
+        ProjectState state, com.vibecode.guardian.domain.ProjectSecurityAssessment assessment) {
       return new ProjectStateResponse(
           state.projectId(),
           state.currentPhase() == null
@@ -109,7 +132,8 @@ public class ProjectStateController {
           state.progressPercentage(),
           state.activeProblems(),
           lastEvidence(state),
-          state.nextCandidateTasks().stream().map(TaskSummary::from).toList());
+          state.nextCandidateTasks().stream().map(TaskSummary::from).toList(),
+          SecuritySummary.from(assessment));
     }
 
     private static EvidenceSummary lastEvidence(ProjectState state) {

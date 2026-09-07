@@ -1,5 +1,6 @@
 import type {
   AnalyzeOutputRequest,
+  AuditEventResponse,
   CreateBrainEntryRequest,
   CreateProjectRequest,
   EvidenceRecordedResponse,
@@ -13,8 +14,12 @@ import type {
   ProjectResponse,
   ProjectStateResponse,
   RecentEvidenceResponse,
+  FindingDecisionRequest,
+  InspectSecurityRequest,
   RecordEvidenceRequest,
   RoadmapResponse,
+  SecurityAssessmentResponse,
+  SecurityFindingResponse,
   TaskResponse,
 } from "@vibecode/contracts";
 import type { Transport } from "./http";
@@ -90,6 +95,45 @@ export function createApi(request: Transport) {
       ),
     generatePrompt: (projectId: string, body: GeneratePromptRequest) =>
       post<GeneratedPromptResponse>(`/api/projects/${projectId}/prompts/generate`, body),
+
+    // --- security guardian --------------------------------------------------------------------
+    getSecurity: (projectId: string) =>
+      request<SecurityAssessmentResponse>(`/api/projects/${projectId}/security`),
+    listFindings: (projectId: string) =>
+      request<SecurityFindingResponse[]>(`/api/projects/${projectId}/security/findings`),
+    getFinding: (projectId: string, findingId: string) =>
+      request<SecurityFindingResponse>(
+        `/api/projects/${projectId}/security/findings/${findingId}`,
+      ),
+    inspectSecurity: (projectId: string, body: InspectSecurityRequest) =>
+      post<SecurityFindingResponse[]>(`/api/projects/${projectId}/security/inspect`, body),
+    acknowledgeFinding: (projectId: string, findingId: string) =>
+      post<SecurityFindingResponse>(
+        `/api/projects/${projectId}/security/findings/${findingId}/acknowledge`,
+      ),
+    resolveFinding: (projectId: string, findingId: string, body: FindingDecisionRequest) =>
+      post<SecurityFindingResponse>(
+        `/api/projects/${projectId}/security/findings/${findingId}/resolve`,
+        body,
+      ),
+    acceptFindingRisk: (projectId: string, findingId: string, body: FindingDecisionRequest) =>
+      post<SecurityFindingResponse>(
+        `/api/projects/${projectId}/security/findings/${findingId}/accept-risk`,
+        body,
+      ),
+    markFindingFalsePositive: (
+      projectId: string,
+      findingId: string,
+      body: FindingDecisionRequest,
+    ) =>
+      post<SecurityFindingResponse>(
+        `/api/projects/${projectId}/security/findings/${findingId}/false-positive`,
+        body,
+      ),
+
+    // --- audit --------------------------------------------------------------------------------
+    listAuditEvents: (projectId: string) =>
+      request<AuditEventResponse[]>(`/api/projects/${projectId}/audit`),
   };
 }
 

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { GeneratedPromptResponse, PromptType, TaskSummary } from "@vibecode/contracts";
+import { Pill } from "./card";
 import { api } from "@/lib/api-client";
 
 const PROMPT_TYPES: PromptType[] = [
@@ -57,7 +58,7 @@ export function PromptPanel({
   }
 
   async function copy() {
-    if (!prompt) {
+    if (!prompt || !prompt.copyAllowed) {
       return;
     }
     try {
@@ -136,11 +137,46 @@ export function PromptPanel({
             <button
               type="button"
               onClick={copy}
-              className="rounded-lg border border-accent/40 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent-soft transition-colors hover:bg-accent/20"
+              disabled={!prompt.copyAllowed}
+              title={
+                prompt.copyAllowed
+                  ? undefined
+                  : "A cópia está bloqueada enquanto houver problema de segurança aberto."
+              }
+              className="rounded-lg border border-accent/40 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent-soft transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:border-edge disabled:bg-surface-sunken disabled:text-ink-faint"
             >
-              {copied ? "Copiado ✓" : "Copiar prompt"}
+              {prompt.copyAllowed ? (copied ? "Copiado ✓" : "Copiar prompt") : "Cópia bloqueada"}
             </button>
           </div>
+
+          {prompt.securityStatus !== "SAFE" ? (
+            <div
+              className={`mt-4 rounded-card border p-4 ${
+                prompt.securityStatus === "BLOCKED"
+                  ? "border-signal-bad/50 bg-signal-bad/[0.08]"
+                  : "border-signal-warn/40 bg-signal-warn/[0.06]"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span className="label">segurança</span>
+                <Pill tone={prompt.securityStatus === "BLOCKED" ? "bad" : "warn"}>
+                  {prompt.securityStatus}
+                </Pill>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-ink">
+                {prompt.securityStatus === "BLOCKED"
+                  ? "Este prompt não pode ser copiado. O conteúdo abaixo já está redigido, mas há problema de segurança aberto no projeto."
+                  : "Há avisos de segurança. Revise antes de enviar a um modelo externo."}
+              </p>
+              {prompt.securityFindings.length > 0 ? (
+                <ul className="mt-2 space-y-1 text-sm text-ink-muted">
+                  {prompt.securityFindings.map((item) => (
+                    <li key={item}>· {item}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
 
           <p className="mt-4 label">context sources</p>
           <div className="mt-1.5 flex flex-wrap gap-2">
@@ -160,7 +196,9 @@ export function PromptPanel({
           </pre>
 
           <p className="mt-3 font-mono text-[11px] text-ink-faint">
-            Cole em Claude, ChatGPT, Gemini ou onde preferir. O VibeCode não envia nada por você.
+            {prompt.copyAllowed
+              ? "Cole em Claude, ChatGPT, Gemini ou onde preferir. O VibeCode não envia nada por você."
+              : "Resolva os problemas de segurança para liberar a cópia."}
           </p>
         </div>
       ) : null}

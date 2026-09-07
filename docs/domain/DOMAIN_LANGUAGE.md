@@ -100,6 +100,36 @@ local.
 
 **Cost Forecast** — projeção de gasto e autonomia. Sempre estimativa.
 
+## Segurança
+
+**Security Rule** — uma regra determinística que procura um problema específico. Nomeada
+(`SEC-001`…`SEC-009`), testável isoladamente, sem modelo.
+
+**Security Finding** — um problema registrado. Sua `evidence` é **sempre** a forma redigida: não
+existe estado deste tipo que carregue um segredo vivo.
+
+**Redaction** — a substituição do valor sensível por `[REDACTED]`, feita **antes** de qualquer
+escrita. Nunca depois.
+
+**Placeholder** — `${API_KEY}`, `<YOUR_API_KEY>`, `REPLACE_ME`. Não é segredo e não vira finding.
+
+**Fingerprint** — identidade do problema, calculada sobre o texto já redigido. Repetir o mesmo
+problema incrementa `occurrenceCount`; não cria um segundo finding.
+
+**Security Score** — indicador operacional de 0 a 100 derivado dos findings abertos. **Não** é uma
+porcentagem de segurança.
+
+**Security Gate** — o veredito: `PASS`, `WARNING`, `REQUIRES_APPROVAL` ou `BLOCKED`. Um CRITICAL
+aberto bloqueia.
+
+**Accepted Risk** — decisão humana registrada com ator e justificativa. **CRITICAL não pode ser
+aceito.**
+
+**Prompt Security Status** — `SAFE`, `WARNING` ou `BLOCKED`, com `copyAllowed`. Bloqueado, o
+conteúdo continua sendo devolvido — porém redigido.
+
+**Audit Event** — registro append-only. Nunca contém senha, token, cookie, CSRF ou id de sessão.
+
 ## Vigilância e bem-estar
 
 **Guardian** — um dos sete vigias (segurança, custo, testes, arquitetura, privacidade,

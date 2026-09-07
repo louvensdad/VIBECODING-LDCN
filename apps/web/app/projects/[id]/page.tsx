@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Pill, ProgressBar, SectionCard } from "@/components/card";
+import { CriticalSecurityBanner, gateTone } from "@/components/security";
 import { LoadFailure, NextStepCard, RoadmapTree, analysisTone, taskTone } from "@/components/workflow";
 import { serverApi as api, tryLoad } from "@/lib/api-server";
 import { projectHref } from "@/lib/navigation";
@@ -22,17 +23,20 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     ]);
     // A project without a roadmap is a normal starting state, not an error.
     const roadmap = await api.getRoadmap(id).catch(() => null);
-    return { project, state, guide, recentEvidence, brain, roadmap };
+    const security = await api.getSecurity(id).catch(() => null);
+    return { project, state, guide, recentEvidence, brain, roadmap, security };
   });
 
   if (!loaded.ok) {
     return <LoadFailure reason={loaded.reason} message={loaded.message} />;
   }
 
-  const { project, state, guide, recentEvidence, brain, roadmap } = loaded.data;
+  const { project, state, guide, recentEvidence, brain, roadmap, security } = loaded.data;
 
   return (
     <>
+      <CriticalSecurityBanner assessment={security} href={projectHref(id, "security")} />
+
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="eyebrow">project</p>
@@ -48,6 +52,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         <ActionLink href={projectHref(id, "roadmap")}>Ver roadmap</ActionLink>
         <ActionLink href={projectHref(id, "outputs")}>Registrar saída</ActionLink>
         <ActionLink href={projectHref(id, "prompts")}>Gerar próximo prompt</ActionLink>
+        <ActionLink href={projectHref(id, "security")}>Ver segurança</ActionLink>
       </div>
 
       <section className="mt-8 grid gap-4 lg:grid-cols-3">
@@ -143,6 +148,34 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
                 </li>
               ))}
             </ul>
+          )}
+        </SectionCard>
+
+        <SectionCard
+          title="Segurança"
+          action={
+            <Link
+              href={projectHref(id, "security")}
+              className="font-mono text-[11px] text-accent-soft"
+            >
+              abrir
+            </Link>
+          }
+        >
+          {security ? (
+            <>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-bold text-white">{security.score}</span>
+                <Pill tone={gateTone(security.gateStatus)}>{security.gateStatus}</Pill>
+              </div>
+              <p className="mt-3 text-ink-muted">
+                {security.openFindings === 0
+                  ? "Nenhum problema em aberto."
+                  : `${security.openFindings} em aberto · ${security.critical} crítico(s)`}
+              </p>
+            </>
+          ) : (
+            <p className="text-ink-muted">Sem avaliação de segurança ainda.</p>
           )}
         </SectionCard>
 

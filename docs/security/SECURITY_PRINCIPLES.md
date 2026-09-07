@@ -45,6 +45,20 @@ Valem desde a fundação, não a partir de uma fase futura de endurecimento.
 - Memória proposta por modelo exige validação antes de virar contexto oficial.
 - Integrações recebem credencial de menor privilégio possível.
 
+## Guardian e auditoria
+
+- **Redação antes da persistência.** Segredo detectado é removido antes de qualquer escrita, nunca
+  limpo depois. Vale para evidência, finding, auditoria e prompt.
+- **Inspeção automática.** Toda evidência criada e todo prompt gerado passam pelo Guardian. Não há
+  botão de "verificar" — o segredo já teria sido gravado.
+- **O prompt devolvido é sempre redigido**, inclusive quando bloqueado: recusar a cópia e exibir o
+  segredo na tela vazaria do mesmo jeito.
+- **CRITICAL não pode ser aceito como risco.** Severidades menores podem, com ator e justificativa
+  registrados.
+- **A auditoria é append-only e não contém credencial** — nem senha, token, cookie, CSRF ou id de
+  sessão. Eventos de falha são gravados em transação própria, para que a exceção que os origina não
+  os apague.
+
 ## Ainda não existe
 
 - **Rate limiting** em login e registro. Nada no código limita tentativas hoje; um atacante pode

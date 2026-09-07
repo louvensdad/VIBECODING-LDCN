@@ -1,0 +1,18 @@
+package com.vibecode.guardian.domain;
+
+/** Classification of security issues discovered by the Guardian. */
+public enum SecurityCategory {
+  SECRET_EXPOSURE,
+  CREDENTIAL_EXPOSURE,
+  PERSONAL_DATA_EXPOSURE,
+  UNSAFE_AUTHENTICATION,
+  UNSAFE_AUTHORIZATION,
+  UNSAFE_CONFIGURATION,
+  DANGEROUS_COMMAND,
+  SENSITIVE_LOGGING,
+  INSECURE_URL,
+  UNSAFE_CORS,
+  DEPENDENCY_RISK,
+  PROMPT_SECRET_LEAK,
+  UNKNOWN_SECURITY_RISK
+}

@@ -36,6 +36,7 @@ public class DeterministicNextStepEngine {
   private final TaskService tasks;
   private final TaskCompletionPolicy completionPolicy;
   private final BrainService brain;
+  private final com.vibecode.guardian.application.SecurityAssessmentService securityAssessment;
   private final List<NextStepRule> rules = NextStepRules.ordered();
 
   public DeterministicNextStepEngine(
@@ -43,12 +44,14 @@ public class DeterministicNextStepEngine {
       EvidenceService evidence,
       TaskService tasks,
       TaskCompletionPolicy completionPolicy,
-      BrainService brain) {
+      BrainService brain,
+      com.vibecode.guardian.application.SecurityAssessmentService securityAssessment) {
     this.state = state;
     this.evidence = evidence;
     this.tasks = tasks;
     this.completionPolicy = completionPolicy;
     this.brain = brain;
+    this.securityAssessment = securityAssessment;
   }
 
   public NextStepRecommendation recommend(UUID projectId) {
@@ -77,11 +80,15 @@ public class DeterministicNextStepEngine {
                     tasks.criteriaOf(task.getId()),
                     evidence.latestAnalysisForTask(task.getId())));
 
+    Optional<com.vibecode.guardian.domain.ProjectSecurityAssessment> secAssessment =
+        Optional.ofNullable(securityAssessment.assess(projectId));
+
     return new NextStepContext(
         projectState,
         projectState.lastAnalysisOptional(),
         completion,
-        relevantMemory(projectId));
+        relevantMemory(projectId),
+        secAssessment);
   }
 
   /**

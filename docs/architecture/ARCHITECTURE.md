@@ -106,7 +106,8 @@ por decisão explícita e atribuída — nunca por inferência de um build verde
 | `prompt` | Construção de prompts a partir do estado registrado | **Implementado** |
 | `model` | Abstração de provider e modelo | Contrato de domínio |
 | `usage` | Tokens, custo, crédito, orçamento, autonomia | Contrato de domínio |
-| `guardian` | Sete vigias de risco do projeto | Contrato de domínio |
+| `guardian` | Inspeção determinística, findings, score e gate de segurança | **Implementado** |
+| `audit` | Trilha append-only de eventos de segurança | **Implementado** |
 | `terminal` | Fronteira de execução em sandbox | Contrato de domínio |
 | `integration` | Conexões externas | Contrato de domínio |
 | `wellness` | Pausas, foco, Pomodoro | Contrato de domínio |
@@ -156,6 +157,38 @@ Duas decisões sustentam isso:
 - Sumários de teste são lidos como **contagem**, não como palavra-chave. `Failures: 0` é aprovação;
   procurar a palavra "failures" transformaria todo build limpo em falso negativo.
 - `shouldContinue` só é verdadeiro em `SUCCESS`. Nenhuma outra classificação avança o roadmap.
+
+## Pipeline de segurança
+
+```
+TEXTO / EVIDÊNCIA / PROMPT
+        ↓
+SECURITY INSPECTION  (SecurityRuleRegistry, 9 regras determinísticas)
+        ↓
+FINDING CANDIDATES
+        ↓
+REDAÇÃO              ← antes de qualquer escrita
+        ↓
+DEDUPLICAÇÃO         (fingerprint sobre o texto já redigido)
+        ↓
+SECURITY FINDINGS
+        ↓
+SECURITY ASSESSMENT  (score 0..100, indicador operacional)
+        ↓
+SECURITY GATE        (PASS / WARNING / REQUIRES_APPROVAL / BLOCKED)
+        ↓
+NEXT STEP            (CRITICAL aberto ⇒ REVIEW_SECURITY)
+        ↓
+PROMPT SAFETY        (SAFE / WARNING / BLOCKED, conteúdo sempre redigido)
+        ↓
+AUDIT                (append-only, sem credencial)
+```
+
+Nenhum modelo participa. Ver [ADR-012](../adr/ADR-012-deterministic-security-guardian.md) a
+[ADR-015](../adr/ADR-015-append-only-audit-trail.md).
+
+A inspeção é automática: acontece ao criar evidência e ao gerar prompt, não por botão — um segredo
+já teria sido gravado quando alguém lembrasse de clicar.
 
 ## O que não existe nesta fase
 
