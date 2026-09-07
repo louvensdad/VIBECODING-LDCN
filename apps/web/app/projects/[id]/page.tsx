@@ -1,203 +1,208 @@
 import Link from "next/link";
-import { PlaceholderNote, Pill, ProgressBar, SectionCard, type Tone } from "@/components/card";
-import {
-  demoAccounts,
-  demoBrainSummary,
-  demoCurrentStep,
-  demoHealth,
-  demoProgress,
-  demoRecentOutputs,
-  demoRecommendation,
-  demoRoadmap,
-  demoProject,
-  demoUsage,
-} from "@/lib/mock-workspace";
+import { Pill, ProgressBar, SectionCard } from "@/components/card";
+import { ApiOffline, NextStepCard, RoadmapTree, analysisTone, taskTone } from "@/components/workflow";
+import { api, tryLoad } from "@/lib/api";
 import { projectHref } from "@/lib/navigation";
-import type { OutputAnalysisStatus } from "@vibecode/contracts";
 
 /**
- * The project workspace overview.
+ * The project workspace: where you are, what is done, what is in the way, and what to do next.
  *
- * Every panel reads from `lib/mock-workspace`. When a module's API lands, its panel switches to
- * `lib/api` and nothing else on this page moves.
+ * Everything on this page comes from the API. There is no mocked workspace data any more.
  */
 export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const percent = Math.round((demoProgress.completedTasks / demoProgress.totalTasks) * 100);
+
+  const loaded = await tryLoad(async () => {
+    const [project, state, guide, recentEvidence, brain] = await Promise.all([
+      api.getProject(id),
+      api.getState(id),
+      api.getGuide(id),
+      api.recentEvidence(id, 5),
+      api.getBrain(id),
+    ]);
+    // A project without a roadmap is a normal starting state, not an error.
+    const roadmap = await api.getRoadmap(id).catch(() => null);
+    return { project, state, guide, recentEvidence, brain, roadmap };
+  });
+
+  if (!loaded.ok) {
+    return loaded.unreachable ? (
+      <ApiOffline message={loaded.message} />
+    ) : (
+      <div className="card p-6">
+        <p className="font-semibold text-white">Projeto não encontrado</p>
+        <p className="mt-2 text-sm text-ink-muted">{loaded.message}</p>
+        <Link href="/projects" className="mt-4 inline-block text-sm text-accent-soft">
+          Ver todos os projetos
+        </Link>
+      </div>
+    );
+  }
+
+  const { project, state, guide, recentEvidence, brain, roadmap } = loaded.data;
 
   return (
     <>
-      <ProjectHeader id={id} />
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="eyebrow">project</p>
+          <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">{project.name}</h1>
+          <p className="mt-2 max-w-2xl text-ink-muted">
+            {project.description ?? project.originalIdea}
+          </p>
+        </div>
+        <Pill tone="ok">{project.status}</Pill>
+      </header>
 
-      <section className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <SectionCard title="Project progress">
+      <div className="mt-6 flex flex-wrap gap-2">
+        <ActionLink href={projectHref(id, "roadmap")}>Ver roadmap</ActionLink>
+        <ActionLink href={projectHref(id, "outputs")}>Registrar saída</ActionLink>
+        <ActionLink href={projectHref(id, "prompts")}>Gerar próximo prompt</ActionLink>
+      </div>
+
+      <section className="mt-8 grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <NextStepCard
+            nextStep={guide.recommendedNextStep}
+            action={
+              <Link
+                href={projectHref(id, "prompts")}
+                className="inline-block rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-soft"
+              >
+                Gerar prompt de {guide.recommendedNextStep.suggestedPromptType}
+              </Link>
+            }
+          />
+        </div>
+
+        <SectionCard title="Progresso">
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-white">{percent}%</span>
+            <span className="text-2xl font-bold text-white">{state.progressPercentage}%</span>
             <span className="text-ink-muted">
-              {demoProgress.completedTasks} of {demoProgress.totalTasks} steps
+              {state.completedTasks} de {state.totalTasks} tarefas
             </span>
           </div>
           <div className="mt-3">
-            <ProgressBar value={percent} label="Project progress" />
+            <ProgressBar value={state.progressPercentage} label="Progresso do projeto" />
           </div>
-          <p className="mt-3 text-ink-muted">Phase: {demoProgress.currentPhase}</p>
+          <p className="mt-3 text-ink-muted">{guide.whereYouAre}</p>
+          {state.blockedTasks > 0 ? (
+            <p className="mt-2 text-signal-bad">{state.blockedTasks} tarefa(s) bloqueada(s)</p>
+          ) : null}
+        </SectionCard>
+
+        <SectionCard title="Fase atual">
+          {state.currentPhase ? (
+            <>
+              <p className="font-semibold text-white">{state.currentPhase.title}</p>
+              <div className="mt-2">
+                <Pill tone={analysisTone(null)}>{state.currentPhase.status}</Pill>
+              </div>
+            </>
+          ) : (
+            <p className="text-ink-muted">Nenhuma fase em aberto.</p>
+          )}
+        </SectionCard>
+
+        <SectionCard title="Tarefa atual">
+          {state.currentTask ? (
+            <>
+              <p className="font-semibold text-white">{state.currentTask.title}</p>
+              <div className="mt-2">
+                <Pill tone={taskTone(state.currentTask.status)}>{state.currentTask.status}</Pill>
+              </div>
+            </>
+          ) : (
+            <p className="text-ink-muted">Nenhuma tarefa em aberto.</p>
+          )}
         </SectionCard>
 
         <SectionCard
-          title="Project health"
-          action={<Pill tone={demoHealth.tone as Tone}>{demoHealth.label}</Pill>}
+          title="Roadmap"
+          action={
+            <Link href={projectHref(id, "roadmap")} className="font-mono text-[11px] text-accent-soft">
+              abrir
+            </Link>
+          }
         >
-          <p className="text-ink-muted">{demoHealth.detail}</p>
-          <PlaceholderNote>Guardians are contracts only in this phase.</PlaceholderNote>
+          <RoadmapTree
+            phases={roadmap?.phases ?? []}
+            currentTaskId={state.currentTask?.id ?? null}
+          />
         </SectionCard>
 
-        <SectionCard title="Current step" action={<Pill tone="accent">{demoCurrentStep.status}</Pill>}>
-          <p className="font-semibold text-white">{demoCurrentStep.title}</p>
-          <p className="mt-1 text-ink-muted">{demoCurrentStep.objective}</p>
-          <ul className="mt-3 space-y-1 text-ink-muted">
-            {demoCurrentStep.completionCriteria.map((criterion) => (
-              <li key={criterion} className="flex gap-2">
-                <span className="text-accent-soft">·</span>
-                {criterion}
-              </li>
-            ))}
-          </ul>
+        <SectionCard
+          title="Evidências recentes"
+          action={
+            <Link href={projectHref(id, "outputs")} className="font-mono text-[11px] text-accent-soft">
+              registrar
+            </Link>
+          }
+        >
+          {recentEvidence.length === 0 ? (
+            <p className="text-ink-muted">Nenhuma evidência registrada ainda.</p>
+          ) : (
+            <ul className="space-y-2.5">
+              {recentEvidence.map((item) => (
+                <li key={item.id} className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-ink">{item.type}</p>
+                    <p className="font-mono text-[11px] text-ink-faint">{item.source}</p>
+                  </div>
+                  <Pill tone={analysisTone(item.status)}>{item.status ?? "—"}</Pill>
+                </li>
+              ))}
+            </ul>
+          )}
         </SectionCard>
 
         <SectionCard
           title="Project Brain"
           action={
             <Link href={projectHref(id, "brain")} className="font-mono text-[11px] text-accent-soft">
-              open
+              abrir
             </Link>
           }
         >
-          <ul className="space-y-1.5">
-            {demoBrainSummary.map((item) => (
-              <li key={item.type} className="flex items-center justify-between">
-                <span className="font-mono text-xs text-ink-muted">{item.type}</span>
-                <span className="text-white">{item.count}</span>
-              </li>
-            ))}
-          </ul>
+          {brain.entryCount === 0 ? (
+            <p className="text-ink-muted">
+              Memória vazia. Eventos geram propostas — nada entra sem revisão.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {Object.entries(brain.countByType).map(([type, count]) => (
+                <li key={type} className="flex items-center justify-between">
+                  <span className="font-mono text-xs text-ink-muted">{type}</span>
+                  <span className="text-white">{count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </SectionCard>
 
-        <SectionCard
-          title="Roadmap"
-          action={
-            <Link
-              href={projectHref(id, "roadmap")}
-              className="font-mono text-[11px] text-accent-soft"
-            >
-              open
-            </Link>
-          }
-        >
-          <ul className="space-y-3">
-            {demoRoadmap.map((phase) => (
-              <li key={phase.name}>
-                <div className="flex items-center justify-between text-ink-muted">
-                  <span>{phase.name}</span>
-                  <span className="font-mono text-xs">
-                    {phase.done}/{phase.total}
-                  </span>
-                </div>
-                <div className="mt-1.5">
-                  <ProgressBar
-                    value={(phase.done / phase.total) * 100}
-                    label={`${phase.name} progress`}
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
-        </SectionCard>
-
-        <SectionCard
-          title="Recent outputs"
-          action={
-            <Link
-              href={projectHref(id, "outputs")}
-              className="font-mono text-[11px] text-accent-soft"
-            >
-              open
-            </Link>
-          }
-        >
-          <ul className="space-y-2.5">
-            {demoRecentOutputs.map((output) => (
-              <li key={output.label} className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-ink">{output.label}</p>
-                  <p className="font-mono text-[11px] text-ink-faint">{output.receivedAt}</p>
-                </div>
-                <Pill tone={statusTone(output.status)}>{output.status}</Pill>
-              </li>
-            ))}
-          </ul>
-        </SectionCard>
-
-        <SectionCard title="Next recommendation" emphasis>
-          <p className="font-semibold text-white">{demoRecommendation.action}</p>
-          <p className="mt-2 text-ink-muted">{demoRecommendation.rationale}</p>
-          <p className="mt-3 font-mono text-[11px] text-ink-faint">
-            based on: {demoRecommendation.basedOn.join(" · ")}
-          </p>
-        </SectionCard>
-
-        <SectionCard title="AI accounts">
-          <ul className="space-y-2">
-            {demoAccounts.map((account) => (
-              <li key={account.provider} className="flex items-center justify-between">
-                <span className="text-ink">{account.provider}</span>
-                <Pill tone={account.connected ? "ok" : "idle"}>{account.label}</Pill>
-              </li>
-            ))}
-          </ul>
-          <PlaceholderNote>No provider is connected, so no balance is shown.</PlaceholderNote>
-        </SectionCard>
-
-        <SectionCard title="Usage">
-          <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-white">{demoUsage.tokensObserved}</span>
-            <span className="text-ink-muted">tokens observed</span>
+        {state.activeProblems.length > 0 ? (
+          <div className="lg:col-span-3">
+            <SectionCard title="Problemas ativos">
+              <ul className="space-y-1 text-signal-warn">
+                {state.activeProblems.map((problem) => (
+                  <li key={problem}>· {problem}</li>
+                ))}
+              </ul>
+            </SectionCard>
           </div>
-          <p className="mt-3 text-ink-muted">
-            Estimated spend: {demoUsage.estimatedSpend ?? "unknown"}
-          </p>
-          <PlaceholderNote>
-            Confidence: {demoUsage.confidence} — an estimate is never shown as a balance.
-          </PlaceholderNote>
-        </SectionCard>
+        ) : null}
       </section>
     </>
   );
 }
 
-function ProjectHeader({ id }: { id: string }) {
+function ActionLink({ href, children }: { href: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <p className="eyebrow">project / {id}</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">{demoProject.name}</h1>
-        <p className="mt-2 max-w-2xl text-ink-muted">{demoProject.description}</p>
-      </div>
-      <Pill tone="ok">{demoProject.status}</Pill>
-    </div>
+    <Link
+      href={href}
+      className="rounded-lg border border-edge-strong px-3.5 py-2 text-sm text-ink transition-colors hover:border-accent/60 hover:text-white"
+    >
+      {children}
+    </Link>
   );
-}
-
-function statusTone(status: OutputAnalysisStatus): Tone {
-  switch (status) {
-    case "SUCCESS":
-      return "ok";
-    case "PARTIAL":
-    case "NEEDS_VALIDATION":
-      return "warn";
-    case "FAILURE":
-    case "BLOCKED":
-      return "bad";
-    default:
-      return "idle";
-  }
 }

@@ -4,23 +4,23 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * A plain answer to: where are we, what is done, what is missing, what now, and why that.
+ * The Project Guide's answer: where you are, what is done, what is in the way, and what to do next.
  *
- * <p>{@code evidence} names the Brain entries and analyses the answer rests on, so the user can
- * check the reasoning instead of trusting it.
+ * <p>Assembled from recorded state only. The Guide orients; it never executes anything.
  */
 public record GuidanceReport(
     UUID projectId,
-    String whereWeAre,
-    List<String> whatIsDone,
+    String whereYouAre,
+    List<String> whatWasCompleted,
     List<String> whatIsMissing,
-    String recommendedNow,
-    String whyThisIsNext,
-    List<String> evidence) {
+    List<String> activeProblems,
+    NextStepRecommendation recommendedNextStep,
+    String reason,
+    int progressPercentage) {
 
   public GuidanceReport {
-    whatIsDone = List.copyOf(whatIsDone);
+    whatWasCompleted = List.copyOf(whatWasCompleted);
     whatIsMissing = List.copyOf(whatIsMissing);
-    evidence = List.copyOf(evidence);
+    activeProblems = List.copyOf(activeProblems);
   }
 }

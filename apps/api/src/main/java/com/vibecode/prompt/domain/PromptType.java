@@ -10,5 +10,6 @@ public enum PromptType {
   MODEL_HANDOFF,
   /** Asks the model to produce proof, used when an output only claimed success. */
   ASK_FOR_EVIDENCE,
+  /** Works on an external obstacle rather than on code. */
   RESOLVE_BLOCKER
 }

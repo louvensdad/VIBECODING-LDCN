@@ -1,1 +1,0 @@
-package com.vibecode.roadmap.infrastructure; import com.vibecode.roadmap.domain.RoadmapPhaseRecord; import org.springframework.data.jpa.repository.JpaRepository; import java.util.*; public interface RoadmapPhaseRecordRepository extends JpaRepository<RoadmapPhaseRecord,UUID>{List<RoadmapPhaseRecord> findByRoadmapIdOrderByPosition(UUID id);}

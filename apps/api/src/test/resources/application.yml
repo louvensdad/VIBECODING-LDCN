@@ -5,6 +5,9 @@ spring:
     username: sa
     password:
   jpa:
+    # Mirrors the main configuration: without it the test context falls back to the default and
+    # warns on every run.
+    open-in-view: false
     hibernate:
       ddl-auto: validate
   flyway:

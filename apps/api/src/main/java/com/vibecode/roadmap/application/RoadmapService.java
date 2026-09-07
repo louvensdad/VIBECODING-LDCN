@@ -1,0 +1,109 @@
+package com.vibecode.roadmap.application;
+
+import com.vibecode.project.application.ProjectService;
+import com.vibecode.roadmap.domain.Roadmap;
+import com.vibecode.roadmap.domain.RoadmapPhase;
+import com.vibecode.roadmap.infrastructure.RoadmapPhaseRepository;
+import com.vibecode.roadmap.infrastructure.RoadmapRepository;
+import com.vibecode.shared.domain.DomainRuleException;
+import com.vibecode.shared.domain.ResourceNotFoundException;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/** Owns the structure of the plan: the roadmap and its ordered phases. */
+@Service
+@Transactional
+public class RoadmapService {
+
+  private final ProjectService projects;
+  private final RoadmapRepository roadmaps;
+  private final RoadmapPhaseRepository phases;
+
+  public RoadmapService(
+      ProjectService projects, RoadmapRepository roadmaps, RoadmapPhaseRepository phases) {
+    this.projects = projects;
+    this.roadmaps = roadmaps;
+    this.phases = phases;
+  }
+
+  /** Creates the roadmap, or returns the existing one. A project has exactly one. */
+  public Roadmap createOrGet(UUID projectId) {
+    projects.requireExisting(projectId);
+    return roadmaps.findByProjectId(projectId).orElseGet(() -> roadmaps.save(new Roadmap(projectId)));
+  }
+
+  @Transactional(readOnly = true)
+  public Roadmap require(UUID projectId) {
+    projects.requireExisting(projectId);
+    return roadmaps
+        .findByProjectId(projectId)
+        .orElseThrow(
+            () -> new ResourceNotFoundException("This project has no roadmap yet: " + projectId));
+  }
+
+  @Transactional(readOnly = true)
+  public List<RoadmapPhase> listPhases(UUID projectId) {
+    projects.requireExisting(projectId);
+    return roadmaps
+        .findByProjectId(projectId)
+        .map(roadmap -> phases.findByRoadmapIdOrderByPosition(roadmap.getId()))
+        .orElseGet(List::of);
+  }
+
+  public RoadmapPhase addPhase(UUID projectId, int position, String title, String description) {
+    Roadmap roadmap = createOrGet(projectId);
+    if (position < 1) {
+      throw new DomainRuleException("Phase position starts at 1");
+    }
+    if (phases.existsByRoadmapIdAndPosition(roadmap.getId(), position)) {
+      throw new DomainRuleException("Phase position " + position + " is already taken");
+    }
+    return phases.save(new RoadmapPhase(roadmap.getId(), position, title, description));
+  }
+
+  @Transactional(readOnly = true)
+  public RoadmapPhase requirePhase(UUID projectId, UUID phaseId) {
+    RoadmapPhase phase =
+        phases
+            .findById(phaseId)
+            .orElseThrow(() -> new ResourceNotFoundException("Phase not found: " + phaseId));
+    if (!phase.getRoadmapId().equals(require(projectId).getId())) {
+      throw new DomainRuleException("This phase belongs to another project");
+    }
+    return phase;
+  }
+
+  /**
+   * Moves a phase to a new position, shifting the phases in between.
+   *
+   * <p>Positions are rewritten as a contiguous 1..n sequence rather than patched in place, so no
+   * reorder can leave a gap or a duplicate behind.
+   */
+  public List<RoadmapPhase> movePhase(UUID projectId, UUID phaseId, int newPosition) {
+    RoadmapPhase phase = requirePhase(projectId, phaseId);
+    List<RoadmapPhase> ordered =
+        new java.util.ArrayList<>(phases.findByRoadmapIdOrderByPosition(phase.getRoadmapId()));
+    if (newPosition < 1 || newPosition > ordered.size()) {
+      throw new DomainRuleException(
+          "Position must be between 1 and " + ordered.size() + " for this roadmap");
+    }
+
+    ordered.removeIf(candidate -> candidate.getId().equals(phaseId));
+    ordered.add(newPosition - 1, phase);
+    // Two passes: park every phase outside the used range first, because positions are unique per
+    // roadmap and a direct rewrite would collide with a row that has not been renumbered yet.
+    int parking = ordered.size() + 1;
+    for (RoadmapPhase current : ordered) {
+      current.moveTo(parking++);
+    }
+    phases.flush();
+    int sequence = 1;
+    for (RoadmapPhase current : ordered) {
+      current.moveTo(sequence++);
+    }
+    phases.flush();
+    return ordered;
+  }
+}

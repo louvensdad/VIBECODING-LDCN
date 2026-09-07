@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { demoProject } from "@/lib/mock-workspace";
 
 const PILLARS = [
   {
@@ -30,16 +29,16 @@ export default function Home() {
         </p>
         <div className="mt-9 flex flex-wrap gap-3">
           <Link
-            href={`/projects/${demoProject.id}`}
+            href="/projects"
             className="rounded-lg bg-accent px-5 py-3 font-semibold text-white transition-colors hover:bg-accent-soft"
           >
-            Open project workspace
+            Abrir workspace
           </Link>
           <Link
             href="/projects"
             className="rounded-lg border border-edge-strong px-5 py-3 font-semibold text-ink transition-colors hover:border-accent/60"
           >
-            View projects
+            Ver projetos
           </Link>
         </div>
       </section>

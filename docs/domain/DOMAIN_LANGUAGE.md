@@ -26,10 +26,47 @@ Precisa passar por validação para virar Brain Entry.
 
 ## Execução e evidência
 
-**Roadmap** — o caminho planejado: fases ordenadas, cada uma com etapas.
+**Roadmap** — o caminho planejado. Um por projeto.
 
-**Task** — uma etapa. Tem objetivo, dependências, **critério de conclusão** e riscos. Não fica
+**Roadmap Phase** — uma etapa ordenada do roadmap ("Setup", "Authentication"). Seu status é
+**derivado** das tarefas dentro dela, nunca digitado. Uma fase sem tarefas está `PLANNED`, não
+concluída: trabalho planejado que ninguém detalhou continua pendente.
+
+**Task** — uma tarefa. Tem objetivo, posição, risco, dependências e critérios de aceite. Não fica
 pronta porque alguém disse que ficou.
+
+**Task Status** — `PLANNED` (tem dependência aberta), `READY` (pode começar), `IN_PROGRESS`,
+`BLOCKED`, `NEEDS_VALIDATION` (reportada pronta, sem prova suficiente), `COMPLETED`, `SKIPPED`.
+
+**BLOCKED vs. falha** — dois conceitos diferentes, e a distinção importa. `BLOCKED` é obstáculo
+externo: permissão, credencial, cota. Um build quebrado **não** é bloqueio — é trabalho normal em
+andamento, e continua com o usuário.
+
+**Task Dependency** — "esta tarefa não começa antes daquela terminar". Ciclos são recusados na
+criação.
+
+**Acceptance Criterion** — uma condição verificável que fecha a tarefa, escrita antes do trabalho
+começar. Estados: `PENDING`, `SATISFIED`, `FAILED`, `UNKNOWN`. **Só muda por decisão explícita,
+registrada com o nome de quem decidiu.** Um build verde prova que o código compila, não que a
+condição foi verificada.
+
+**Task Evidence** — algo que realmente aconteceu durante a tarefa: um build, um teste, um stack
+trace, uma resposta de modelo. Append-only, sem setters.
+
+**Output Analysis Record** — o veredito guardado sobre uma evidência, com os sinais técnicos
+preservados — não só o resumo.
+
+**Task Completion Policy** — a única porta para `COMPLETED`. Exige dependências satisfeitas,
+critérios obrigatórios satisfeitos, ausência de evidência bloqueadora e evidência de sucesso. Diz
+**o que falta** quando recusa.
+
+**Project State** — a leitura consolidada de onde o projeto está. Montada a cada requisição;
+`progressPercentage` é calculado, nunca gravado.
+
+**Next Step Recommendation** — o que fazer agora, com `reason` obrigatório e as ações concretas.
+
+**Memory Proposal Trigger** — o evento que originou uma proposta de memória: `TASK_COMPLETED`,
+`ERROR_FOUND`, `ERROR_RESOLVED`, `CURRENT_STATE_CHANGED`, `NEXT_STEP_CHANGED`, `MANUAL`.
 
 **Output** — evidência trazida pelo usuário: resposta de LLM, terminal, stack trace, build, teste,
 log, resposta HTTP, SQL ou deploy.

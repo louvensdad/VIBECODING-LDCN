@@ -1,1 +1,0 @@
-package com.vibecode.roadmap.application; public enum NextStepType { START_TASK, CONTINUE_TASK, FIX_ERROR, VALIDATE_RESULT, RESOLVE_BLOCKER, REVIEW_SECURITY, WAIT_FOR_USER, PROJECT_COMPLETE }

@@ -28,7 +28,7 @@ web/             controllers e DTOs
 ```
 
 Módulos que ainda são só contrato têm apenas `domain/`. Criar as quatro pastas antes de haver
-código nelas seria estrutura vazia, e o princípio 12 proíbe.
+código nelas seria estrutura vazia, e o princípio 15 proíbe.
 
 Regras que valem em toda a API:
 
@@ -40,32 +40,70 @@ Regras que valem em toda a API:
 
 ## Dependências entre módulos
 
-O acoplamento hoje é deliberadamente raso:
+O acoplamento é uma cadeia linear, sem ciclos:
 
 ```
-project  ←──  brain  ←──  guide (contrato)
-   ↑            ↑
- output      roadmap (contrato)
-              prompt (contrato)
+project ← roadmap ← task ← output ← state ← guide ← prompt
+              ↖________ brain ________↗
 ```
 
-`brain` e `output` dependem de `project` para garantir que memória e evidência sempre pertencem a
-um projeto existente. Nada depende de `guide`, `prompt`, `roadmap`, `guardian`, `terminal`,
-`integration`, `usage` ou `wellness` — são contratos aguardando implementação, e essa direção de
-dependência é o que permite extrair um módulo depois sem desmontar o resto.
+Cada módulo só conhece os anteriores. `state` monta a leitura consolidada sobre roadmap, task e
+output; `guide` decide o próximo passo a partir de `state`; `prompt` monta o texto a partir de
+ambos. `brain` é transversal: `output` propõe memória, `guide` e `prompt` leem regras e decisões.
+
+`guardian`, `terminal`, `integration`, `usage` e `wellness` continuam contratos de domínio, sem
+implementação, sem bean e sem tabela. Nada depende deles.
+
+## Fluxo guiado
+
+```
+PROJECT → ROADMAP → PHASE → TASK → OUTPUT → EVIDENCE → ANALYSIS
+                                                          ↓
+                                                     TASK STATE
+                                                          ↓
+                                                    PROJECT STATE
+                                                          ↓
+                                                  NEXT STEP ENGINE
+                                                          ↓
+                                                   PROMPT BUILDER
+```
+
+Nenhum LLM participa deste ciclo. Ver
+[ADR-004](../adr/ADR-004-roadmap-task-navigation.md),
+[ADR-005](../adr/ADR-005-evidence-based-completion.md),
+[ADR-006](../adr/ADR-006-deterministic-next-step.md) e
+[ADR-007](../adr/ADR-007-deterministic-prompt-builder.md).
+
+### Nada derivável é persistido
+
+Progresso, prontidão e status de fase são calculados a cada leitura:
+
+- `Task.applyReadiness` — `READY` quando toda dependência está `COMPLETED`;
+- `PhaseStatusCalculator` — status da fase a partir das tarefas dentro dela;
+- `ProjectState.progressPercentage()` — computado, sem coluna no banco.
+
+`TaskStatusRecalculator` preserva os estados que o usuário está segurando (`IN_PROGRESS`,
+`BLOCKED`, `NEEDS_VALIDATION`) e nunca reabre uma tarefa concluída.
+
+### Conclusão de tarefa
+
+`TaskCompletionPolicy` é o único caminho para `COMPLETED`, e exige as quatro condições do
+[ADR-005](../adr/ADR-005-evidence-based-completion.md). Critério de aceite muda de estado apenas
+por decisão explícita e atribuída — nunca por inferência de um build verde.
 
 ## Estado de cada módulo
 
 | Módulo | Responsabilidade | Fase atual |
 | --- | --- | --- |
 | `project` | Identidade e ciclo de vida do projeto acompanhado | **Implementado** (entidade, serviço, API, tabela) |
-| `brain` | Memória oficial estruturada | **Implementado** (entrada, leitura, tabela) + proposta de memória como contrato |
-| `output` | Análise determinística de evidência | **Implementado** (analisador + API) |
+| `brain` | Memória oficial estruturada e fila de propostas | **Implementado** (entradas, propostas, revisão) |
+| `output` | Análise determinística, evidência persistida e análise registrada | **Implementado** |
 | `shared` | Erros e tipos comuns da API | **Implementado** |
-| `roadmap` | Fases, etapas, progresso, próximo passo | Contrato de domínio |
-| `guide` | Onde estamos, o que falta, o que fazer agora | Contrato de domínio |
-| `task` | Etapas com critério de conclusão e riscos | Contrato de domínio |
-| `prompt` | Construção de prompts a partir do contexto oficial | Contrato de domínio |
+| `roadmap` | Fases ordenadas do plano | **Implementado** (entidades, serviço, API, tabelas) |
+| `task` | Tarefas, dependências, critérios de aceite, política de conclusão | **Implementado** |
+| `state` | Leitura consolidada de onde o projeto está | **Implementado** |
+| `guide` | Próximo passo determinístico e orientação | **Implementado** |
+| `prompt` | Construção de prompts a partir do estado registrado | **Implementado** |
 | `model` | Abstração de provider e modelo | Contrato de domínio |
 | `usage` | Tokens, custo, crédito, orçamento, autonomia | Contrato de domínio |
 | `guardian` | Sete vigias de risco do projeto | Contrato de domínio |
@@ -87,15 +125,19 @@ outra em vez de sobrescrever histórico. Nada escreve snapshots ainda.
 
 ## Regra de memória
 
-Nenhum modelo externo escreve na memória oficial. O caminho é:
+Nada escreve na memória oficial sozinho — nem um modelo, nem a própria plataforma. O caminho é:
 
 ```
-resultado do LLM  →  MemoryUpdateProposal  →  validação  →  BrainEntry
+evento ou resultado do LLM  →  MemoryUpdateProposal  →  revisão  →  BrainEntry
 ```
 
-`MemoryUpdateProposal.toEntry()` recusa uma proposta que não tenha sido aceita, e
-`MemoryProposalValidator` é a porta onde as regras de validação entrarão. A proposta ainda não é
-persistida: sem o fluxo de revisão, a tabela não teria uso — ver princípio 12.
+Os eventos do fluxo (`TASK_COMPLETED`, `ERROR_FOUND`, `ERROR_RESOLVED`) geram **propostas**
+persistidas em `memory_update_proposals`. Elas ficam pendentes até alguém aceitar, e só então uma
+entrada existe — com o vínculo `resulting_entry_id` para rastreabilidade.
+
+`MemoryUpdateProposal.toEntry()` recusa proposta não aceita, o que torna a revisão estrutural em
+vez de opcional. `MemoryProposalValidator` continua sendo a porta para validação automática
+futura.
 
 ## Output Analyzer
 

@@ -1,5 +1,6 @@
 package com.vibecode.shared.web;
 
+import com.vibecode.shared.domain.DomainRuleException;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -23,6 +24,18 @@ public class ApiExceptionHandler {
   @ExceptionHandler({ResourceNotFoundException.class, NoSuchElementException.class})
   ResponseEntity<ApiError> notFound(RuntimeException exception) {
     return build(HttpStatus.NOT_FOUND, "NOT_FOUND", exception.getMessage());
+  }
+
+  /** A well-formed request that would break a domain rule. */
+  @ExceptionHandler(DomainRuleException.class)
+  ResponseEntity<ApiError> domainRule(DomainRuleException exception) {
+    return build(HttpStatus.UNPROCESSABLE_ENTITY, "DOMAIN_RULE_VIOLATION", exception.getMessage());
+  }
+
+  /** Guards inside the domain — completing an unfinished task, reviewing a reviewed proposal. */
+  @ExceptionHandler({IllegalStateException.class, IllegalArgumentException.class})
+  ResponseEntity<ApiError> illegalState(RuntimeException exception) {
+    return build(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATE", exception.getMessage());
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)

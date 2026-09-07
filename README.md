@@ -5,9 +5,16 @@ Plataforma que mantém o contexto oficial de projetos conduzidos com apoio de LL
 O Project Brain — e não um modelo externo — é o dono do estado do projeto. Modelos são ferramentas
 substituíveis: a memória sobrevive à troca de qualquer um deles.
 
-> **Fase atual: fundação.** Projeto, Project Brain e o Output Analyzer determinístico estão
-> implementados. Os demais módulos existem como contrato de domínio, sem implementação. Nenhuma
-> integração real com LLM foi construída.
+> **Fase atual: fluxo guiado (fase 2).** Projeto, Project Brain, roadmap, tarefas, evidência,
+> estado consolidado, Next Step Engine e Prompt Builder estão implementados — todos
+> determinísticos. `model`, `usage`, `guardian`, `terminal`, `integration` e `wellness` continuam
+> contratos de domínio. **Nenhuma integração com LLM foi construída.**
+
+O ciclo que o VibeCode fecha sem nenhum modelo:
+
+```
+projeto → roadmap → tarefa → saída → evidência → análise → próximo passo → prompt
+```
 
 ## Executar localmente
 
@@ -36,7 +43,24 @@ cd apps/web && npm install && npm run dev
 | `GET` | `/api/projects/{id}` | Lê um projeto |
 | `GET` | `/api/projects/{id}/brain` | Lê a memória oficial, com contagem por tipo |
 | `POST` | `/api/projects/{id}/brain/entries` | Escreve uma entrada na memória oficial |
-| `POST` | `/api/projects/{id}/outputs/analyze` | Analisa uma saída em busca de evidência |
+| `POST` | `/api/projects/{id}/outputs/analyze` | Analisa uma saída sem persistir nada |
+| `POST` | `/api/projects/{id}/roadmap` | Cria o roadmap do projeto |
+| `GET` | `/api/projects/{id}/roadmap` | Lê o plano com status derivado das tarefas |
+| `POST` | `/api/projects/{id}/roadmap/phases` | Adiciona uma fase |
+| `PUT` | `/api/projects/{id}/roadmap/phases/{phaseId}/position` | Reordena uma fase |
+| `POST` | `/api/projects/{id}/roadmap/phases/{phaseId}/tasks` | Adiciona uma tarefa |
+| `GET` | `/api/projects/{id}/tasks` | Lista as tarefas em ordem de plano |
+| `POST` | `/api/projects/{id}/tasks/{taskId}/dependencies` | Registra uma dependência |
+| `POST` | `/api/projects/{id}/tasks/{taskId}/criteria` | Adiciona um critério de aceite |
+| `PATCH` | `/api/projects/{id}/tasks/{taskId}/criteria/{criterionId}` | Decide um critério (exige quem decidiu) |
+| `POST` | `/api/projects/{id}/tasks/{taskId}/evidence` | Registra evidência e move a tarefa |
+| `GET` | `/api/projects/{id}/tasks/{taskId}/evidence` | Histórico append-only da tarefa |
+| `GET` | `/api/projects/{id}/state` | Onde o projeto está, com progresso calculado |
+| `GET` | `/api/projects/{id}/guide` | Onde estamos, o que falta, o que fazer agora |
+| `GET` | `/api/projects/{id}/next-step` | Próximo passo determinístico, com a razão |
+| `POST` | `/api/projects/{id}/prompts/generate` | Gera o prompt do próximo passo |
+| `GET` | `/api/projects/{id}/brain/proposals` | Memória proposta, aguardando revisão |
+| `POST` | `/api/projects/{id}/brain/proposals/{id}/accept` | Aceita uma proposta e escreve a entrada |
 
 Exemplo — evidência técnica vence alegação de sucesso:
 
@@ -51,7 +75,7 @@ curl -X POST http://localhost:8080/api/projects/$ID/outputs/analyze \
 ## Testes
 
 ```bash
-cd apps/api && mvn test      # 38 testes
+cd apps/api && mvn test      # 89 testes
 cd apps/web && npm run build
 ```
 
@@ -74,3 +98,5 @@ Leia, nesta ordem:
 2. [Arquitetura](docs/architecture/ARCHITECTURE.md) — estado real de cada módulo
 3. [Linguagem do domínio](docs/domain/DOMAIN_LANGUAGE.md) — os termos têm um significado só
 4. [Princípios de segurança](docs/security/SECURITY_PRINCIPLES.md)
+5. Os ADRs [004](docs/adr/ADR-004-roadmap-task-navigation.md) a
+   [007](docs/adr/ADR-007-deterministic-prompt-builder.md) — por que o fluxo guiado é determinístico

@@ -1,1 +1,0 @@
-package com.vibecode.roadmap.application; import com.vibecode.prompt.domain.PromptType; import java.util.*; public record WorkflowRecommendation(NextStepType type,String title,String reason,UUID taskId,String priority,List<String> blockingIssues,List<String> requiredActions,PromptType suggestedPromptType) {}

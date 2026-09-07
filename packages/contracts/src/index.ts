@@ -115,3 +115,229 @@ export interface ApiError {
  * an estimate is never rendered as a balance.
  */
 export type CreditConfidence = "EXACT" | "ESTIMATED" | "UNKNOWN";
+
+/* ------------------------------------------------------------------ *
+ * Guided workflow — roadmap, tasks, evidence, guidance and prompts.
+ * ------------------------------------------------------------------ */
+
+export type PhaseStatus =
+  | "PLANNED"
+  | "READY"
+  | "IN_PROGRESS"
+  | "BLOCKED"
+  | "COMPLETED"
+  | "SKIPPED";
+
+export type TaskStatus =
+  | "PLANNED"
+  | "READY"
+  | "IN_PROGRESS"
+  | "BLOCKED"
+  | "NEEDS_VALIDATION"
+  | "COMPLETED"
+  | "SKIPPED";
+
+export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export type CriterionStatus = "PENDING" | "SATISFIED" | "FAILED" | "UNKNOWN";
+
+export type EvidenceType =
+  | "LLM_RESPONSE"
+  | "TERMINAL_OUTPUT"
+  | "BUILD_RESULT"
+  | "TEST_RESULT"
+  | "ERROR_LOG"
+  | "HTTP_RESPONSE"
+  | "DATABASE_RESULT"
+  | "USER_CONFIRMATION"
+  | "GENERIC_OUTPUT";
+
+export interface PhaseTaskResponse {
+  id: string;
+  position: number;
+  title: string;
+  status: TaskStatus;
+}
+
+export interface PhaseResponse {
+  id: string;
+  position: number;
+  title: string;
+  description: string | null;
+  status: PhaseStatus;
+  totalTasks: number;
+  completedTasks: number;
+  tasks: PhaseTaskResponse[];
+  updatedAt: string;
+}
+
+export interface RoadmapResponse {
+  id: string;
+  projectId: string;
+  totalPhases: number;
+  completedPhases: number;
+  phases: PhaseResponse[];
+  createdAt: string;
+}
+
+export interface CriterionResponse {
+  id: string;
+  description: string;
+  required: boolean;
+  status: CriterionStatus;
+  decidedBy: string | null;
+  decidedAt: string | null;
+}
+
+export interface TaskResponse {
+  id: string;
+  projectId: string;
+  phaseId: string;
+  position: number;
+  title: string;
+  objective: string;
+  status: TaskStatus;
+  riskLevel: RiskLevel;
+  dependsOn: string[];
+  acceptanceCriteria: CriterionResponse[];
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface PhaseSummary {
+  id: string;
+  title: string;
+  status: PhaseStatus;
+}
+
+export interface TaskSummary {
+  id: string;
+  title: string;
+  status: TaskStatus;
+}
+
+export interface EvidenceSummary {
+  id: string;
+  taskId: string;
+  type: EvidenceType;
+  source: string;
+  createdAt: string;
+  status: OutputAnalysisStatus | null;
+  signals: string[];
+}
+
+/** `progressPercentage` is computed by the API on every read, never stored. */
+export interface ProjectStateResponse {
+  projectId: string;
+  currentPhase: PhaseSummary | null;
+  currentTask: TaskSummary | null;
+  completedTasks: number;
+  totalTasks: number;
+  blockedTasks: number;
+  progressPercentage: number;
+  activeProblems: string[];
+  lastEvidence: EvidenceSummary | null;
+  nextCandidateTasks: TaskSummary[];
+}
+
+export interface RecentEvidenceResponse {
+  id: string;
+  taskId: string;
+  type: EvidenceType;
+  source: string;
+  createdAt: string;
+  status: OutputAnalysisStatus | null;
+  summary: string | null;
+}
+
+export type NextStepType =
+  | "START_TASK"
+  | "CONTINUE_TASK"
+  | "FIX_ERROR"
+  | "VALIDATE_RESULT"
+  | "RESOLVE_BLOCKER"
+  | "REVIEW_SECURITY"
+  | "WAIT_FOR_USER"
+  | "PROJECT_COMPLETE";
+
+export type NextStepPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export type PromptType =
+  | "START_TASK"
+  | "CONTINUE_TASK"
+  | "FIX_ERROR"
+  | "VALIDATE_RESULT"
+  | "MODEL_HANDOFF"
+  | "ASK_FOR_EVIDENCE"
+  | "RESOLVE_BLOCKER";
+
+export interface NextStepResponse {
+  type: NextStepType;
+  title: string;
+  /** Always present: a recommendation the user cannot audit is a guess. */
+  reason: string;
+  taskId: string | null;
+  priority: NextStepPriority;
+  blockingIssues: string[];
+  requiredActions: string[];
+  suggestedPromptType: PromptType;
+}
+
+export interface GuidanceResponse {
+  projectId: string;
+  whereYouAre: string;
+  whatWasCompleted: string[];
+  whatIsMissing: string[];
+  activeProblems: string[];
+  recommendedNextStep: NextStepResponse;
+  reason: string;
+  progressPercentage: number;
+}
+
+export interface AnalysisResponse {
+  status: OutputAnalysisStatus;
+  summary: string;
+  signals: string[];
+  shouldContinue: boolean;
+  requiresCorrection: boolean;
+}
+
+export interface EvidenceResponse {
+  id: string;
+  taskId: string;
+  type: EvidenceType;
+  rawContent: string;
+  source: string;
+  createdAt: string;
+  analysis: AnalysisResponse | null;
+}
+
+export interface EvidenceRecordedResponse {
+  evidence: EvidenceResponse;
+  analysis: AnalysisResponse;
+  taskStatus: TaskStatus;
+  taskCompleted: boolean;
+  missingForCompletion: string[];
+}
+
+export interface RecordEvidenceRequest {
+  type: EvidenceType;
+  rawContent: string;
+  source: string;
+}
+
+export interface GeneratePromptRequest {
+  taskId?: string | null;
+  type?: PromptType | null;
+}
+
+export interface GeneratedPromptResponse {
+  type: PromptType;
+  taskId: string | null;
+  taskTitle: string | null;
+  content: string;
+  contextSources: string[];
+  generatedAt: string;
+}

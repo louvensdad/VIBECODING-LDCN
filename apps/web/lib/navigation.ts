@@ -8,11 +8,11 @@ export interface NavItem {
 
 export const projectNav: NavItem[] = [
   { label: "Overview", segment: null },
-  { label: "Project Brain", segment: "brain" },
   { label: "Roadmap", segment: "roadmap" },
-  { label: "Guide", segment: "guide" },
-  { label: "Prompts", segment: "prompts" },
   { label: "Outputs", segment: "outputs" },
+  { label: "Prompts", segment: "prompts" },
+  { label: "Project Brain", segment: "brain" },
+  { label: "Guide", segment: "guide" },
   { label: "Models", segment: "models" },
   { label: "Usage", segment: "usage" },
   { label: "Security", segment: "security" },

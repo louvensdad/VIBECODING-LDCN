@@ -1,3 +1,0 @@
-package com.vibecode.roadmap.domain;
-import jakarta.persistence.*; import java.time.Instant; import java.util.UUID;
-@Entity @Table(name="roadmaps") public class RoadmapRecord { @Id private UUID id; @Column(name="project_id",nullable=false,unique=true) private UUID projectId; @Column(name="created_at",nullable=false) private Instant createdAt; @Column(name="updated_at",nullable=false) private Instant updatedAt; protected RoadmapRecord(){} public RoadmapRecord(UUID projectId){id=UUID.randomUUID();this.projectId=projectId;createdAt=updatedAt=Instant.now();} public UUID id(){return id;} public UUID projectId(){return projectId;} }

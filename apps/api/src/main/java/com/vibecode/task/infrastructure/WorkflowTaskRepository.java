@@ -1,1 +1,0 @@
-package com.vibecode.task.infrastructure; import com.vibecode.task.domain.WorkflowTask; import org.springframework.data.jpa.repository.JpaRepository; import java.util.*; public interface WorkflowTaskRepository extends JpaRepository<WorkflowTask,UUID>{List<WorkflowTask> findByProjectIdOrderByPhaseIdAscPositionAsc(UUID id); List<WorkflowTask> findByPhaseIdOrderByPosition(UUID id);}
