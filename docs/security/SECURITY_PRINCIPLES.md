@@ -1,55 +1,59 @@
-# PrincÃ­pios de SeguranÃ§a
+# Princípios de Segurança
 
-Valem desde a fundaÃ§Ã£o, nÃ£o a partir de uma fase futura de endurecimento.
+Valem desde a fundação, não a partir de uma fase futura de endurecimento.
 
 ## Secrets
 
-- Nenhum secret em cÃ³digo, migration, teste ou log. `.env` estÃ¡ no `.gitignore`; `.env.example`
+- Nenhum secret em código, migration, teste ou log. `.env` está no `.gitignore`; `.env.example`
   documenta os nomes sem os valores.
-- Credenciais chegam por variÃ¡vel de ambiente. `application.yml` sÃ³ referencia
-  (`${DATABASE_PASSWORD}`), nunca contÃ©m valor de produÃ§Ã£o.
-- Registros que representam conexÃµes externas (`ProviderAccount`, `IntegrationConnection`) guardam
-  um `credentialRef` â€” um ponteiro para o segredo â€” e nunca o segredo.
-- **Nenhum secret entra em prompt automaticamente.** `PromptContext` sÃ³ carrega campos declarados
-  explicitamente, montados a partir da memÃ³ria oficial. Nada entra num prompt por estar por perto.
+- Credenciais chegam por variável de ambiente. `application.yml` só referencia
+  (`${DATABASE_PASSWORD}`), nunca contém valor de produção.
+- Registros que representam conexões externas (`ProviderAccount`, `IntegrationConnection`) guardam
+  um `credentialRef` — um ponteiro para o segredo — e nunca o segredo.
+- **Nenhum secret entra em prompt automaticamente.** `PromptContext` só carrega campos declarados
+  explicitamente, montados a partir da memória oficial. Nada entra num prompt por estar por perto.
 
 ## Fronteira da API
 
-- Toda entrada pÃºblica Ã© validada com Bean Validation, com limite de tamanho em todo campo de
+- Toda entrada pública é validada com Bean Validation, com limite de tamanho em todo campo de
   texto livre.
-- Entidades JPA nunca sÃ£o serializadas. Toda resposta Ã© DTO.
-- Um Ãºnico formato de erro (`ApiError`). O handler genÃ©rico registra a exceÃ§Ã£o no log e devolve
-  mensagem genÃ©rica â€” detalhe interno nÃ£o vaza pela API.
-- Mensagem de erro Ã© escrita para o usuÃ¡rio: sem stack trace, sem SQL, sem credencial.
+- Entidades JPA nunca são serializadas. Toda resposta é DTO.
+- Um único formato de erro (`ApiError`). O handler genérico registra a exceção no log e devolve
+  mensagem genérica — detalhe interno não vaza pela API.
+- Mensagem de erro é escrita para o usuário: sem stack trace, sem SQL, sem credencial.
 
 ## Dados
 
-- Schema sÃ³ evolui por migration Flyway, versionada no repositÃ³rio.
+- Schema só evolui por migration Flyway, versionada no repositório.
 - Integridade no banco: chave estrangeira de `brain_entries` para `projects` com `ON DELETE
-  CASCADE`, colunas `NOT NULL` onde o domÃ­nio exige.
-- Log nÃ£o recebe conteÃºdo de memÃ³ria, prompt ou saÃ­da do usuÃ¡rio.
+  CASCADE`, colunas `NOT NULL` onde o domínio exige.
+- Log não recebe conteúdo de memória, prompt ou saída do usuário.
 
-## ExecuÃ§Ã£o
+## Execução
 
-- O processo da API **nÃ£o executa comandos do usuÃ¡rio** e nÃ£o deve ganhar essa capacidade.
-- `TerminalExecutionGateway` Ã© uma porta sem implementaÃ§Ã£o. Quando existir, executa em container
-  isolado, com sistema de arquivos prÃ³prio, sem rede para os serviÃ§os da plataforma e sem acesso a
+- O processo da API **não executa comandos do usuário** e não deve ganhar essa capacidade.
+- `TerminalExecutionGateway` é uma porta sem implementação. Quando existir, executa em container
+  isolado, com sistema de arquivos próprio, sem rede para os serviços da plataforma e sem acesso a
   nenhuma credencial.
-- A porta foi declarada agora justamente para manter esse requisito visÃ­vel, em vez de deixar um
-  caminho de execuÃ§Ã£o crescer dentro do processo principal por acidente.
+- A porta foi declarada agora justamente para manter esse requisito visível, em vez de deixar um
+  caminho de execução crescer dentro do processo principal por acidente.
 
 ## Modelos externos
 
-- SaÃ­da de LLM Ã© dado nÃ£o confiÃ¡vel. Passa pelo Output Analyzer; nunca Ã© executada nem gravada
-  direto na memÃ³ria.
-- MemÃ³ria proposta por modelo exige validaÃ§Ã£o antes de virar contexto oficial.
-- IntegraÃ§Ãµes recebem credencial de menor privilÃ©gio possÃ­vel.
+- Saída de LLM é dado não confiável. Passa pelo Output Analyzer; nunca é executada nem gravada
+  direto na memória.
+- Memória proposta por modelo exige validação antes de virar contexto oficial.
+- Integrações recebem credencial de menor privilégio possível.
 
-## Ainda nÃ£o existe
+## Ainda não existe
 
-Sem autenticaÃ§Ã£o, autorizaÃ§Ã£o, multi-tenancy ou rate limiting â€” a API Ã© de uso local nesta fase.
-**Isto precisa existir antes de qualquer exposiÃ§Ã£o em rede**, e Ã© o primeiro item de seguranÃ§a da
-prÃ³xima fase.
+- **Rate limiting** em login e registro. Nada no código limita tentativas hoje; um atacante pode
+  testar senhas na velocidade da rede. É o primeiro item da fase de endurecimento, e nenhuma parte
+  desta documentação deve ser lida como se já existisse proteção contra força bruta.
+- **Multi-tenancy** — organizações, times e associação de projeto. Existe apenas dono único.
+- **MFA** e **recuperação de senha**: quem perde a senha perde a conta.
+- **Revogação distribuída de sessão**: a sessão vive em memória do processo; reiniciar a API
+  desconecta todo mundo, e não há como encerrar a sessão de um dispositivo específico.
 
 ## Identity and access
 

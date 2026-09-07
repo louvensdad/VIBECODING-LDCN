@@ -9,22 +9,22 @@ import { Pill, type Tone } from "./card";
 
 /** Status markers shared by the roadmap tree and the task lists. */
 const PHASE_MARK: Record<PhaseStatus, string> = {
-  COMPLETED: "âœ“",
-  IN_PROGRESS: "â—",
-  BLOCKED: "â–²",
-  READY: "â—‹",
-  PLANNED: "â—‹",
-  SKIPPED: "â€“",
+  COMPLETED: "✓",
+  IN_PROGRESS: "●",
+  BLOCKED: "▲",
+  READY: "○",
+  PLANNED: "○",
+  SKIPPED: "–",
 };
 
 const TASK_MARK: Record<TaskStatus, string> = {
-  COMPLETED: "âœ“",
-  IN_PROGRESS: "â—",
-  NEEDS_VALIDATION: "â—",
-  BLOCKED: "â–²",
-  READY: "â—‹",
-  PLANNED: "â—‹",
-  SKIPPED: "â€“",
+  COMPLETED: "✓",
+  IN_PROGRESS: "●",
+  NEEDS_VALIDATION: "◐",
+  BLOCKED: "▲",
+  READY: "○",
+  PLANNED: "○",
+  SKIPPED: "–",
 };
 
 export function phaseTone(status: PhaseStatus): Tone {
@@ -95,7 +95,7 @@ export function RoadmapTree({
   if (phases.length === 0) {
     return (
       <p className="text-sm text-ink-muted">
-        Nenhuma fase registrada ainda. O roadmap Ã© criado manualmente â€” nenhuma IA o gera.
+        Nenhuma fase registrada ainda. O roadmap é criado manualmente — nenhuma IA o gera.
       </p>
     );
   }
@@ -164,7 +164,7 @@ const PRIORITY_TONE: Record<NextStepResponse["priority"], Tone> = {
 /**
  * The next step, with its reasoning.
  *
- * The "por quÃª" is not decoration: it is the difference between guidance the user can check and a
+ * The "por quê" is not decoration: it is the difference between guidance the user can check and a
  * suggestion they have to take on faith.
  */
 export function NextStepCard({
@@ -177,21 +177,21 @@ export function NextStepCard({
   return (
     <article className="card border-accent/50 bg-accent/[0.07] p-6">
       <div className="flex items-start justify-between gap-3">
-        <p className="label">prÃ³ximo passo</p>
+        <p className="label">próximo passo</p>
         <Pill tone={PRIORITY_TONE[nextStep.priority]}>{nextStep.type}</Pill>
       </div>
 
       <h2 className="mt-3 text-xl font-bold text-white">{nextStep.title}</h2>
 
-      <p className="mt-4 label">por quÃª?</p>
+      <p className="mt-4 label">por quê?</p>
       <p className="mt-1 text-sm leading-6 text-ink">{nextStep.reason}</p>
 
       {nextStep.blockingIssues.length > 0 ? (
         <>
-          <p className="mt-4 label">o que estÃ¡ no caminho</p>
+          <p className="mt-4 label">o que está no caminho</p>
           <ul className="mt-1 space-y-1 text-sm text-signal-warn">
             {nextStep.blockingIssues.map((issue) => (
-              <li key={issue}>Â· {issue}</li>
+              <li key={issue}>· {issue}</li>
             ))}
           </ul>
         </>
@@ -199,7 +199,7 @@ export function NextStepCard({
 
       {nextStep.requiredActions.length > 0 ? (
         <>
-          <p className="mt-4 label">aÃ§Ãµes</p>
+          <p className="mt-4 label">ações</p>
           <ol className="mt-1 space-y-1 text-sm text-ink-muted">
             {nextStep.requiredActions.map((step, index) => (
               <li key={step}>

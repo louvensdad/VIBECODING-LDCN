@@ -11,7 +11,7 @@ const AUTH_ROUTES = ["/login", "/register"];
 /**
  * The workspace frame: a fixed sidebar of project modules and a topbar with the account menu.
  *
- * The login and register pages render bare Ã¢â‚¬â€ a sidebar full of project links would be misleading
+ * The login and register pages render bare — a sidebar full of project links would be misleading
  * to someone who is not signed in.
  */
 export function AppShell({ children }: { children: ReactNode }) {
@@ -138,7 +138,7 @@ function AccountMenu() {
   const [open, setOpen] = useState(false);
 
   if (session.status === "loading") {
-    return <span className="font-mono text-[11px] text-ink-faint">Ã¢â‚¬Â¦</span>;
+    return <span className="font-mono text-[11px] text-ink-faint">…</span>;
   }
 
   if (session.status === "unauthenticated") {
