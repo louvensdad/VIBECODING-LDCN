@@ -8,7 +8,7 @@ import type { NextConfig } from "next";
  * without any cross-origin policy at all — there is no CORS configuration anywhere in this project,
  * and a wildcard one with credentials would be exactly the hole this avoids.
  */
-const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:8080";
+const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:9000";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
