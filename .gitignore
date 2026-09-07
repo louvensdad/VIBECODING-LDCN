@@ -1,0 +1,21 @@
+# Java
+apps/api/target/
+.mvn/
+
+# Node
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+*.tsbuildinfo
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store

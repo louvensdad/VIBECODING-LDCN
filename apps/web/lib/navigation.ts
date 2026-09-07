@@ -1,0 +1,37 @@
+/** The workspace routes, in the order they appear in the sidebar. */
+export interface NavItem {
+  label: string;
+  /** Path segment under /projects/[id], or null for a top-level route. */
+  segment: string | null;
+  href?: string;
+}
+
+export const projectNav: NavItem[] = [
+  { label: "Overview", segment: null },
+  { label: "Project Brain", segment: "brain" },
+  { label: "Roadmap", segment: "roadmap" },
+  { label: "Guide", segment: "guide" },
+  { label: "Prompts", segment: "prompts" },
+  { label: "Outputs", segment: "outputs" },
+  { label: "Models", segment: "models" },
+  { label: "Usage", segment: "usage" },
+  { label: "Security", segment: "security" },
+  { label: "Terminal", segment: "terminal" },
+];
+
+export function projectHref(projectId: string, segment: string | null): string {
+  return segment ? `/projects/${projectId}/${segment}` : `/projects/${projectId}`;
+}
+
+/** Descriptions used by the module placeholder pages, so each one says what it will hold. */
+export const moduleDescriptions: Record<string, string> = {
+  brain: "The official memory of this project: vision, decisions, rules and current state.",
+  roadmap: "Phases and steps, with progress measured by completed work rather than elapsed time.",
+  guide: "Where the project stands, what is missing, and what to do next — with the reasoning.",
+  prompts: "Prompts built from official context, ready to paste into any model.",
+  outputs: "Results you bring back, analyzed for evidence before anything advances.",
+  models: "Connected providers and models. Every provider is replaceable.",
+  usage: "Tokens, cost and runway — with facts and estimates kept apart.",
+  security: "Guardian findings and the risks worth acting on.",
+  terminal: "Sandboxed commands. Nothing executes on the platform itself.",
+};

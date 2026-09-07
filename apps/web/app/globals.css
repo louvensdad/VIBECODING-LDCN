@@ -1,0 +1,44 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-ground font-sans text-ink antialiased;
+    margin: 0;
+  }
+}
+
+@layer components {
+  /* The workspace ground: one soft indigo bloom, no gradient stacking. */
+  .shell {
+    @apply min-h-screen bg-ground;
+    background-image:
+      radial-gradient(ellipse 60% 45% at 72% -12%, rgba(99, 102, 241, 0.16), transparent),
+      linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 100% 100%, 28px 28px, 28px 28px;
+  }
+
+  .card {
+    @apply rounded-card border border-edge bg-surface/80;
+  }
+
+  .card-interactive {
+    @apply card transition-colors hover:border-accent/60 hover:bg-surface-raised/80;
+  }
+
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.18em] text-accent-soft;
+  }
+
+  .label {
+    @apply font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint;
+  }
+}
