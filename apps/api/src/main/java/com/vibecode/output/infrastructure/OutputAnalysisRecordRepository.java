@@ -1,0 +1,1 @@
+package com.vibecode.output.infrastructure; import com.vibecode.output.domain.OutputAnalysisRecord; import org.springframework.data.jpa.repository.JpaRepository; import java.util.*; public interface OutputAnalysisRecordRepository extends JpaRepository<OutputAnalysisRecord,UUID>{Optional<OutputAnalysisRecord> findByEvidenceId(UUID id);}

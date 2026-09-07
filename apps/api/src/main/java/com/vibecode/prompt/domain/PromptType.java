@@ -9,5 +9,6 @@ public enum PromptType {
   /** Carries context to a different model so the project survives the switch. */
   MODEL_HANDOFF,
   /** Asks the model to produce proof, used when an output only claimed success. */
-  ASK_FOR_EVIDENCE
+  ASK_FOR_EVIDENCE,
+  RESOLVE_BLOCKER
 }

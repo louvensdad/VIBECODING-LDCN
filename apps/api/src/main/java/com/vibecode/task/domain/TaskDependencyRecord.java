@@ -1,0 +1,3 @@
+package com.vibecode.task.domain;
+import jakarta.persistence.*; import java.io.Serializable; import java.util.UUID;
+@Entity @Table(name="task_dependencies") @IdClass(TaskDependencyRecord.Key.class) public class TaskDependencyRecord { @Id @Column(name="task_id") private UUID taskId; @Id @Column(name="dependency_task_id") private UUID dependencyTaskId; protected TaskDependencyRecord(){} public TaskDependencyRecord(UUID taskId,UUID dep){this.taskId=taskId;dependencyTaskId=dep;} public UUID dependencyTaskId(){return dependencyTaskId;} public static class Key implements Serializable {public UUID taskId;public UUID dependencyTaskId;} }

@@ -1,0 +1,1 @@
+package com.vibecode.task.infrastructure; import com.vibecode.task.domain.TaskDependencyRecord; import org.springframework.data.jpa.repository.JpaRepository; import java.util.*; public interface TaskDependencyRecordRepository extends JpaRepository<TaskDependencyRecord,TaskDependencyRecord.Key>{List<TaskDependencyRecord> findByTaskId(UUID id);}

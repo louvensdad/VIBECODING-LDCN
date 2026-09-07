@@ -1,0 +1,1 @@
+package com.vibecode.task.infrastructure; import com.vibecode.task.domain.TaskAcceptanceCriterionRecord; import org.springframework.data.jpa.repository.JpaRepository; import java.util.*; public interface TaskAcceptanceCriterionRecordRepository extends JpaRepository<TaskAcceptanceCriterionRecord,UUID>{List<TaskAcceptanceCriterionRecord> findByTaskId(UUID id);}
