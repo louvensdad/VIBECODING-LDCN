@@ -49,18 +49,32 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
  * not answer the one thing that decides how bad the defect is, because it never called a
  * controller: <b>does that secret come back to a client in an HTTP response body?</b>
  *
- * <p>It does. All three routes, in two fields each. That is measured here rather than argued, and
- * the same request carries a second secret with a shape the redactor <em>does</em> recognise
- * through the identical path, so the divergence is visible in one response body: one value is
- * {@code [REDACTED]} on the wire and the other is not. Everything else about the two is the same —
- * same records, same prefixed key, same request, same route.
+ * <p><b>It did.</b> All three routes, in two fields each. It no longer does, and this class is the
+ * proof of both halves: the assertions below are the same measurements, at the same points, over
+ * the same fixture, with the answers turned around by SEC-RED-02. Nothing here was replaced by a
+ * newer or gentler test — the attack that found the defect is the thing that now proves it closed.
  *
- * <p><b>This is a characterisation test and it is meant to go red.</b> When {@code
- * SensitiveDataRedactor}'s {@code \b} anchor is fixed, the assertions that pin the exposure will
- * fail, and whoever fixes it is told by the failure to come here and rewrite the class rather than
- * to discover months later that a measured leak quietly stopped being measured. The assertions are
- * written as {@code contains} on purpose: an {@code isNotEmpty} on some list would survive the fix
- * and keep passing while measuring nothing.
+ * <p>What changed underneath: {@code SensitiveDataRedactor}'s key pattern anchored the secret word
+ * on {@code \b}, and {@code _} is a word character, so {@code VIBECODE_DB_PASSWORD=} had no
+ * boundary before {@code PASSWORD} and the whole assignment was invisible to it. A value with a
+ * recognisable shape was rescued by a separate rule; a shape-less one was rescued by nothing. The
+ * key may now carry any prefix, and the grammar of what counts as an assignment is written down in
+ * {@code SecretAssignmentGrammarTest}.
+ *
+ * <p><b>What keeps these assertions honest now that they are negative.</b> A {@code doesNotContain}
+ * passes for free if the fixture never planted the secret, if the route stopped compiling anything,
+ * or if the body came back empty — which is exactly how this project has manufactured a green
+ * before. So every negative here is paired with a positive over the same bytes: the pack has items,
+ * the response's item count equals the stored row count, the id in the body names a row whose
+ * project and fingerprint match the body, {@code brain_entries} still holds the raw secret the
+ * fixture wrote, and one item's content carries both redaction markers side by side. The secret is
+ * absent from the response because it was removed, not because there was nothing to remove.
+ *
+ * <p>The same request still carries a second secret with a shape the redactor already recognised,
+ * through the identical path. Its role has changed: it was the control that proved redaction ran at
+ * all while the shape-less value survived, and it is now the control that proves the shape-named
+ * marker still wins over the generic one — {@code sk-****REDACTED****}, not {@code [REDACTED]} —
+ * so a reader can still tell what kind of credential was taken out.
  *
  * <h2>What is asserted alongside the leak, and why</h2>
  *
@@ -98,7 +112,7 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
    */
   private static final String SHAPELESS = "Pa55phrase_zqxw_610455";
 
-  /** The same secret under a prefixed key — the case the {@code \b} anchor lets through. */
+  /** The same secret under a prefixed key — the case the {@code \b} anchor used to let through. */
   private static final String PREFIXED_SHAPELESS = "VIBECODE_DB_PASSWORD=" + SHAPELESS;
 
   /**
@@ -207,8 +221,8 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
   // ------------------------------------------------------------------ the headline measurement
 
   @Test
-  @DisplayName("FINDING: the shape-less secret comes back raw on all three routes; the shaped one does not")
-  void theShapelessSecretIsReturnedByEveryRoute() throws Exception {
+  @DisplayName("FIXED: neither secret comes back on any of the three routes")
+  void neitherSecretIsReturnedByAnyRoute() throws Exception {
     // Compile. Status, schema and the row it left behind, asserted together.
     String created =
         mvc.perform(compile(owner, projectId, body("CTX-09B exposure " + PREFIXED_SHAPELESS)))
@@ -247,45 +261,57 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
         .as("the response's item array and the stored rows are the same pack")
         .isEqualTo(pack.get("items").size());
 
-    // The measurement. This is the answer the sub-HTTP test could not give.
+    // The measurement. This is the answer the sub-HTTP test could not give, and it is the
+    // assertion that was `contains(SHAPELESS)` while the defect was open.
     assertThat(created)
         .as(
-            "FINDING CTX-09B-1: the shape-less secret reaches the client verbatim in the 201 body."
-                + " This assertion is expected to FAIL when SensitiveDataRedactor's \\b anchor is"
-                + " fixed; when it does, rewrite this class rather than deleting it.")
-        .contains(SHAPELESS);
+            "CTX-09B-1 CLOSED: the shape-less secret must not reach the client in the 201 body."
+                + " This is the assertion that characterised the leak; it is flipped, not replaced.")
+        .doesNotContain(SHAPELESS);
     assertThat(created)
-        .as("the shaped secret travelled the identical path and was removed by its shape alone")
+        .as("the shaped secret travelled the identical path and is still removed")
         .doesNotContain(SHAPED);
-    // The control that makes the leak legible: redaction *did* run over this body. The shaped
-    // secret came back as sk-****REDACTED**** from the very same item, so the two values differ in
-    // outcome and in nothing else. One item's content carries both, side by side:
+
+    // The control that makes the two absences mean something. Redaction ran over this body and both
+    // values were taken out of the SAME field, each replaced by the marker for its own kind:
     //
-    //   "Deployed with VIBECODE_DB_PASSWORD=Pa55phrase_zqxw_610455
+    //   "Deployed with VIBECODE_DB_PASSWORD=[REDACTED]
     //    and OPENAI_API_KEY=sk-****REDACTED****"
     //
-    // That single line is the finding. It is asserted rather than quoted, on the item that holds
-    // both, because a whole-body search would let the two halves come from different items and the
-    // "redaction ran" half would then prove nothing about the value that survived.
+    // Asserted on the one item that holds both rather than over the whole body, because a
+    // whole-body search would let the two halves come from different items and neither would then
+    // say anything about the other. While the defect was open this same line read
+    // `content.contains(SHAPELESS) && content.contains("REDACTED")` — the surviving secret next to
+    // a marker. The shape of the check is unchanged; what it looks for is.
     String bothInOneField =
         contentsOf(pack).stream()
-            .filter(content -> content.contains(SHAPELESS) && content.contains("REDACTED"))
+            .filter(content -> content.contains("[REDACTED]") && content.contains("sk-****REDACTED****"))
             .findFirst()
             .orElse(null);
     assertThat(bothInOneField)
         .as(
-            "one item's content must carry the surviving secret and a redaction marker together;"
-                + " without that, 'the shaped one was removed' and 'the shape-less one was not' are"
-                + " two claims about two different items")
-        .isNotNull();
+            "one item's content must carry both markers together: that is the field which held both"
+                + " secrets, so it is the field that proves the prefixed key is now recognised and"
+                + " that the shape rule still names the kind of credential it removed")
+        .isNotNull()
+        .doesNotContain(SHAPELESS)
+        .doesNotContain(SHAPED);
 
-    // Which fields carry it. "Somewhere in the body" would understate a leak that is in the task
-    // reference the caller can see in a UI list, in an item label, and in item content.
+    // Which fields are clean. Named individually rather than as "somewhere in the body", because
+    // these are the three the leak was in: the task reference a caller sees in a UI list, the item
+    // label, and item content. An empty list here is not free — fieldsCarrying is exercised
+    // non-vacuously on the next line, where the marker IS found in all three.
     assertThat(pack.get("taskReference").asText())
-        .as("the caller's own reference is echoed unredacted")
-        .contains(SHAPELESS);
+        .as("the caller's own reference comes back redacted")
+        .doesNotContain(SHAPELESS)
+        .contains("VIBECODE_DB_PASSWORD=[REDACTED]");
     assertThat(fieldsCarrying(pack, SHAPELESS))
-        .as("the leak is not confined to the field the caller supplied")
+        .as("no field of the response carries the secret")
+        .isEmpty();
+    assertThat(fieldsCarrying(pack, "[REDACTED]"))
+        .as(
+            "and the same search over the marker finds all three fields the leak used to be in, so"
+                + " the empty result above is redaction and not a search that looks nowhere")
         .contains("taskReference", "items[].label", "items[].content");
 
     // Route two: read it back by id. Same three assertions, same measurement.
@@ -300,8 +326,11 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
     assertThat(json.readTree(fetched).get("items").size())
         .as("the read route rebuilt the same pack from its rows")
         .isEqualTo(pack.get("items").size());
-    assertThat(fetched).as("FINDING CTX-09B-1 on GET /{packId}").contains(SHAPELESS);
+    assertThat(fetched).as("CTX-09B-1 CLOSED on GET /{packId}").doesNotContain(SHAPELESS);
     assertThat(fetched).doesNotContain(SHAPED);
+    assertThat(fetched)
+        .as("the read route returns the redacted text, not an empty pack that trivially has neither")
+        .contains("VIBECODE_DB_PASSWORD=[REDACTED]");
 
     // Route three: the list. Membership, not order — the clock is frozen suite-wide and every pack
     // shares an assembledAt, so asserting a position here would be asserting the tie-break rather
@@ -317,8 +346,11 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
     List<String> ids = new ArrayList<>();
     json.readTree(listed).forEach(node -> ids.add(node.get("packId").asText()));
     assertThat(ids).as("the list route read the pack the compile route wrote").contains(packId.toString());
-    assertThat(listed).as("FINDING CTX-09B-1 on GET the list").contains(SHAPELESS);
+    assertThat(listed).as("CTX-09B-1 CLOSED on GET the list").doesNotContain(SHAPELESS);
     assertThat(listed).doesNotContain(SHAPED);
+    assertThat(listed)
+        .as("the list route carries the redacted text too, so its two absences are not vacuous")
+        .contains("VIBECODE_DB_PASSWORD=[REDACTED]");
   }
 
   /**
@@ -328,8 +360,8 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
    * supply — and it is still there on a route that carries no request body at all.
    */
   @Test
-  @DisplayName("FINDING: the leak is content the caller never sent, not an echo of their own request")
-  void theLeakIsNotAnEchoOfTheRequest() throws Exception {
+  @DisplayName("FIXED: content the caller never sent is redacted too, and on a route with no body")
+  void contentTheCallerNeverSentIsRedactedToo() throws Exception {
     String created =
         mvc.perform(compile(owner, projectId, body("CTX-09B no secret in this request")))
             .andExpect(status().isCreated())
@@ -343,8 +375,14 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
         .doesNotContain(SHAPELESS);
     assertThat(fieldsCarrying(pack, SHAPELESS))
         .as(
-            "FINDING CTX-09B-1, severity: the secret arrives from the project's own records, so no"
-                + " care taken by the client prevents it")
+            "CTX-09B-1 CLOSED at severity: the secret arrives from the project's own records rather"
+                + " than from the request, and it is removed there too")
+        .isEmpty();
+    assertThat(fieldsCarrying(pack, "[REDACTED]"))
+        .as(
+            "the label and content fields the secret used to arrive in are still populated from"
+                + " those records — they now carry the marker, so the empty result above is not a"
+                + " pack that simply lost the items")
         .contains("items[].label", "items[].content");
 
     // And on a GET, where there is no request body to blame it on.
@@ -355,7 +393,38 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
             .andReturn()
             .getResponse()
             .getContentAsString();
-    assertThat(fetched).contains(SHAPELESS);
+    assertThat(fetched).doesNotContain(SHAPELESS);
+    assertThat(fetched).contains("VIBECODE_DB_PASSWORD=[REDACTED]");
+  }
+
+  /**
+   * The seventh surface, and the one no HTTP route can show: the canonical payload the digest is
+   * taken over.
+   *
+   * <p>A response body can be clean while the bytes that were hashed are not. The payload is not
+   * serialised to a client, so it is reached here through the assembler over the same project this
+   * class's HTTP tests compile — same records, same planted secret — rather than inferred from the
+   * response. That distinction was load-bearing while the defect was open: the digest was computed
+   * over text containing the secret, which meant a pack's fingerprint could not be re-derived by
+   * anyone who was not entitled to the credential.
+   */
+  @Test
+  @DisplayName("FIXED: the canonical payload the digest is taken over carries neither secret")
+  void theCanonicalPayloadAndDigestAreClean() {
+    var compiled = assembler.assemble(projectId, "CTX-09B payload " + PREFIXED_SHAPELESS, GENEROUS);
+
+    assertThat(compiled.admittedItems()).as("a pack with no items hashes nothing").isNotEmpty();
+    assertThat(compiled.canonicalPayload().value())
+        .as("the bytes the pack digest is computed over")
+        .doesNotContain(SHAPELESS)
+        .doesNotContain(SHAPED)
+        // Non-vacuous: the payload is the text of this pack, and the text carries the marker that
+        // replaced the value in both the task reference and the items.
+        .contains("VIBECODE_DB_PASSWORD=[REDACTED]")
+        .contains("sk-****REDACTED****");
+    assertThat(compiled.packDigest())
+        .as("and it is a real digest of that payload, not an empty string that contains nothing")
+        .hasSize(64);
   }
 
   // ------------------------------------------------------------------ rejection paths
@@ -543,15 +612,17 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
    * Where an HTTP compile puts the secret in the database, swept over the whole schema rather than
    * over the two tables it is expected to reach.
    *
-   * <p>This is a characterisation and the {@code contains} below is deliberate: the two context
-   * tables <em>do</em> hold the shape-less secret today, because nothing redacted it. What the test
-   * pins is that the exposure is exactly those two tables and no third one — a working table, a
-   * queue, an outbox added later that started carrying pack content would show up here as a new
-   * entry with nobody having to remember this file exists.
+   * <p>This was a characterisation: the two context tables <em>did</em> hold the shape-less secret,
+   * because nothing redacted it, and the assertion named them. The sweep is unchanged and the
+   * expectation is now empty — an HTTP compile writes the secret to no table at all outside the
+   * records the user themselves wrote it into. Because the sweep covers every table rather than the
+   * two that were known to leak, a working table, a queue or an outbox added later that started
+   * carrying pack content shows up here as a new entry with nobody having to remember this file
+   * exists.
    */
   @Test
-  @DisplayName("FINDING: an HTTP compile writes the secret to the two context tables and no others")
-  void theHttpCompileWritesTheSecretToExactlyTwoTables() throws Exception {
+  @DisplayName("FIXED: an HTTP compile writes the secret to no table outside the user's own records")
+  void theHttpCompileWritesTheSecretToNoTable() throws Exception {
     mvc.perform(compile(owner, projectId, body("CTX-09B schema " + PREFIXED_SHAPELESS)))
         .andExpect(status().isCreated());
 
@@ -569,12 +640,31 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
             beyondTheRecords.put(table, count);
           }
         });
-    assertThat(beyondTheRecords.keySet())
+    assertThat(beyondTheRecords)
         .as(
-            "FINDING CTX-09B-1 in the database, reached over HTTP: the two context tables carry the"
-                + " secret because redaction did not recognise it. Expected to shrink to empty when"
-                + " the redactor is fixed.")
-        .containsExactlyInAnyOrder("context_packs", "context_pack_items");
+            "CTX-09B-1 CLOSED in the database, reached over HTTP: the two context tables that"
+                + " carried the secret carry it no longer, and no other table picked it up. This"
+                + " assertion read containsExactlyInAnyOrder(\"context_packs\","
+                + " \"context_pack_items\") while the defect was open.")
+        .isEmpty();
+
+    // The pack was written and it holds the redacted form, so the empty map above is redaction
+    // rather than a compile that never happened. Counted over the same tables the sweep just
+    // cleared, by the same jdbc.
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM context_pack_items WHERE content LIKE ?",
+                Integer.class,
+                "%VIBECODE_DB_PASSWORD=[REDACTED]%"))
+        .as("context_pack_items holds the redacted assignment")
+        .isPositive();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM context_packs WHERE task_reference LIKE ?",
+                Integer.class,
+                "%VIBECODE_DB_PASSWORD=[REDACTED]%"))
+        .as("and context_packs holds the redacted task reference")
+        .isPositive();
 
     Map<String, Integer> shapedBeyondTheRecords = new TreeMap<>();
     shaped.forEach(

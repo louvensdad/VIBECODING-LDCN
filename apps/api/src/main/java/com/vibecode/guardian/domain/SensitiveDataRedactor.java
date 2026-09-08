@@ -27,9 +27,59 @@ public final class SensitiveDataRedactor {
   private static final Pattern GITHUB_TOKEN_PATTERN =
       Pattern.compile("(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}");
 
+  /**
+   * The words that make a key a secret's key, each allowing the three spellings the same name is
+   * written in across a codebase: {@code API_KEY}, {@code api-key} and {@code apiKey}. The
+   * separator inside a compound word is optional rather than literal, which is what makes the
+   * camelCase spelling reachable at all — {@code apiKey} contains no underscore for {@code API_KEY}
+   * to match.
+   *
+   * <p>Nothing was added to this vocabulary. It is the same eight words the pattern has always
+   * carried; widening it is a policy decision with its own over-redaction cost and is not part of
+   * SEC-RED-02.
+   */
+  private static final String SENSITIVE_KEY_WORDS =
+      "API[_-]?KEY|CLIENT[_-]?SECRET|ACCESS[_-]?TOKEN|REFRESH[_-]?TOKEN|PRIVATE[_-]?KEY"
+          + "|SECRET|TOKEN|PASSWORD";
+
+  /**
+   * A secret written as {@code key = value}, in the spellings a key is actually written in.
+   *
+   * <p><b>Group 1 is the whole key, prefix included</b> — {@code VIBECODE_DB_PASSWORD}, not
+   * {@code PASSWORD}. It has to be, because the replacement is built from it: capturing only the
+   * bare word would rewrite {@code VIBECODE_DB_PASSWORD=…} to {@code PASSWORD=[REDACTED]} and
+   * throw away which of three databases the reader has to go and rotate.
+   *
+   * <p><b>Why the leading {@code [A-Za-z0-9_]*} and not a {@code \b}.</b> The pattern this replaces
+   * anchored the key word on {@code \b}, and {@code _} is a word character, so there is no boundary
+   * before {@code PASSWORD} in {@code VIBECODE_DB_PASSWORD} and the whole assignment was invisible.
+   * A value with a recognisable shape — {@code sk-…}, {@code ghp_…} — was rescued by the rules
+   * above; a shape-less value such as an ordinary password was rescued by nothing and reached the
+   * database, the digest and the HTTP response body. That is FINDING CTX-09B-1, and the leading run
+   * of key characters is its fix: any prefix, any number of prefixes, any case.
+   *
+   * <p>The run deliberately does not require a trailing underscore. {@code dbpassword} and
+   * {@code myapikey} are keys people write, and there is no reading of them that is not an
+   * assignment once a separator follows. What keeps this from eating prose is the separator, not
+   * the spelling of the key: {@code password policy} has no {@code =} or {@code :} after the word
+   * and is returned untouched, and so is {@code PASSWORD_FILE=/etc/pw} — the secret word must be
+   * the <em>end</em> of the key for the separator to follow it.
+   *
+   * <p><b>Group 2 is everything between the key and the value, kept verbatim</b>: an optional quote
+   * closing a JSON key, the separator, the whitespace on either side, and an optional quote opening
+   * the value. Keeping it rather than rebuilding it does two things. It makes {@code "password":
+   * "…"} — the spelling this API's own responses are written in — reachable, where before the
+   * closing quote sat between the key and the colon and stopped the match dead. And it means
+   * redaction substitutes the value and edits nothing else, so {@code PASSWORD  =  x} keeps its
+   * spacing instead of being silently reformatted to {@code PASSWORD=x}.
+   *
+   * <p>Group 3 is the value, ending at whitespace, comma, semicolon or quote. Unchanged.
+   */
   private static final Pattern SENSITIVE_KV_PATTERN =
       Pattern.compile(
-          "(?i)\\b(API_KEY|SECRET|TOKEN|PASSWORD|CLIENT_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|PRIVATE_KEY)\\s*(=|:)\\s*([\"']?)([^\\s,;\"'\\r\\n]+)([\"']?)");
+          "(?i)\\b([A-Za-z0-9_]*(?:"
+              + SENSITIVE_KEY_WORDS
+              + "))([\"']?\\s*[=:]\\s*[\"']?)([^\\s,;\"'\\r\\n]+)");
 
   private SensitiveDataRedactor() {}
 
@@ -92,21 +142,29 @@ public final class SensitiveDataRedactor {
                   return "ghp_****REDACTED****";
                 });
 
-    // 5. Redact Key-Value assignments
+    // 5. Redact Key-Value assignments.
+    //
+    // Last on purpose: the value rules above have already replaced what they recognise with a
+    // marker that names the kind of credential removed, and those markers are values this pattern
+    // now matches — OPENAI_API_KEY=sk-****REDACTED**** is a key/value assignment like any other.
+    // isSafePlaceholder knows the redactor's own markers, so they survive and the reader keeps the
+    // more specific of the two. That also makes redact idempotent, which matters because text is
+    // stored redacted and read back.
     Matcher kvMatcher = SENSITIVE_KV_PATTERN.matcher(result);
     StringBuilder sb = new StringBuilder();
     while (kvMatcher.find()) {
       String key = kvMatcher.group(1);
       String separator = kvMatcher.group(2);
-      String openQuote = kvMatcher.group(3);
-      String val = kvMatcher.group(4);
-      String closeQuote = kvMatcher.group(5);
+      String val = kvMatcher.group(3);
 
       if (isSafePlaceholder(val)) {
         kvMatcher.appendReplacement(sb, Matcher.quoteReplacement(kvMatcher.group(0)));
       } else {
+        // Only the value is substituted. The key and everything between it and the value are the
+        // text as it arrived, so nothing outside the secret is rewritten; a closing quote sits
+        // after the match and is never consumed.
         kvMatcher.appendReplacement(
-            sb, Matcher.quoteReplacement(key + separator + openQuote + "[REDACTED]" + closeQuote));
+            sb, Matcher.quoteReplacement(key + separator + "[REDACTED]"));
       }
     }
     kvMatcher.appendTail(sb);

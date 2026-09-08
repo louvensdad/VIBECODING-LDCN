@@ -30,39 +30,46 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.LoggerFactory;
 
 /**
- * <b>A characterisation test, not a guarantee.</b> It measures how far a secret that the Guardian's
- * redactor does not recognise travels through the Context Engine, and it will go red the day the
- * redactor is fixed — deliberately, so whoever fixes it is told to come here and rewrite this class
- * rather than discovering later that a leak stopped being measured.
+ * <b>This was a characterisation test. It is now a guarantee, over the same fixture and at the same
+ * five measurement points.</b> It measures how far a secret with no recognisable shape, written
+ * under a prefixed key, travels through the Context Engine. Every answer it recorded was
+ * {@code true}; every answer it records now is {@code false}, and the change is in the redactor,
+ * not in the measurement.
  *
- * <h2>The defect it is measuring, which is not a context defect</h2>
+ * <h2>The defect it measured, which was not a context defect</h2>
  *
- * <p>{@code SensitiveDataRedactor}'s key/value rule is anchored on {@code \b} before the key name,
- * and {@code _} is a word character, so there is no word boundary between a prefix and the key. A
- * bare {@code SECRET=} matches; {@code DATABASE_PASSWORD=} does not, and neither does {@code
- * OPENAI_API_KEY=}, {@code MY_SECRET=} or {@code GITHUB_TOKEN=}. That rule is in {@code guardian/**}
- * and is not this task's to change.
+ * <p>{@code SensitiveDataRedactor}'s key/value rule was anchored on {@code \b} before the key name,
+ * and {@code _} is a word character, so there was no word boundary between a prefix and the key. A
+ * bare {@code SECRET=} matched; {@code DATABASE_PASSWORD=} did not, and neither did {@code
+ * OPENAI_API_KEY=}, {@code MY_SECRET=} or {@code GITHUB_TOKEN=}.
  *
- * <p>What rescues most real credentials is that the redactor has five other patterns which match on
- * the <em>shape</em> of the value rather than on the key: an {@code sk-} key and a {@code ghp_}
- * token are removed whatever names them. So the exposure is narrower than "the redactor is broken"
- * and nastier than it sounds: <b>a credential with a recognisable shape is protected by its shape,
- * and a credential with no shape under a prefixed key is protected by nothing.</b> A password, a
+ * <p>What rescued most real credentials is that the redactor has other patterns which match on the
+ * <em>shape</em> of the value rather than on the key: an {@code sk-} key and a {@code ghp_} token
+ * are removed whatever names them. So the exposure was narrower than "the redactor is broken" and
+ * nastier than it sounded: <b>a credential with a recognisable shape was protected by its shape,
+ * and a credential with no shape under a prefixed key was protected by nothing.</b> A password, a
  * base64 master key or an internal token is exactly that case.
+ *
+ * <p>SEC-RED-02 closed it in {@code guardian/**} by letting the key carry any prefix. The grammar
+ * of what now counts as an assignment — and, as importantly, what does not, so that documentation
+ * about passwords is not eaten — is written down in {@code SecretAssignmentGrammarTest}.
  *
  * <h2>What this class establishes</h2>
  *
- * <p>Which surfaces the shape-less value actually reaches, measured rather than reasoned, alongside
- * a shaped value through the identical path so the divergence is visible in one place. It also
- * pins the two properties the Context Engine owns and that hold either way: whatever redaction does
- * or does not do, the value does not reach the audit trail and this application's own loggers do
- * not emit it.
+ * <p>That the shape-less value reaches none of the surfaces it used to, measured rather than
+ * reasoned, alongside a shaped value through the identical path. The negative results are held
+ * honest by the contrast test below, which shows the same rows carrying redaction markers and the
+ * source records still holding the raw values: the pack was built, it was built from records that
+ * contain the secrets, and it contains neither. It also pins the two properties the Context Engine
+ * owns and that held even while the redactor did not: the value reaches neither the audit trail nor
+ * this application's own loggers.
  *
  * <p>Every other test in this package plants its probe behind a bare {@code TOKEN=}, which the
  * redactor does match. That is a deliberate choice and it is stated in {@link ContextProbeFixture}:
  * those tests are about the engine's redaction boundary, and giving them a value the redactor was
  * never going to catch would make them assert a Guardian defect instead. This class is where the
- * unrecognised value is planted on purpose.
+ * shape-less value under a prefixed key is planted on purpose — the spelling the redactor missed,
+ * which is why it stays here now that it does not.
  */
 @ExtendWith(LoggerLevelIsolation.class)
 class ContextShapelessSecretBlastRadiusTest extends ContextProbeFixture {
@@ -73,7 +80,7 @@ class ContextShapelessSecretBlastRadiusTest extends ContextProbeFixture {
    */
   private static final String SHAPELESS = "S3cr3tP4ssw0rd_zqxw_774301";
 
-  /** The same secret under a prefixed key — the case the {@code \b} anchor lets through. */
+  /** The same secret under a prefixed key — the case the {@code \b} anchor used to let through. */
   private static final String PREFIXED_SHAPELESS = "DATABASE_PASSWORD=" + SHAPELESS;
 
   /** A value the redactor recognises by shape, whatever key names it. */
@@ -145,28 +152,30 @@ class ContextShapelessSecretBlastRadiusTest extends ContextProbeFixture {
   }
 
   @Test
-  @DisplayName("The redactor itself: a prefixed key escapes, a recognised shape does not")
+  @DisplayName("The redactor itself: a prefixed key is recognised, and so is a shape")
   void theRedactorBehavesAsMeasured() {
     // The control for everything below. If these three stop holding, the redactor has changed and
-    // every measurement in this class is about a system that no longer exists.
+    // every measurement in this class is about a system that no longer exists. While the defect was
+    // open the first of them read isEqualTo(PREFIXED_SHAPELESS) — the input returned untouched.
     assertThat(SensitiveDataRedactor.redact(PREFIXED_SHAPELESS))
-        .as("DATABASE_PASSWORD= is not a word boundary away from PASSWORD, so nothing matches")
-        .isEqualTo(PREFIXED_SHAPELESS);
+        .as("DATABASE_PASSWORD= is an assignment whether or not \\b sees a boundary before PASSWORD")
+        .isEqualTo("DATABASE_PASSWORD=[REDACTED]")
+        .doesNotContain(SHAPELESS);
 
     assertThat(SensitiveDataRedactor.redact("PASSWORD=" + SHAPELESS))
-        .as("the same value under a bare key is removed, which is what makes the prefix the cause")
+        .as("the same value under a bare key was always removed; the prefix no longer changes that")
         .isEqualTo("PASSWORD=[REDACTED]")
         .doesNotContain(SHAPELESS);
 
     assertThat(SensitiveDataRedactor.redact(PREFIXED_SHAPED))
-        .as("the prefixed key escapes here too, and the shape rule catches the value anyway")
+        .as("and the shape rule still names the kind of credential it removed")
         .doesNotContain(SHAPED)
         .contains("sk-****REDACTED****");
   }
 
   @Test
-  @DisplayName("MEASURED EXPOSURE: the shape-less secret reaches content, label, payload and rows")
-  void theShapelessSecretReachesEverySurfaceAPackHas() {
+  @DisplayName("MEASURED: the shape-less secret reaches no content, label, payload or row")
+  void theShapelessSecretReachesNoSurfaceAPackHas() {
     CompiledContextPack compiled = assembler.assemble(projectId, "CTX-09 blast", GENEROUS);
     assertThat(compiled.admittedItems()).isNotEmpty();
 
@@ -192,23 +201,57 @@ class ContextShapelessSecretBlastRadiusTest extends ContextProbeFixture {
                 compiled.packId(), "%" + SHAPELESS + "%")
             > 0);
 
-    // Every one of these is TRUE today. Asserted rather than described, so the day the Guardian's
-    // key pattern is fixed this fails and names itself as the thing to update.
+    // Every one of these was TRUE and every one of them is now FALSE. Asserted as the whole map so
+    // a partial regression names the surface that came back rather than failing on the first.
     assertThat(surfaces)
         .as(
-            "measured exposure of a shape-less secret under a prefixed key. If any of these has"
-                + " become false, SensitiveDataRedactor has been fixed and this characterisation"
-                + " test must be rewritten as a guarantee rather than quietly deleted.")
+            "measured exposure of a shape-less secret under a prefixed key. Every entry read true"
+                + " at 6d784fb; a true here is FINDING CTX-09B-1 reopening on that surface.")
         .containsExactly(
-            java.util.Map.entry("item content", true),
-            java.util.Map.entry("item label", true),
-            java.util.Map.entry("canonical payload", true),
-            java.util.Map.entry("context_pack_items row", true),
-            java.util.Map.entry("context_pack_items label column", true));
+            java.util.Map.entry("item content", false),
+            java.util.Map.entry("item label", false),
+            java.util.Map.entry("canonical payload", false),
+            java.util.Map.entry("context_pack_items row", false),
+            java.util.Map.entry("context_pack_items label column", false));
 
-    // And therefore the digest is a digest over a payload containing it. Not a leak of its own —
-    // SHA-256 does not disclose its input — but it means the pack cannot be re-derived without the
-    // secret, which is worth knowing before anyone treats a digest as shareable.
+    // Five falses are free if the pack is empty or the fixture never planted anything, which is how
+    // this project has manufactured a green before. So: the same five surfaces, searched for the
+    // marker that replaced the value. Each one has to be positive, from the same compiled pack.
+    assertThat(compiled.admittedItems())
+        .as("an item whose content carries the redacted assignment")
+        .anySatisfy(
+            admitted ->
+                assertThat(admitted.item().content()).contains("DATABASE_PASSWORD=[REDACTED]"));
+    assertThat(compiled.admittedItems())
+        .as("and an item whose LABEL carries it, which is the column a label-only gap would fill")
+        .anySatisfy(
+            admitted ->
+                assertThat(admitted.item().label()).contains("DATABASE_PASSWORD=[REDACTED]"));
+    assertThat(compiled.canonicalPayload().value()).contains("DATABASE_PASSWORD=[REDACTED]");
+    assertThat(
+            countIn(
+                "SELECT COUNT(*) FROM context_pack_items WHERE pack_id = ? AND content LIKE ?",
+                compiled.packId(),
+                "%DATABASE_PASSWORD=[REDACTED]%"))
+        .isPositive();
+    assertThat(
+            countIn(
+                "SELECT COUNT(*) FROM context_pack_items WHERE pack_id = ? AND label LIKE ?",
+                compiled.packId(),
+                "%DATABASE_PASSWORD=[REDACTED]%"))
+        .isPositive();
+    // And the source records still hold the raw value, so the pack was compiled from text that
+    // contained it rather than from records that never did.
+    assertThat(
+            countIn(
+                "SELECT COUNT(*) FROM brain_entries WHERE project_id = ? AND content LIKE ?",
+                projectId,
+                "%" + SHAPELESS + "%"))
+        .as("the fixture's own records are untouched: redaction happens on the way into a pack")
+        .isPositive();
+
+    // The digest is now a digest over a payload that does not contain the secret, which is what
+    // makes a pack's fingerprint safe to quote. It was not before.
     assertThat(compiled.packDigest()).hasSize(64);
   }
 
