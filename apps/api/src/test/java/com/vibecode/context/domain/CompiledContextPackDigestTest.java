@@ -166,32 +166,97 @@ class CompiledContextPackDigestTest {
   }
 
   @Test
-  @DisplayName("Field boundaries cannot be forged by an item whose content mimics the encoding")
+  @DisplayName("Two packs whose fields differ only in where the boundary falls do not share a digest")
   void lengthPrefixesMakeTheEncodingUnambiguous() {
+    // A real collision, not two items that merely differ. The label and the content of the two
+    // packs below concatenate to exactly the same characters, separator included; the only
+    // difference is which side of the label/content boundary the middle piece sits on. Under an
+    // encoding that relied on the separator alone, both would flatten to the same string and share
+    // a digest - which is the whole reason every field is written with its length in front.
+    //
+    // An earlier version of this test compared a "forging" item against a plain one whose text was
+    // different outright. That passes under any encoding at all, so it guarded nothing: the
+    // separator-only version of appendField sails through it.
     String unitSeparator = String.valueOf((char) 0x1F);
 
-    // Content built to look like two fields, so a separator-only encoding could flatten a one-item
-    // pack into the same string as a two-item one.
-    ContextItem forger =
-        new ContextItem(
-            "a",
-            ContextKind.OBJECTIVE,
-            "Label for a",
-            "left" + unitSeparator + "4" + unitSeparator + "right",
-            provenance("task-1"));
+    String labelLeft = "a";
+    String contentLeft = "b" + unitSeparator + "cd";
+    String labelRight = "a" + unitSeparator + "b";
+    String contentRight = "cd";
 
-    CompiledContextPack forged =
-        pack(
+    // The premise, asserted rather than assumed. Under an encoding that wrote each field followed
+    // by a separator, these two label/content pairs flatten to the identical string - which is
+    // exactly what makes this a collision rather than two items that merely differ. If a future
+    // edit breaks this, the test below stops guarding anything and starts being trivially true.
+    assertThat(labelLeft + unitSeparator + contentLeft)
+        .as("the two packs must flatten identically without the length prefixes")
+        .isEqualTo(labelRight + unitSeparator + contentRight);
+    assertThat(labelLeft).isNotEqualTo(labelRight);
+
+    CompiledContextPack left = packOfOneItem(labelLeft, contentLeft);
+    CompiledContextPack right = packOfOneItem(labelRight, contentRight);
+
+    assertThat(left.packDigest()).isNotEqualTo(right.packDigest());
+    assertThat(left.packDigest()).hasSize(64).matches("[0-9a-f]{64}");
+  }
+
+  @Test
+  @DisplayName("A different task reference produces a different digest")
+  void taskReferenceReachesTheDigest() {
+    List<AdmittedContextItem> items = List.of(admitted("a", TASK_RULE));
+
+    CompiledContextPack forTask42 =
+        new CompiledContextPack(
+            UUID.randomUUID(), PROJECT, "TASK-42", ASSEMBLED_AT, BUDGET, version("1"), items);
+    CompiledContextPack forTask43 =
+        new CompiledContextPack(
+            UUID.randomUUID(), PROJECT, "TASK-43", ASSEMBLED_AT, BUDGET, version("1"), items);
+
+    // The same items can be assembled for two different tasks, and they are not the same pack:
+    // the task is part of what "the same inputs" means.
+    assertThat(forTask43.packDigest()).isNotEqualTo(forTask42.packDigest());
+  }
+
+  @Test
+  @DisplayName("A different project produces a different digest")
+  void projectIdReachesTheDigest() {
+    // Two projects whose records happen to say the same things. Sharing a digest would let a
+    // comparison across projects read as "these are the same context", which is a claim about
+    // somebody else's data.
+    CompiledContextPack here =
+        new CompiledContextPack(
             UUID.randomUUID(),
+            PROJECT,
+            "TASK-42",
             ASSEMBLED_AT,
-            version("1"),
             BUDGET,
-            List.of(new AdmittedContextItem(forger, TASK_RULE)));
-    CompiledContextPack plain =
-        pack(UUID.randomUUID(), ASSEMBLED_AT, version("1"), BUDGET, List.of(admitted("a", TASK_RULE)));
+            version("1"),
+            List.of(admittedIn(PROJECT, "a", TASK_RULE)));
 
-    assertThat(forged.packDigest()).isNotEqualTo(plain.packDigest());
-    assertThat(forged.packDigest()).hasSize(64).matches("[0-9a-f]{64}");
+    UUID elsewhere = UUID.randomUUID();
+    CompiledContextPack there =
+        new CompiledContextPack(
+            UUID.randomUUID(),
+            elsewhere,
+            "TASK-42",
+            ASSEMBLED_AT,
+            BUDGET,
+            version("1"),
+            List.of(admittedIn(elsewhere, "a", TASK_RULE)));
+
+    assertThat(there.packDigest()).isNotEqualTo(here.packDigest());
+  }
+
+  /** One pack holding one item with the given label and content, everything else fixed. */
+  private static CompiledContextPack packOfOneItem(String label, String content) {
+    ContextItem item =
+        new ContextItem("a", ContextKind.OBJECTIVE, label, content, provenance("task-1"));
+    return pack(
+        UUID.randomUUID(),
+        ASSEMBLED_AT,
+        version("1"),
+        BUDGET,
+        List.of(new AdmittedContextItem(item, TASK_RULE)));
   }
 
   @Test
@@ -224,6 +289,19 @@ class CompiledContextPackDigestTest {
       List<AdmittedContextItem> items) {
     return new CompiledContextPack(
         packId, PROJECT, "TASK-42", assembledAt, budget, policyVersion, items);
+  }
+
+  private static AdmittedContextItem admittedIn(
+      UUID projectId, String id, ContextAdmission admission) {
+    ContextItem item =
+        new ContextItem(
+            id,
+            ContextKind.OBJECTIVE,
+            "Label for " + id,
+            "Synthetic content for " + id,
+            new ContextProvenance(
+                ContextSource.of(ContextSourceType.CURRENT_TASK, "task-1"), projectId, OBSERVED_AT));
+    return new AdmittedContextItem(item, admission);
   }
 
   private static AdmittedContextItem admitted(String id, ContextAdmission admission) {

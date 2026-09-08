@@ -39,6 +39,12 @@ import org.springframework.transaction.annotation.Transactional;
  * mean sizing a pack by text nobody will ever see; redacting after selection would mean the digest
  * and the stored rows disagreed about what the pack contained.
  *
+ * <p><b>The task reference goes through redaction too, and here rather than at the database.</b> It
+ * is not an item and it is not measured, but it is user text: callers compose it from a task title
+ * somebody wrote, and it lands in a column of its own. Redacting it in this method means the
+ * canonical payload and the stored row carry the same string; redacting it at the persistence
+ * boundary would leave a digest taken over text that exists nowhere.
+ *
  * <p><b>Why denied items leave nothing behind.</b> A denied candidate is dropped here and its
  * content goes no further — not into the pack, not into a shadow table, not into a log line. The
  * obvious convenience, keeping the raw text so the Inspector can show what was excluded, would
@@ -55,6 +61,16 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly = true)
 public class ContextPackCompiler {
+
+  // The read-only flag is defence in depth and not the guarantee. Nothing in this class or in
+  // anything it calls writes; that is what makes a compilation side-effect free, and it is
+  // structural rather than annotated. The annotation only takes effect when compile() starts the
+  // transaction, which is what happens when it is called directly. Called through
+  // ContextPackAssembler - whose job is to write - the assembler's read-write transaction is
+  // already open and the default propagation joins it, so the flag is dropped exactly where it
+  // would have mattered. Stated rather than fixed: making it REQUIRES_NEW would put the read of
+  // the candidates in a different transaction from the write of the pack, which is a worse
+  // property than the one it would buy.
 
   private final CandidateContextCollection candidates;
   private final ContextPolicy policy;
@@ -108,7 +124,7 @@ public class ContextPackCompiler {
     return new CompiledContextPack(
         UUID.randomUUID(),
         projectId,
-        taskReference,
+        ContextRedaction.redactTaskReference(taskReference),
         clock.instant(),
         budget,
         policy.version(),

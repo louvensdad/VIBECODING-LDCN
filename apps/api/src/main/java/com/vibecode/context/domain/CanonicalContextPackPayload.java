@@ -25,12 +25,21 @@ import java.util.List;
  * the same reason — it is an input to selection, so two packs that happen to hold the same items
  * under different ceilings did not answer the same question.
  *
- * <p><b>Deliberately excluded:</b> {@code packId} and the row's {@code created_at}, which are
- * storage identity and clock readings; {@code assembledAt}, which moves on every rebuild of
- * unchanged state and would defeat the only thing the digest is for; and {@code
- * provenance.recordedAt} and {@code provenance.projectId} — the first for the same reason, the
- * second because every item's project is already forced equal to the pack's, so it can add no
- * distinguishing information.
+ * <p><b>Deliberately excluded, and for three different reasons.</b> {@code packId} and the row's
+ * {@code created_at} are storage identity and a clock reading. {@code assembledAt} moves on every
+ * rebuild of unchanged state, so including it would defeat the only thing the digest is for.
+ * {@code provenance.projectId} is already forced equal to the pack's own project for every item,
+ * so it can add no distinguishing information.
+ *
+ * <p>{@code provenance.recordedAt} is excluded for none of those reasons, and it is worth being
+ * exact about which. It does <em>not</em> move on every rebuild: every collector derives it from a
+ * stored record's own timestamp, so two compilations of unchanged state carry the same instant and
+ * it moves only when the underlying record does. It is left out because the digest answers "is
+ * this the same context?" and not "was it read at the same moment" — an item whose text, source,
+ * version and admitting rule are all identical is the same context whether it was read today or
+ * last year. {@link ContextPack#contentFingerprint()} excludes it too, and the two agreeing is
+ * deliberate. The cost, stated rather than discovered: two packs differing only in when the source
+ * was observed share a digest.
  *
  * <p><b>The encoding is unambiguous by length prefix, not by separator.</b> Item content is text
  * this domain does not control, so any character chosen as a boundary can also occur inside a
@@ -49,7 +58,16 @@ public final class CanonicalContextPackPayload {
    */
   private static final String FIELD_SEPARATOR = String.valueOf((char) 0x1F);
 
-  /** Written where a field has no value, so "absent" and the literal text "-" cannot collide. */
+  /**
+   * Written where a field has no value.
+   *
+   * <p>It is not an escape and it does not make "absent" distinguishable from a field whose value
+   * is literally {@code "-"}. It happens not to matter, and only for a reason worth writing down:
+   * the source version is the one optional field in the whole payload and it is an {@link Integer},
+   * so it can never arrive as the text {@code "-"}. Give any free-text field an absent case and
+   * this constant stops being safe — such a field needs a marker its own value cannot forge, or a
+   * flag of its own.
+   */
   private static final String ABSENT = "-";
 
   private final String canonical;

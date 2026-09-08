@@ -59,6 +59,20 @@ class ContextPackPlaintextLeakTest {
 
   private static final ContextBudget BUDGET = new ContextBudget(500, 1_000_000L, 2_000_000L);
 
+  /**
+   * The task reference, carrying the fixture on purpose.
+   *
+   * <p>This is not a contrived shape. A caller composes a reference from a task title the user
+   * wrote - V9's own column comment anticipates {@code "TASK-42: " + a task title} - so whatever is
+   * in that title arrives here. It lands in a column of its own, it is not an item, and it is not
+   * measured, so nothing about the item pipeline touches it.
+   *
+   * <p>An earlier version of this test used the literal {@code "TASK-42"}, which carries nothing.
+   * The column-by-column scan below was already looking at {@code task_reference} and would have
+   * caught this on the first run; it passed only because the fixture never put anything there.
+   */
+  private static final String TASK_REFERENCE = "TASK-42: Deploy with TOKEN=" + FIXTURE;
+
   @Autowired ContextPackAssembler assembler;
   @Autowired TestIdentity identity;
   @Autowired ProjectService projects;
@@ -137,7 +151,7 @@ class ContextPackPlaintextLeakTest {
   @Test
   @DisplayName("The raw fixture appears nowhere in the context tables, and the marker is there instead")
   void nothingRawReachesTheContextTables() {
-    CompiledContextPack compiled = assembler.assemble(projectId, "TASK-42", BUDGET);
+    CompiledContextPack compiled = assembler.assemble(projectId, TASK_REFERENCE, BUDGET);
 
     // The pack really did pick up the records that carry the fixture, so the absences below are
     // about redaction rather than about the items never having been selected.
@@ -155,6 +169,24 @@ class ContextPackPlaintextLeakTest {
     // testing the mapping against itself.
     assertThat(occurrencesIn("context_packs")).isZero();
     assertThat(occurrencesIn("context_pack_items")).isZero();
+
+    // The pack's own task reference, specifically. It is checked by name as well as by the scan
+    // above, because it is the one stored string that no item pipeline touches: it is redacted in
+    // the compiler and nowhere else, and a regression there would look like a passing test the
+    // moment somebody simplified the fixture back to a literal.
+    String storedReference =
+        jdbc.queryForObject(
+            "SELECT task_reference FROM context_packs WHERE id = ?",
+            String.class,
+            compiled.packId());
+    assertThat(storedReference).doesNotContain(FIXTURE);
+    assertThat(storedReference).contains("[REDACTED]");
+    assertThat(storedReference).startsWith("TASK-42: Deploy with TOKEN=");
+
+    // And the digest was taken over the redacted reference, not the raw one, so the canonical
+    // payload and the stored row are describing the same pack.
+    assertThat(compiled.taskReference()).isEqualTo(storedReference);
+    assertThat(compiled.canonicalPayload().value()).doesNotContain(FIXTURE);
 
     // And the redaction marker is present in the stored rows, so the value was replaced rather
     // than the whole item having been quietly dropped.
@@ -181,7 +213,7 @@ class ContextPackPlaintextLeakTest {
   @Test
   @DisplayName("Nothing this application logs during a compilation contains the fixture")
   void nothingRawReachesTheLogs() {
-    assembler.assemble(projectId, "TASK-42", BUDGET);
+    assembler.assemble(projectId, TASK_REFERENCE, BUDGET);
 
     List<ILoggingEvent> events = List.copyOf(captured.list);
     assertThat(events).isNotEmpty();
@@ -201,7 +233,7 @@ class ContextPackPlaintextLeakTest {
   @Test
   @DisplayName("Nothing any logger says about a context pack contains the fixture")
   void nothingAboutThePackReachesTheLogsEither() {
-    assembler.assemble(projectId, "TASK-42", BUDGET);
+    assembler.assemble(projectId, TASK_REFERENCE, BUDGET);
 
     List<ILoggingEvent> events = List.copyOf(captured.list);
     assertThat(events).isNotEmpty();
@@ -247,7 +279,7 @@ class ContextPackPlaintextLeakTest {
   @Test
   @DisplayName("The content of a refused item is not stored so it can be shown later")
   void refusedContentIsNotKeptAnywhere() {
-    assembler.assemble(projectId, "TASK-42", BUDGET);
+    assembler.assemble(projectId, TASK_REFERENCE, BUDGET);
 
     // The note was refused by name. Storing its text - even redacted, even in a side table - would
     // be storing what policy declined to show, which is the leak the refusal exists to prevent.

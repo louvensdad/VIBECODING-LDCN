@@ -56,9 +56,39 @@ class RoadmapFreshnessTest {
     UUID projectId = newPlannedProject("Estrutura");
     Instant beforeAdd = roadmaps.require(projectId).getUpdatedAt();
 
+    // Roadmap stamps updatedAt from Instant.now(), and the column keeps microseconds. Creating the
+    // roadmap and adding a phase can land inside the same microsecond, and then the new stamp is
+    // equal to the old one and the assertion below fails - not because nothing was recorded, but
+    // because the clock had not moved far enough to record it. That was a real intermittent
+    // failure, not a theoretical one.
+    //
+    // So the clock is given a chance to advance before the structural change, not after. The
+    // assertion is untouched and stays strictly-after: relaxing it to isAfterOrEqualTo would make
+    // the test pass against a Roadmap that never stamped anything, which is the whole property it
+    // exists to prove.
+    awaitClockStrictlyPast(beforeAdd);
+
     roadmaps.addPhase(projectId, 1, "Foundations", null);
 
     assertThat(roadmaps.require(projectId).getUpdatedAt()).isAfter(beforeAdd);
+  }
+
+  /**
+   * Blocks until {@link Instant#now()} is at least a microsecond past {@code recorded}.
+   *
+   * <p>A microsecond and not a nanosecond, because {@code recorded} came back from a column that
+   * stores microseconds: a nanosecond-later stamp would be written and then rounded back onto the
+   * same microsecond, and the wait would have bought nothing. Rounding is monotonic, so a stamp
+   * taken at least a microsecond later cannot round back to or below {@code recorded}.
+   *
+   * <p>A spin rather than a sleep: the wait is sub-microsecond in practice, and a sleep would cost
+   * a millisecond every run to solve a problem that has already gone away by the time it returns.
+   */
+  private static void awaitClockStrictlyPast(Instant recorded) {
+    Instant target = recorded.plusNanos(1_000);
+    while (Instant.now().isBefore(target)) {
+      Thread.onSpinWait();
+    }
   }
 
   @Test
