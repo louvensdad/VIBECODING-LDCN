@@ -167,6 +167,25 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
   private static final String PREFIXED_DOLLAR = "APP_CLIENT_SECRET=" + DOLLAR_SHAPELESS;
 
   /**
+   * What the three planted probes are, appended to the assertions that would otherwise report only
+   * a field name or a table name.
+   *
+   * <p>The {@code ends-with-SHAPELESS} construction buys undeletable coverage: two of these values
+   * have no assertion naming them, so a bypass affecting only one of them cannot be closed by
+   * deleting the test that catches it. The price is that a failure says "items[].label" or
+   * "{context_pack_items=12}" and nothing about which of the three values got out. This is the
+   * price paid back — the search needle is one string, so the failure has to carry the list itself.
+   */
+  private static final String PROBES_PLANTED =
+      " Three values are planted and all three end with the needle, so this failure names none of"
+          + " them: the bare secret Pa55phrase_zqxw_610455 under VIBECODE_DB_PASSWORD=, the same"
+          + " value bcrypt-prefixed as $2b$12$… under SERVICE_AUTH_TOKEN=, and the same value"
+          + " dollar-prefixed as $… under APP_CLIENT_SECRET=. Grep the failing text for '$2b$' and"
+          + " for '=$' to tell which one escaped: a hit on neither is the plain key pattern, a hit"
+          + " on the first is the placeholder exemption returning, a hit on the second is the"
+          + " interpolation exemption returning.";
+
+  /**
    * The tables that are the project's own records: the user wrote the secret into these and the
    * engine only reads them. Every other table is in the "must be clean" half by default, so a table
    * added later that starts holding pack content fails the sweep without anyone updating a list.
@@ -438,7 +457,8 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
     assertThat(fieldsCarrying(pack, SHAPELESS))
         .as(
             "CTX-09B-1 CLOSED at severity: the secret arrives from the project's own records rather"
-                + " than from the request, and it is removed there too")
+                + " than from the request, and it is removed there too."
+                + PROBES_PLANTED)
         .isEmpty();
     assertThat(fieldsCarrying(pack, "[REDACTED]"))
         .as(
@@ -707,7 +727,8 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
             "CTX-09B-1 CLOSED in the database, reached over HTTP: the two context tables that"
                 + " carried the secret carry it no longer, and no other table picked it up. This"
                 + " assertion read containsExactlyInAnyOrder(\"context_packs\","
-                + " \"context_pack_items\") while the defect was open.")
+                + " \"context_pack_items\") while the defect was open."
+                + PROBES_PLANTED)
         .isEmpty();
 
     // The pack was written and it holds the redacted form, so the empty map above is redaction

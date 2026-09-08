@@ -321,22 +321,38 @@ class SecretAssignmentGrammarTest {
    * <em>start</em> of the key. The widened region is a secret word at the <em>end</em> of a longer
    * identifier, followed by a separator, and nothing tested it.
    *
-   * <p>It was then measured, line by line, over this repository's own text: 446 files, 42,248
-   * non-blank lines, each line put through the redactor as it stood at 6d784fb and through the
-   * redactor as it stands now. Counting only files this task did not itself write — the five it
-   * touched are prose <em>about</em> the redactor and match it by construction, so including them
-   * would inflate the number with its own documentation — <b>26 lines are rewritten that were not
-   * before, and 0 lines that were rewritten before are left alone now.</b> The widening is strictly
-   * one-directional: nothing stopped being redacted. None of the 26 contains a secret.
+   * <p>It was then measured, line by line, over this repository's own text. <b>One corpus and one
+   * denominator throughout</b>, because an earlier version of this paragraph mixed two and the
+   * arithmetic did not survive contact with a reviewer: the corpus is today's working tree — 447
+   * files, 42,432 non-blank lines — minus the five files this task wrote or edited, which are prose
+   * <em>about</em> the redactor and match it by construction, leaving <b>40,077 lines measured</b>.
+   * Only the redactor varies: the same lines are put through the version at each commit.
    *
-   * <p>The 26 come from two separate decisions and it is worth keeping them apart. <b>23</b> are
-   * the widened key pattern, the subject of this class: source code whose identifier ends in a
-   * secret word. <b>3</b> were added afterwards by the precedence ruling in {@link
-   * SecretAssignmentPrecedence}, and all three are the configuration-template idiom —
-   * {@code application.yml}'s {@code password: ${DATABASE_PASSWORD:…}}, {@code compose.yml}'s
-   * {@code POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-…}}, and an {@code OPENAI_API_KEY=${OPENAI_API_KEY}}
-   * in a test fixture. That was the cost predicted before the change was made, it is the whole of
-   * the cost in this repository, and it is pinned in that class rather than left in a comment.
+   * <table>
+   *   <caption>Lines rewritten, against the 6d784fb baseline of 44</caption>
+   *   <tr><th>redactor</th><th>rewrites</th><th>new vs baseline</th><th>lost vs baseline</th></tr>
+   *   <tr><td>6d784fb — baseline</td><td>44</td><td>—</td><td>—</td></tr>
+   *   <tr><td>967d823 — key widened</td><td>68</td><td>24</td><td>0</td></tr>
+   *   <tr><td>f8fcaee — precedence</td><td>72</td><td>28</td><td>0</td></tr>
+   *   <tr><td>this commit — quoted-key branch narrowed</td><td>71</td><td>27</td><td>0</td></tr>
+   * </table>
+   *
+   * <p><b>{@code changedByOldOnly} is 0 at every step</b>: nothing that was redacted stopped being
+   * redacted, so each change is one-directional and the only question is what the additions cost.
+   *
+   * <p>Of the 27 additions, <b>2 are correct</b> and worth naming because a filter in an earlier
+   * measurement hid them: {@code .env.example} lines 5 and 8,
+   * {@code POSTGRES_PASSWORD=vibecode_local_only} and {@code DATABASE_PASSWORD=vibecode_local_only},
+   * are real literal credential assignments that 6d784fb missed and this redactor removes. That is
+   * the fix doing precisely what it was written to do, in the one file in this repository where a
+   * credential is actually assigned to a literal.
+   *
+   * <p>The other 25 are over-redaction, from three separate decisions: <b>24</b> from the widened
+   * key pattern, the subject of this class; <b>+4</b> from the precedence ruling in {@link
+   * SecretAssignmentPrecedence}, all four the configuration-template idiom
+   * ({@code application.yml}, {@code compose.yml}, and two test fixtures); and <b>−1</b> given back
+   * by narrowing the quoted-key branch in {@link #aStructuralJsonValueIsNotMangled}, which stopped
+   * rewriting a comment in {@code application.yml}. None of the 25 contains a secret.
    *
    * <p>The cases below are the real ones, copied verbatim from that scan. They are pinned as
    * {@code isEqualTo} on the mangled output rather than described in a comment, for the same reason
@@ -397,16 +413,95 @@ class SecretAssignmentGrammarTest {
       // 'password' => 'secret' was mangled AND still leaking: the pattern took the = of =>, read >
       // as the whole value, and produced 'password' =[REDACTED] 'secret'. Strictly worse than the
       // old behaviour, which was to leave it alone. A quote may now close a key only before a
-      // colon, never before an equals sign — no format writes "key" = value, and this is what
-      // writes 'key' => value.
+      // colon, never before an equals sign — that is the shape 'key' => value takes, and letting
+      // the quote reach an equals sign is what broke it.
+      //
+      // The cost is TOML, which does write "key" = "value" and is therefore given up here. It was
+      // not matched at 6d784fb either, so nothing is lost relative to the baseline; it is a
+      // spelling this pattern briefly caught between 967d823 and f8fcaee and no longer does.
       assertUntouched("'password' => '" + VALUE + "'");
       assertUntouched("$config['password'] => '" + VALUE + "'");
+      assertUntouched("\"password\" = \"" + VALUE + "\"");
       // Not bought at the price of the bare-key form, which the old redactor did catch and which
       // this still catches — the value there is ">" plus the secret, and all of it goes.
       assertThat(redact("PASSWORD=>" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
       // And the two spellings the quote before a colon exists for are unaffected.
       assertRedacted("\"password\": \"" + VALUE + "\"");
       assertRedacted("'password': '" + VALUE + "'");
+    }
+
+    /**
+     * <b>Mangle-and-leak: a match that rewrites the text and leaves the secret in it.</b>
+     *
+     * <p>This is the failure mode {@link #theRubyHashArrowIsNotMangled} is about, and the quoted-key
+     * branch reintroduced it in a second place. {@code {"password": {"inner": "secret"}}} matched,
+     * the {@code &#123;} was taken as the whole value and replaced, the secret survived after it, and
+     * an opening brace was deleted so the JSON no longer parsed. Strictly worse than not matching:
+     * the same leak, plus a broken document. Four spellings did it, all quoted-key, all introduced
+     * by this task.
+     *
+     * <p>Closed by requiring the value's quote as well as the key's, which is the same kind of fix
+     * as the arrow one — a rule about the document's punctuation, not about the value's text. In
+     * JSON a scalar is quoted and a container is not, so the quote <em>is</em> the test for "this
+     * value is a string I can replace".
+     *
+     * <p><b>Why not the obvious fix.</b> Refusing a value that begins with {@code &#123;} or
+     * {@code [} looks simpler and is not safe. Refusing to match means the value is published, and
+     * the value is the half a caller controls, so any refusal keyed on the value's own text is a
+     * bypass with the rule written for it: {@code PASSWORD=[hunter2} and {@code PASSWORD=&#123;hunter2}
+     * would both walk out, and both are redacted today. The two are asserted below so that anyone
+     * who reaches for the simpler rule sees what it costs. The key's quoting is a property of the
+     * surrounding document, so tightening on it cannot be reached from inside the value.
+     */
+    @Test
+    @DisplayName("A quoted key whose value is a container is left alone rather than mangled")
+    void aStructuralJsonValueIsNotMangled() {
+      // The three the reviewer found, verbatim, plus the fourth of the same family.
+      assertUntouched("{\"password\": {\"inner\": \"" + VALUE + "\"}}");
+      assertUntouched("{\"password\": [\"" + VALUE + "\"]}");
+      assertUntouched("{\"config\": {\"apiKey\": {\"v\": \"" + VALUE + "\"}}}");
+      assertUntouched("\"password\": {inner: \"" + VALUE + "\"}");
+
+      // Not bought at the price of the spelling the branch exists for.
+      assertThat(redact("{\"password\": \"" + VALUE + "\"}"))
+          .isEqualTo("{\"password\": \"[REDACTED]\"}");
+      assertThat(redact("{\"dbPassword\": \"" + VALUE + "\"}"))
+          .isEqualTo("{\"dbPassword\": \"[REDACTED]\"}");
+
+      // And not bought at the price of a value that merely starts with a bracket. These are the
+      // counterexamples to "refuse a structural value": every one is a caller-controlled string
+      // that must not be published, and a refusal rule keyed on the value would publish it.
+      assertThat(redact("PASSWORD=[" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD={" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=[" + VALUE + "]")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=[REDACTED]" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=sk-****REDACTED****" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+    }
+
+    /**
+     * The same failure mode under an <b>unquoted</b> key, which predates this work and is left
+     * alone.
+     *
+     * <p>These mangle and leak at 6d784fb exactly as they do now — measured, not assumed — so they
+     * are neither this task's regression nor this task's to fix, and folding them into a redaction
+     * change silently is how a fix stops being reviewable. Pinned so the census is complete and so
+     * whoever takes the value half of this pattern has the list.
+     *
+     * <p>The fix for these is not a refusal either, for the reason given above: it is teaching the
+     * value to consume a balanced structure, which is a change to what a value <em>is</em> and
+     * carries its own risk of swallowing a paragraph on an unbalanced quote.
+     */
+    @Test
+    @DisplayName("PRE-EXISTING: an unquoted key with a container value still mangles, as at 6d784fb")
+    void anUnquotedKeyWithAContainerValueStillMangles() {
+      assertThat(redact("PASSWORD={\"inner\": \"" + VALUE + "\"}"))
+          .isEqualTo("PASSWORD=[REDACTED]\"inner\": \"" + VALUE + "\"}");
+      assertThat(redact("PASSWORD=[\"" + VALUE + "\"]"))
+          .isEqualTo("PASSWORD=[REDACTED]\"" + VALUE + "\"]");
+      assertThat(redact("PASSWORD=(\"" + VALUE + "\")"))
+          .isEqualTo("PASSWORD=[REDACTED]\"" + VALUE + "\")");
+      assertThat(redact("password: {inner: " + VALUE + "}"))
+          .isEqualTo("password: [REDACTED] " + VALUE + "}");
     }
 
     /**
@@ -590,11 +685,13 @@ class SecretAssignmentGrammarTest {
    * <p><b>What this costs, measured and accepted.</b> {@code password: ${DB_PASSWORD}} is the
    * correct way to write a Spring {@code application.yml} — the idiom the framework recommends
    * precisely so that the file contains no secret — and it now redacts to
-   * {@code password: [REDACTED]}. The corpus differential is in {@link WidenedRegion}, updated for
-   * this change, and the configuration-template cases are pinned below in
-   * {@link #theConfigurationTemplateIdiomIsMangledAndThatIsTheTrade}. It is a real cost, it was
-   * accepted deliberately in exchange for closing the bypass, and it is written down here rather
-   * than left to arrive as a surprise in a diff.
+   * {@code password: [REDACTED]}. Measured on the corpus in {@link WidenedRegion}, this decision
+   * rewrites <b>four</b> lines in this repository and every one of them is that idiom: the
+   * {@code application.yml} datasource password, the {@code compose.yml} Postgres password, and two
+   * placeholder fixtures inside guardian tests. It is a real cost, it was accepted deliberately in
+   * exchange for closing the bypass, and the two configuration lines are pinned verbatim below in
+   * {@link #theConfigurationTemplateIdiomIsMangledAndThatIsTheTrade} rather than left to arrive as
+   * a surprise in a diff.
    *
    * <p><b>What it does not touch:</b> anything outside an assignment. See {@link
    * Placeholders#placeholdersSurvive}, which is kept as a separate test for exactly this reason —

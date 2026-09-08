@@ -74,22 +74,49 @@ public final class SensitiveDataRedactor {
    * the <em>end</em> of the key for the separator to follow it.
    *
    * <p><b>Group 2 is everything between the key and the value, kept verbatim</b>: the separator, the
-   * whitespace on either side, an optional quote opening the value, and — before a colon only — an
-   * optional quote closing the key. Keeping it rather than rebuilding it does two things. It makes
+   * whitespace on either side, and whatever quotes belong to the spelling in use — see the branch
+   * below for which. Keeping it rather than rebuilding it does two things. It makes
    * {@code "password": "…"} — the spelling this API's own responses are written in — reachable,
    * where before the closing quote sat between the key and the colon and stopped the match dead.
    * And it means redaction substitutes the value and edits nothing else, so {@code PASSWORD  =  x}
    * keeps its spacing instead of being silently reformatted to {@code PASSWORD=x}.
    *
-   * <p><b>The quoted key is allowed before {@code :} and not before {@code =}</b>, which looks
-   * arbitrary and is not. JSON, YAML and JavaScript object literals quote a key and then write a
-   * colon; no format quotes a key and then writes {@code =}. What does look like that is a Ruby or
-   * PHP hash — {@code 'password' => 'secret'} — and allowing a quote before {@code =} made the
-   * pattern match its {@code =}, take {@code >} as the whole value and produce
-   * {@code 'password' =[REDACTED] 'secret'}: the line mangled and the secret still in it. That was
-   * strictly worse than doing nothing, which is what the previous pattern did here, so the colon
-   * carries the quote and the equals sign does not. {@code PASSWORD=>secret} under a bare key is
-   * unaffected and still redacted, exactly as it was before.
+   * <p><b>A quoted key is a different spelling with different rules, and it gets its own branch.</b>
+   * The first alternative is the JSON one: a quote closing the key, a colon, and <b>a quote opening
+   * the value</b> — both quotes required. The second is everything else: no quote on the key, a
+   * {@code =} or a {@code :}, and an optional quote on the value.
+   *
+   * <p>Two failures are why the branch is shaped like that, and they are the same failure twice.
+   * <b>A match that rewrites the text and leaves the secret in it is strictly worse than not
+   * matching at all</b> — the leak is unchanged and the document is now broken as well.
+   *
+   * <ul>
+   *   <li>Allowing a quote before {@code =} made {@code 'password' => 'secret'} match the {@code =}
+   *       of the {@code =>}, take {@code >} as the whole value, and emit
+   *       {@code 'password' =[REDACTED] 'secret'}. So the quote goes with the colon only. (TOML
+   *       does write {@code "key" = "value"}, so that spelling is given up here rather than being
+   *       unrepresentable; it was not matched at 6d784fb either.)
+   *   <li>Requiring only the key's quote made {@code {"password": {"inner": "secret"}}} match, take
+   *       the {@code &#123;} as the whole value, and emit
+   *       {@code {"password": [REDACTED]"inner": "secret"}}: the secret still there and an opening
+   *       brace deleted, so the JSON no longer parses. Requiring the value's quote too is what
+   *       fixes it — in JSON a scalar is quoted and a container is not, so demanding the quote is
+   *       exactly the test for "this value is a string and I can replace it".
+   * </ul>
+   *
+   * <p><b>Why this is a rule about the quotes and not about the value.</b> The obvious alternative
+   * is to refuse a value that begins with {@code &#123;} or {@code [}. That is not safe: refusing to
+   * match means the value is published, the value is the half a caller controls, and so every
+   * refusal keyed on the value's own text is a bypass waiting to be written — {@code PASSWORD=[hunter2}
+   * and {@code PASSWORD=&#123;hunter2} would both walk straight out, and both are redacted today.
+   * The quoting of the <em>key</em> is a property of the surrounding document rather than of the
+   * secret, so tightening on it cannot be gamed from inside the value.
+   *
+   * <p>What this branch gives up, deliberately: {@code {"password": 12345}} and
+   * {@code "password": bare} are not matched, because an unquoted JSON value is a container, a
+   * number or a keyword rather than a string. Unquoted keys are untouched by this and keep their
+   * pre-existing behaviour, mangling included — see {@code SecretAssignmentGrammarTest}, which pins
+   * the forms that predate this work rather than quietly fixing some of them.
    *
    * <p>Group 3 is the value, ending at whitespace, comma, semicolon or quote. Unchanged — and see
    * {@code SecretAssignmentGrammarTest} for what that costs on a passphrase.
@@ -98,7 +125,7 @@ public final class SensitiveDataRedactor {
       Pattern.compile(
           "(?i)\\b([A-Za-z0-9_]*(?:"
               + SENSITIVE_KEY_WORDS
-              + "))((?:[\"']?\\s*:|\\s*=)\\s*[\"']?)([^\\s,;\"'\\r\\n]+)");
+              + "))((?:[\"']\\s*:\\s*[\"']|\\s*[=:]\\s*[\"']?))([^\\s,;\"'\\r\\n]+)");
 
   private SensitiveDataRedactor() {}
 
