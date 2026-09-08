@@ -534,9 +534,31 @@ export interface ProviderCatalogEntry {
 /* ------------------------------------------------------------------ *
  * Deterministic Context Engine — sources, kinds, items, budget, packs.
  *
- * These mirror `com.vibecode.context.domain`. The engine reads only records the Project Brain
- * already owns, calls no provider and runs no tokenizer, so everything below describes state that
- * was read — never anything a model produced.
+ * These are the shapes CTX-07's hand-written `*Response` records must produce. They are *not* the
+ * default serialisation of `com.vibecode.context.domain` — see the wire contract below — and a
+ * domain record returned straight from a controller will not match them.
+ *
+ * The engine reads only records the Project Brain already owns, calls no provider and runs no
+ * tokenizer, so everything below describes state that was read — never anything a model produced.
+ *
+ * WIRE CONTRACT — the field names a naive serialisation gets wrong.
+ *
+ * The house pattern is a `*Response` record in the module's `web` package with a static
+ * `from(domain)`, as in `brain/web/BrainEntryResponse.java`, and these fields are why it is not
+ * optional here. Each name below is either a derived method rather than a record component, or an
+ * accessor whose name differs from the field the client expects, so default Jackson output omits or
+ * renames it:
+ *
+ * - `characterCount`, `byteCount` — methods on `ContextItem`, not record components; not emitted.
+ * - `usage`, `contentFingerprint` — methods on `ContextPack`, not record components; not emitted.
+ * - `estimatedTokenCount` — `ContextUsage.estimatedTokens()` returns the object; the field is named
+ *   `estimatedTokenCount` here so that reaching the number does not read `estimatedTokens
+ *   .estimatedTokens`. CTX-07 names the DTO field, so this costs nothing but must be done on purpose.
+ * - the estimate's own contents — `EstimatedTokenCount` is a plain class whose accessors are not
+ *   `get`-prefixed, so a naive serialisation loses both the number and the heuristic.
+ *
+ * That reasoning is read off the Java and Jackson's defaults; the literal payload has not been
+ * observed, so treat the list as the checklist to tick, not as a transcript.
  * ------------------------------------------------------------------ */
 
 /**
@@ -548,17 +570,23 @@ export interface ProviderCatalogEntry {
  *
  * This axis is independent of {@link ContextKind}, and the two must not be collapsed. All official
  * memory arrives through the single `BRAIN_ENTRY` source whatever it says; what it says is the
- * item's kind. A brain entry recording a technology choice is
- * `{ sourceType: "BRAIN_ENTRY", sourceId: "<entry id>", kind: "TECHNOLOGY" }` — there is
- * deliberately no `BRAIN_ARCHITECTURE` or `BRAIN_DECISION` constant, because folding the meaning
- * into the origin would make the provenance state an origin the item never had.
+ * item's kind. A brain entry recording a technology choice reads
+ * `item.provenance.source.type === "BRAIN_ENTRY"`, `item.provenance.source.sourceId === "<entry
+ * id>"`, `item.kind === "TECHNOLOGY"` — there is deliberately no `BRAIN_ARCHITECTURE` or
+ * `BRAIN_DECISION` constant, because folding the meaning into the origin would make the provenance
+ * state an origin the item never had.
+ *
+ * Note the path: the origin is nested at `provenance.source`, never a top-level `sourceType` on the
+ * item. A flat `sourceType` does exist in this file, on `SecurityFindingResponse` and
+ * `InspectSecurityRequest` — a different vocabulary that has nothing to do with these two axes.
  *
  * Because the axes are independent, a word appears on both and means different things.
- * `ContextSourceType.CURRENT_STATE` is the computed project state as a place to read from;
- * `ContextKind.CURRENT_STATE` is what a record says about where things stand. So
- * `{ sourceType: "BRAIN_ENTRY", kind: "CURRENT_STATE" }` (state as remembered) and
- * `{ sourceType: "CURRENT_STATE", kind: "CURRENT_STATE" }` (state as computed) are both meaningful
- * and are not the same item. The same holds for `ACTIVE_ERRORS` here against `ContextKind.ERROR`.
+ * `ContextSourceType`'s `CURRENT_STATE` is the computed project state as a place to read from;
+ * `ContextKind`'s `CURRENT_STATE` is what a record says about where things stand. So an item with
+ * `provenance.source.type === "BRAIN_ENTRY"` and `kind === "CURRENT_STATE"` (state as remembered)
+ * and one with `provenance.source.type === "CURRENT_STATE"` and the same kind (state as computed)
+ * are both meaningful and are not the same item. The same holds for `ACTIVE_ERRORS` here against
+ * `ContextKind`'s `ERROR`.
  *
  * There is no `FREE_TEXT`, `SCRATCH` or `MODEL_OUTPUT`: context no recorded state can vouch for has
  * no provenance, and an item without provenance cannot be built.
@@ -587,9 +615,15 @@ export type ContextSourceType =
  * a pack wearing the wrong meaning; if something has no kind here, the vocabulary is wrong and must
  * be changed deliberately, on both sides.
  *
- * The declared order matches the Java enum, which fixes how a pack reads. It is presentation and
- * determinism only — never priority, and never a drop order. Which item to leave out when a budget
- * binds is a separate decision the selection step owns under its own name.
+ * The order the members are written in is cosmetic and guarantees nothing. What fixes how a pack
+ * reads is the explicit `orderingRank` each Java constant carries — deliberately a number with gaps
+ * of ten, so a rank can change without a constant moving, and a constant can move without its rank
+ * changing. That rank is not mirrored here, so nothing on this side would notice the two drifting
+ * apart. The one thing a client may rely on is the order the API already sorted into: the index of
+ * an item in `ContextPackResponse.items`.
+ *
+ * Rank is presentation and determinism only — never priority, and never a drop order. Which item to
+ * leave out when a budget binds is a separate decision the selection step owns under its own name.
  */
 export type ContextKind =
   | "OBJECTIVE"
@@ -636,15 +670,19 @@ export type ContextKindOfBrainEntry<T extends BrainEntryType> = Extract<ContextK
 declare const ESTIMATE_BRAND: unique symbol;
 
 /**
- * A token figure that is a guess, and that cannot be handed to code expecting a measured one.
+ * A token figure that is a guess.
  *
  * The brand exists because a bare `number` would be indistinguishable from the exact input and
- * output token counts a provider reports. Those are measurements; this is `characters / 4`. No
- * number literal produces this type, so an exact count cannot drift into an estimate's place
- * without a cast a reviewer can see.
+ * output token counts a provider reports. Those are measurements; this is `characters / 4`.
  *
- * Honest limit: the brand is erased at runtime and the wire carries a plain number, so this
- * constrains TypeScript callers, not JSON. What it buys is that the mistake has to be written down.
+ * What it buys, precisely: no number literal produces this type, so a guess cannot be *minted* from
+ * an exact count, and `isExact: false` cannot be *relabelled* true. Both bypasses need a one-line
+ * cast a reviewer can see.
+ *
+ * Honest limits, both of which a consumer will meet. An intersection stays assignable *to* `number`,
+ * so reading the estimate as a plain number and passing it where a measured count is expected
+ * compiles without complaint — the brand blocks the way in, not the way out. And it is erased at
+ * runtime, so the wire carries a plain number and this constrains TypeScript callers, not JSON.
  */
 export type EstimatedTokens = number & { readonly [ESTIMATE_BRAND]: "estimate" };
 
@@ -654,13 +692,18 @@ export type EstimatedTokens = number & { readonly [ESTIMATE_BRAND]: "estimate" }
  * This phase calls no provider and runs no tokenizer, so no real token count exists here. The
  * number is still worth showing as a warning in the Context Inspector, so the caveat travels in the
  * type rather than in the caller's memory: the figure is reachable only through this object, it is
- * branded, `heuristic` says how it was produced, and `isExact` is the literal `false`. A careless
- * destructure cannot strip the label off, and no exact count satisfies the shape.
+ * branded, `heuristic` says how it was produced, and `isExact` is the literal `false`, which no
+ * exact count satisfies. A destructure does carry the number out of the labelled shape — see
+ * {@link EstimatedTokens} for exactly how far the brand follows it.
  *
  * It is not a budget dimension. {@link ContextBudgetResponse} admits no token limit, because a
  * limit enforced against a heuristic is wrong by an unknown amount while reading as authoritative.
+ *
+ * Named `…Response` like its siblings, and not `EstimatedTokenCount`, so it cannot be read as the
+ * Java class of that name: the domain class is a plain class whose default JSON differs from this
+ * shape, and CTX-07 must build this by hand.
  */
-export interface EstimatedTokenCount {
+export interface EstimatedTokenCountResponse {
   /** The estimate. Never a measurement. */
   estimatedTokens: EstimatedTokens;
   /** The rule that produced the number, so a reader can judge how wrong it might be. */
@@ -687,6 +730,10 @@ export interface ContextSourceResponse {
 /**
  * Where one context item came from, and when that was true.
  *
+ * An address, and only an address. It answers "which record produced this, and when was it read" —
+ * not "why was it admitted". Nothing here records a decision, and no field should be pressed into
+ * carrying one; that is {@link ContextAdmissionReason}'s job.
+ *
  * `recordedAt` is the moment the underlying state was read, not the moment the pack was assembled.
  * Two packs built minutes apart from the same unchanged record carry the same `recordedAt`, which
  * is what lets the inspector show a stale item as stale.
@@ -700,11 +747,36 @@ export interface ContextProvenanceResponse {
 }
 
 /**
- * One unit of context, with the record it came from attached.
+ * Why one item was admitted to a pack.
  *
- * `provenance` is not optional and must not be made so. An item nobody can trace back to official
- * state is the failure this whole engine exists to prevent, and an inspector that can render such
- * an item is not an inspector.
+ * The agreed target shape, not a description of something that exists yet: no Java type carries it
+ * today, and the collection, policy and selection steps (CTX-03/04/05) are what must produce it.
+ * It is written down here so those three produce the same thing rather than three near-misses.
+ *
+ * `policyRuleId` is the load-bearing half. A stable handle means the Inspector shows a reason that
+ * traces back to a named rule, and that a reader can look the rule up and disagree with it. A
+ * sentence alone would be a claim with nothing behind it — which is how a collector's improvisation
+ * ends up reading like policy.
+ *
+ * It says nothing about what was *not* admitted. What was considered and excluded, and why, is a
+ * larger and genuinely different question; a half-answer smuggled in here would be worse than the
+ * absence, because it would look like the answer.
+ */
+export interface ContextAdmissionReason {
+  /** The policy rule that admitted this item, by stable id. A handle, never prose. */
+  policyRuleId: string;
+  /** A sentence for the Inspector, derived from the rule — never the sole record of the decision. */
+  explanation: string;
+}
+
+/**
+ * One unit of context, with the record it came from and the rule that let it in attached.
+ *
+ * Neither `provenance` nor `admission` is optional, and neither may be made so. They answer
+ * different questions and one does not stand in for the other: provenance says *where from*,
+ * admission says *why*. An item nobody can trace back to official state, or that nobody can say
+ * why is present, is the failure this whole engine exists to prevent — and an inspector that can
+ * render such an item is not an inspector.
  *
  * The counts are exact and measured over `content` alone — `id` and `label` are handles for the
  * inspector, not payload, and whatever separators a later assembly step puts between items are that
@@ -721,7 +793,10 @@ export interface ContextItemResponse {
   /** A short human handle, for the inspector. */
   label: string;
   content: string;
+  /** Where it was read from. Mandatory. */
   provenance: ContextProvenanceResponse;
+  /** Why it is in the pack. Mandatory, and never inferred from `provenance`. */
+  admission: ContextAdmissionReason;
   /** Exact, in UTF-16 code units. */
   characterCount: number;
   /** Exact, in UTF-8 bytes. */
@@ -731,7 +806,7 @@ export interface ContextItemResponse {
 /**
  * The ceiling a pack was held to, in the dimensions that can be counted exactly.
  *
- * There is deliberately no token dimension; see {@link EstimatedTokenCount}. The two size
+ * There is deliberately no token dimension; see {@link EstimatedTokenCountResponse}. The two size
  * dimensions are independent and neither implies the other.
  *
  * A budget is a ceiling, not a target. The engine's rule is minimum necessary context: a pack that
@@ -753,16 +828,21 @@ export interface ContextUsageResponse {
   items: number;
   characters: number;
   bytes: number;
-  estimatedTokenCount: EstimatedTokenCount;
+  estimatedTokenCount: EstimatedTokenCountResponse;
 }
 
 /**
  * A finished, immutable snapshot of the context selected for one task.
  *
  * A pack is the record of a decision already made, not a workspace: it cannot be appended to and it
- * cannot exist over its own budget. Everything the Context Inspector needs to explain an item is
- * here — what would enter (`content`, `label`), why and from where (`provenance`), what it means
- * (`kind`), how big it is (`characterCount`, `byteCount`) and in what order.
+ * cannot exist over its own budget. Per item the Inspector has what would enter (`content`,
+ * `label`), where it came from (`provenance`), what it means (`kind`), how big it is
+ * (`characterCount`, `byteCount`) and in what order.
+ *
+ * Why an item is present is `admission`, and that field is the one part of this contract nothing
+ * produces yet — CTX-03/04/05 must fill it. Until they do, an Inspector can show what a pack holds
+ * and where every piece came from, but the reason for any single item is not carriable, and no
+ * other field on this type is a substitute for it. Do not derive one from `provenance`.
  *
  * `items` arrives in the engine's canonical order — source type, then kind, then source id, then
  * item id — and the array index *is* that order. Re-sorting it discards the property the ordering
@@ -800,9 +880,9 @@ export interface ContextPackResponse {
  * limits.
  */
 export interface ContextBudgetRequest {
-  maxItems?: number;
-  maxCharacters?: number;
-  maxBytes?: number;
+  maxItems?: number | null;
+  maxCharacters?: number | null;
+  maxBytes?: number | null;
 }
 
 /**
@@ -813,5 +893,5 @@ export interface AssembleContextRequest {
   /** The task the context is for. Required: context assembled for nothing cannot be selected. */
   taskReference: string;
   /** Omitted dimensions fall back to the engine's configured ceiling. */
-  budget?: ContextBudgetRequest;
+  budget?: ContextBudgetRequest | null;
 }
