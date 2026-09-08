@@ -11,6 +11,49 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+
+# Nothing a user typed may reach a log line.
+#
+# The ORM emits values from below the application: a task objective, a Brain entry or a piece of
+# evidence is printed by Hibernate itself when a session flushes, and no redaction inside any
+# module of this codebase can reach that call site. The only defence is not emitting.
+#
+# These four categories were found by capturing every event at TRACE during a real persist on the
+# Hibernate actually on the classpath — 6.6.8.Final, via Spring Boot 3.4.3 — not by copying a list
+# from another version. `org.hibernate.type.descriptor.sql.BasicBinder`, the Hibernate 5 name that
+# most advice still repeats, does not exist in this version and is deliberately absent below.
+#
+# These levels sit in the profile-independent document on purpose. A profile-specific block would
+# only protect the profiles that happen to exist today; here, every profile inherits them, and an
+# explicit level on a logger wins over the level inherited from its parent — so `--debug`, or
+# `logging.level.org.hibernate=DEBUG`, raises the surrounding noise without reopening these.
+#
+# Turning any of them back on means naming that one category and choosing TRACE or DEBUG for it
+# deliberately, in an environment where the operator accepts that the log file now contains user
+# data. That is the intended escape hatch, and it should never be a standing setting.
+#
+# Known residual: `org.hibernate.SQL_SLOW` logs `statement.toString()`, which the H2 and pgjdbc
+# drivers render with the bound values substituted. It logs at INFO, so a level pin would not stop
+# it — what stops it is that Hibernate only records slow queries when
+# `hibernate.session.events.log.LOG_QUERIES_SLOWER_THAN_MS` is set, and this application never sets
+# it. Setting it would reintroduce the leak.
+logging:
+  level:
+    # "binding parameter (3:VARCHAR) <- [<the value>]" — every parameter of every statement.
+    org.hibernate.orm.jdbc.bind: INFO
+    # "extracted value (…) -> [<the value>]" — the same leak on the way back out of the database.
+    org.hibernate.orm.jdbc.extract: INFO
+    # Prints every field of every entity in the session at flush: the defect as originally
+    # reported. Its caller, org.hibernate.event.internal.AbstractFlushingEventListener, is left
+    # alone so its flush counts stay available at DEBUG; those are counts, not values.
+    org.hibernate.internal.util.EntityPrinter: INFO
+    # Logs the JDBC statement object itself when releasing it. Harmless-looking, and the least
+    # obvious of the four: both H2 and pgjdbc include the bound parameters in the statement's
+    # toString, so this line carries the values even though the message never asks for them.
+    org.hibernate.resource.jdbc.internal.ResourceRegistryStandardImpl: INFO
+    # org.hibernate.SQL is deliberately NOT pinned. It prints statements with `?` placeholders and
+    # no values, and it is the log a developer actually needs when diagnosing a query.
+
 server:
   port: ${SERVER_PORT:9000}
   servlet:

@@ -13,6 +13,19 @@ spring:
   flyway:
     enabled: true
 
+# Repeated from the main application.yml, not inherited. A test-classpath application.yml of the
+# same name replaces the main one rather than merging with it, so omitting this block here would
+# leave the whole suite running under the defaults the fix exists to correct — and the tests that
+# assert nothing leaks would then be asserting it about a configuration production does not use.
+# The reasoning behind each line lives in apps/api/src/main/resources/application.yml; if that list
+# changes, this one has to change with it.
+logging:
+  level:
+    org.hibernate.orm.jdbc.bind: INFO
+    org.hibernate.orm.jdbc.extract: INFO
+    org.hibernate.internal.util.EntityPrinter: INFO
+    org.hibernate.resource.jdbc.internal.ResourceRegistryStandardImpl: INFO
+
 vibecode:
   security:
     auth-rate-limit:
