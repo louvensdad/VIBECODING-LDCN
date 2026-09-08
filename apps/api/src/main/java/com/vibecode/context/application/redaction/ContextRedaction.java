@@ -65,20 +65,6 @@ public final class ContextRedaction {
   private ContextRedaction() {}
 
   /**
-   * The item with its content and label redacted.
-   *
-   * <p>Carries the same item through unchanged when nothing matched, so an unnecessary copy is not
-   * made and an equality check upstream still holds — the wrapper is added either way, because a
-   * caller must not be able to tell a clean item from a scrubbed one by its type.
-   *
-   * @throws IllegalStateException if redaction leaves nothing behind. Not expected: every pattern
-   *     in {@link SensitiveDataRedactor} replaces a value with a marker rather than deleting it, so
-   *     a non-blank input stays non-blank. It is checked anyway because the alternative failure is
-   *     an {@link IllegalArgumentException} thrown from deep inside {@code ContextItem} with no
-   *     indication that redaction caused it — and the temptation then would be to drop the item
-   *     quietly, which is how a redactor change would start silently shortening packs.
-   */
-  /**
    * The task reference with secret-shaped values removed.
    *
    * <p>Separate from {@link #redact(ContextItem)} because a task reference is not an item: it is a
@@ -108,6 +94,34 @@ public final class ContextRedaction {
     return redacted;
   }
 
+  /**
+   * The item with its content and label redacted.
+   *
+   * <p>Carries the same item through unchanged when nothing matched, so an unnecessary copy is not
+   * made and an equality check upstream still holds — the wrapper is added either way, because a
+   * caller must not be able to tell a clean item from a scrubbed one by its type.
+   *
+   * <p><b>Redaction can change a string's length in both directions, and lengthening is the one
+   * that surprises people.</b> A marker is longer than a short secret, so an item well inside
+   * {@link ContextItem#MAX_LABEL_LENGTH} on the way in can be over it on the way out. Both
+   * outcomes are reported rather than repaired: see the two {@code @throws} below. Nothing here
+   * truncates and nothing here drops an item, because either would make a redactor change shrink
+   * packs silently.
+   *
+   * @throws IllegalArgumentException if {@code item} is null, or if the redacted item is one
+   *     {@link ContextItem} will not accept — in practice a label that redaction lengthened past
+   *     {@link ContextItem#MAX_LABEL_LENGTH}. The domain's rejection is caught and rethrown here
+   *     naming the item and both lengths, because on its own it reads as a contradiction: a
+   *     498-character label refused for exceeding 500. The domain cannot explain that itself, as it
+   *     does not know a redactor exists and must not. The original exception is kept as the cause.
+   * @throws IllegalStateException if redaction leaves nothing behind. Not expected: every pattern
+   *     in {@link SensitiveDataRedactor} replaces a value with a marker rather than deleting it, so
+   *     a non-blank input stays non-blank. It is checked here anyway so the failure names redaction
+   *     — {@code ContextItem} would otherwise reject the blank value with a message about what an
+   *     item must have, saying nothing about what emptied it — and because the temptation on
+   *     seeing that message would be to drop the item quietly, which is how a redactor change would
+   *     start silently shortening packs.
+   */
   public static RedactedContextItem redact(ContextItem item) {
     if (item == null) {
       throw new IllegalArgumentException("There is nothing to redact");
