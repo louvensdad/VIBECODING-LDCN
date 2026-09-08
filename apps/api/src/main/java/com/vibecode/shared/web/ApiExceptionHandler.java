@@ -20,6 +20,7 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /** Produces one consistent error body for the whole API. */
 @RestControllerAdvice
@@ -123,6 +124,35 @@ public class ApiExceptionHandler {
   @ExceptionHandler(HttpMessageNotReadableException.class)
   ResponseEntity<ApiError> unreadable(HttpMessageNotReadableException exception) {
     return build(HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST", "The request body could not be read.");
+  }
+
+  /**
+   * A path variable or request parameter that could not be converted to its declared type.
+   *
+   * <p>{@code /api/projects/not-a-uuid}, {@code /api/provider-accounts/not-a-uuid} and
+   * {@code /api/projects/{id}/context/compile} reached by {@code GET} all land here. Without this
+   * mapping they fell through to {@link #unexpected(Exception)} — because {@code
+   * MethodArgumentTypeMismatchException} is not one of Spring's own {@code ErrorResponse} web
+   * exceptions — and were reported as 500 with a stack trace in the log. Every one of them is an
+   * ordinary client mistake, and reporting a client mistake as a server fault both misleads the
+   * caller and fills the log with noise that hides real failures.
+   *
+   * <p>The message names the parameter and nothing else. The rejected value is deliberately absent:
+   * it is caller-supplied text, it appears in the exception's own message together with the target
+   * type and the converter's complaint, and echoing any of that would put an internal detail on the
+   * wire for no gain — the caller already knows what they sent.
+   */
+  @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+  ResponseEntity<ApiError> typeMismatch(MethodArgumentTypeMismatchException exception) {
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+        .body(
+            ApiError.of(
+                HttpStatus.BAD_REQUEST.value(),
+                "VALIDATION_ERROR",
+                "The request could not be read.",
+                List.of(
+                    new ApiError.FieldViolation(
+                        exception.getName(), "is not a valid value for this parameter"))));
   }
 
   /**

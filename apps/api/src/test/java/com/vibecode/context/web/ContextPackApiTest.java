@@ -181,8 +181,8 @@ class ContextPackApiTest {
   }
 
   @Test
-  @DisplayName("A compiled pack is persisted and reads back identically by id")
-  void compiledPackIsReadableById() throws Exception {
+  @DisplayName("A compiled pack reads back by id with the same selection, to microsecond precision")
+  void compiledPackReadsBackWithTheSameSelection() throws Exception {
     JsonNode compiled = compile(alice, aliceProject, "TASK-2: read it back");
     String packId = compiled.get("packId").asText();
 
@@ -197,6 +197,39 @@ class ContextPackApiTest {
     assertThat(reread.get("items").size()).isEqualTo(compiled.get("items").size());
     assertThat(reread.get("contentFingerprint").asText())
         .isEqualTo(compiled.get("contentFingerprint").asText());
+
+    // THE ONE FIELD THAT IS NOT IDENTICAL, asserted rather than described. This test was previously
+    // named "reads back identically by id" and checked three fields, none of them this one.
+    //
+    // POST answers from the compiled pack, which carries the clock's instant at nanosecond
+    // resolution. GET answers from the stored row, and both engines hold a timestamp to
+    // microseconds — so the same pack reports two spellings of one instant.
+    //
+    // The stored value is ROUNDED, not truncated, and the difference is not pedantry: the first
+    // version of this assertion compared the two after truncating both to microseconds, passed in
+    // isolation, and failed in the full suite on 615643600ns, which the database stored as
+    // 615644us — half a microsecond LATER than the instant the pack was compiled at. So the
+    // persisted instant is not merely a shortened form of the compiled one and can round upwards
+    // past it.
+    //
+    // The behaviour is left alone and the claim corrected. Making the two byte-identical would mean
+    // re-reading every pack after writing it — a real query on every compile, bought to make a
+    // sentence true about half a microsecond. What is asserted instead is the property that
+    // actually holds: they agree to within the precision the database keeps.
+    java.time.Instant fromCompile = java.time.Instant.parse(compiled.get("assembledAt").asText());
+    java.time.Instant fromStorage = java.time.Instant.parse(reread.get("assembledAt").asText());
+    assertThat(java.time.Duration.between(fromCompile, fromStorage).abs())
+        .isLessThan(java.time.Duration.ofNanos(1_000L));
+
+    // Everything except that field is byte-identical, which is what makes the exception above the
+    // whole of the difference rather than the part that happened to be noticed.
+    assertThat(withoutAssembledAt(reread)).isEqualTo(withoutAssembledAt(compiled));
+  }
+
+  /** The pack with its top-level {@code assembledAt} removed. See the test above for why. */
+  private static JsonNode withoutAssembledAt(JsonNode pack) {
+    return ((com.fasterxml.jackson.databind.node.ObjectNode) pack.deepCopy())
+        .without("assembledAt");
   }
 
   @Test
@@ -313,10 +346,43 @@ class ContextPackApiTest {
   }
 
   @Test
-  @DisplayName("The GETs need no CSRF token, which is the ordinary rule and not an exemption")
+  @DisplayName("Both GETs need no CSRF token, which is the ordinary rule and not an exemption")
   void readsDoNotRequireCsrf() throws Exception {
+    String packId = compile(alice, aliceProject, "TASK-17: read without a token").get("packId").asText();
+
+    // Both read routes, not just the list. The two are configured by one rule and it would be odd
+    // for them to differ — but "it would be odd" is exactly the reasoning a test is supposed to
+    // replace, and only one of them was ever exercised here.
     mvc.perform(get("/api/projects/" + aliceProject + "/context").with(TestIdentity.as(alice)))
         .andExpect(status().isOk());
+    mvc.perform(get("/api/projects/" + aliceProject + "/context/" + packId).with(TestIdentity.as(alice)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.packId").value(packId));
+  }
+
+  @Test
+  @DisplayName("A path variable that is not a UUID is a 400, not a 500 with a stack trace")
+  void aMalformedPathVariableIsAClientError() throws Exception {
+    // GET on the compile path is the case that matters here: this is the only module with a literal
+    // sub-path sitting beside a UUID one, so the most-documented URL in the feature is also the one
+    // a person types by hand with the wrong verb. It answered 500 and logged a stack trace.
+    String response =
+        mvc.perform(get("/api/projects/" + aliceProject + "/context/compile").with(TestIdentity.as(alice)))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+            .andExpect(jsonPath("$.violations[0].field").value("packId"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    // The body names the parameter and not the value, the target type or the converter.
+    assertThat(response).doesNotContain("UUID string");
+    assertThat(response).doesNotContain("Exception");
+    assertThat(response).doesNotContain("java.");
+
+    mvc.perform(get("/api/projects/not-a-uuid/context").with(TestIdentity.as(alice)))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.violations[0].field").value("projectId"));
   }
 
   @Test

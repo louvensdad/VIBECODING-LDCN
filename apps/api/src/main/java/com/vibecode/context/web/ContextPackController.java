@@ -9,8 +9,14 @@ import com.vibecode.context.web.ContextDtos.ContextPackResponse;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +25,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -45,14 +52,50 @@ import org.springframework.web.bind.annotation.RestController;
  * do their own authorization; it is paid in one place, at the top of each method, and both are
  * covered by tests that read as another user.
  *
- * <p>Errors carry no SQL, no exception class and no candidate text. The shared
- * {@code ApiExceptionHandler} is the boundary and already maps everything thrown from here: a
- * missing project or pack is a 404, and a value the domain refuses — including a task reference
- * that redaction lengthened past the cap — is a 422 carrying the domain's own sentence.
+ * <p><b>Errors.</b> No response from here carries SQL, a driver message or a stack trace. The
+ * shared {@code ApiExceptionHandler} is the boundary: a missing project or pack is a 404, a value
+ * the domain refuses — including a task reference that redaction lengthened past the cap — is a 422
+ * carrying the domain's own sentence, and a path variable that is not a UUID is a 400.
+ *
+ * <p>An earlier version of this paragraph claimed the shared handler "already maps everything
+ * thrown from here". It did not. {@code GET /context/compile} — the literal sub-path sitting beside
+ * a UUID one, and the easiest URL in this feature to type by hand — produced a 500 and a stack
+ * trace in the log, because a malformed path variable reached the last-resort handler. That mapping
+ * now exists. The wider claim is not restored: it was the kind of sentence that stops the next
+ * reader checking.
+ *
+ * <p>One residual is stated rather than implied. {@code ContextPackEntity.toCompiled} throws an
+ * {@code IllegalStateException} naming every item id when a stored pack's row order is not the
+ * canonical one, and that message reaches the client in a 422. It carries ids and no content, and
+ * it is reachable only by editing rows behind the API — but it is an internal message on the wire,
+ * so it is written down here rather than hidden behind a claim that nothing internal ever escapes.
  */
 @RestController
 @RequestMapping("/api/projects/{projectId}/context")
 public class ContextPackController {
+
+  /**
+   * How many packs the list route returns when the caller names no number.
+   *
+   * <p>A page and not a history. The alternative — every pack a project has ever produced — is
+   * unbounded by design, because a pack is never replaced.
+   */
+  public static final int DEFAULT_LIST_LIMIT = 20;
+
+  /**
+   * The literal {@link #DEFAULT_LIST_LIMIT} must be duplicated for the annotation, which takes only
+   * a constant expression of type {@code String}. The two are kept adjacent so a change to one is
+   * visibly a change to the other, and a test asserts the default the route actually applies.
+   */
+  private static final String DEFAULT_LIST_LIMIT_TEXT = "20";
+
+  /**
+   * The most packs one request may ask for.
+   *
+   * <p>Not the engine's limit and not a statement about how many packs may exist — only the widest
+   * page this API is willing to assemble in one response.
+   */
+  public static final int MAX_LIST_LIMIT = 100;
 
   private final ProjectService projects;
   private final ContextPackAssembler assembler;
@@ -113,23 +156,60 @@ public class ContextPackController {
   }
 
   /**
-   * Every pack assembled for this project, newest first.
+   * One bounded page of this project's packs, newest first.
    *
    * <p>The whole pack is returned rather than a summary because the agreed contract defines one
    * shape for a pack and no lighter one; inventing a second shape here would put the API and the
-   * contract out of step in a way no test on either side would notice.
+   * contract out of step in a way no test on either side would notice. A request parameter is not a
+   * response type, though, so bounding <em>how many</em> of them come back needs no contract change
+   * — and it needs doing. Packs are append-only, so an unbounded route grows for the life of a
+   * project until the owner's own list request is the most expensive thing the API does. Forty
+   * packs measured 130 KB over 42 statements before this bound existed.
+   *
+   * <p><b>Two queries, and deliberately not one.</b> The ids are paged first and the packs fetched
+   * second. {@code ContextPackEntity.items} is {@code EAGER}, so selecting packs directly issues a
+   * further statement per pack; and a {@code join fetch} cannot be paged in the database, so
+   * combining the two would have Hibernate read every pack and discard most of them in memory.
+   * Ids then a fetch join is the shape that bounds both the rows read and the statements issued.
+   *
+   * <p>The page order comes from the id query and is re-imposed here, because a fetch-joined query
+   * returns roots in whatever order the joined rows arrive in. Nothing re-sorts by anything else:
+   * "newest first" is the repository's ordering, three keys deep, and this method's job is to not
+   * lose it.
    *
    * <p>An empty list is a real answer for a project with no packs, and is only ever reached after
    * the project gate has passed — for a project the caller may not see, the route answers 404
    * before it would have to choose between an empty list and a populated one. An empty list from an
-   * unauthorized read would itself confirm the id was real.
+   * unauthorized read would itself confirm the id was real. The limit does not change that: it is
+   * applied after the gate, never instead of it.
+   *
+   * @param limit how many packs to return, newest first. Out of range is refused rather than
+   *     clamped — a caller who asked for a thousand and silently received a hundred would have no
+   *     way to know the answer had been narrowed, and would read a partial list as a complete one.
    */
   @GetMapping
   @Transactional(readOnly = true)
-  public List<ContextPackResponse> list(@PathVariable UUID projectId) {
+  public List<ContextPackResponse> list(
+      @PathVariable UUID projectId,
+      @RequestParam(defaultValue = DEFAULT_LIST_LIMIT_TEXT)
+          @Min(value = 1, message = "limit must be at least 1")
+          @Max(value = MAX_LIST_LIMIT, message = "limit may not exceed 100")
+          int limit) {
     projects.requireReadable(projectId);
 
-    return packs.findByProjectIdOrderByAssembledAtDesc(projectId).stream()
+    List<UUID> page =
+        packs.findPackIdsByProjectNewestFirst(projectId, PageRequest.of(0, limit));
+    if (page.isEmpty()) {
+      return List.of();
+    }
+
+    Map<UUID, ContextPackEntity> loaded =
+        packs.findAllWithItemsByIdIn(page).stream()
+            .collect(Collectors.toMap(ContextPackEntity::getId, entity -> entity));
+
+    return page.stream()
+        .map(loaded::get)
+        .filter(Objects::nonNull)
         .map(ContextPackEntity::toCompiled)
         .map(ContextPackResponse::from)
         .toList();
