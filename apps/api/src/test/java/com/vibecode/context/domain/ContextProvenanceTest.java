@@ -19,11 +19,11 @@ class ContextProvenanceTest {
   void provenanceCarriesSourceTypeSourceIdProjectAndTimestamp() {
     ContextProvenance provenance =
         new ContextProvenance(
-            ContextSource.versioned(ContextSourceType.BRAIN_DECISION, "dec-7", 4),
+            ContextSource.versioned(ContextSourceType.BRAIN_ENTRY, "dec-7", 4),
             PROJECT,
             OBSERVED);
 
-    assertThat(provenance.sourceType()).isEqualTo(ContextSourceType.BRAIN_DECISION);
+    assertThat(provenance.sourceType()).isEqualTo(ContextSourceType.BRAIN_ENTRY);
     assertThat(provenance.sourceId()).isEqualTo("dec-7");
     assertThat(provenance.projectId()).isEqualTo(PROJECT);
     assertThat(provenance.recordedAt()).isEqualTo(OBSERVED);
@@ -44,7 +44,7 @@ class ContextProvenanceTest {
     assertThatThrownBy(
             () ->
                 new ContextItem(
-                    "i-1", ContextKind.STATE, "synthetic label", "synthetic content", null))
+                    "i-1", ContextKind.CURRENT_STATE, "synthetic label", "synthetic content", null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("cannot exist without provenance");
   }

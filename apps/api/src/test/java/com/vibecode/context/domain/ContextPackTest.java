@@ -38,9 +38,9 @@ class ContextPackTest {
   private static List<ContextItem> sampleItems() {
     List<ContextItem> items = new ArrayList<>();
     items.add(item("i-evidence", ContextKind.EVIDENCE, ContextSourceType.LATEST_EVIDENCE, "ev-1", "green"));
-    items.add(item("i-rule", ContextKind.RULE, ContextSourceType.BRAIN_RULE, "rule-9", "no dumps"));
+    items.add(item("i-rule", ContextKind.RULE, ContextSourceType.BRAIN_ENTRY, "rule-9", "no dumps"));
     items.add(item("i-task", ContextKind.OBJECTIVE, ContextSourceType.CURRENT_TASK, "task-3", "model the domain"));
-    items.add(item("i-decision", ContextKind.DECISION, ContextSourceType.BRAIN_DECISION, "dec-2", "modular monolith"));
+    items.add(item("i-decision", ContextKind.DECISION, ContextSourceType.BRAIN_ENTRY, "dec-2", "modular monolith"));
     return items;
   }
 
@@ -69,9 +69,9 @@ class ContextPackTest {
   @Test
   void itemIdBreaksAnyRemainingTieSoTheOrderIsTotal() {
     ContextItem b =
-        item("i-b", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "state-1", "beta");
+        item("i-b", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "state-1", "beta");
     ContextItem a =
-        item("i-a", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "state-1", "alpha");
+        item("i-a", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "state-1", "alpha");
 
     assertThat(ContextItem.CANONICAL_ORDER.compare(a, b)).isNegative();
     assertThat(ContextItem.CANONICAL_ORDER.compare(b, a)).isPositive();
@@ -82,7 +82,7 @@ class ContextPackTest {
   void aReturnedItemListCannotBeUsedToMutateThePack() {
     ContextPack built = pack(GENEROUS, sampleItems());
     ContextItem intruder =
-        item("i-intruder", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "state-x", "sneaked in");
+        item("i-intruder", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "state-x", "sneaked in");
 
     assertThatThrownBy(() -> built.items().add(intruder))
         .isInstanceOf(UnsupportedOperationException.class);
@@ -104,9 +104,9 @@ class ContextPackTest {
     // "eur" costs three bytes in UTF-8 and one character, so the two dimensions must not agree.
     String multiByte = "cout: 3€";
     ContextItem ascii =
-        item("i-ascii", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "state-1", "abcde");
+        item("i-ascii", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "state-1", "abcde");
     ContextItem wide =
-        item("i-wide", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "state-2", multiByte);
+        item("i-wide", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "state-2", multiByte);
 
     ContextUsage usage = pack(GENEROUS, List.of(ascii, wide)).usage();
 
@@ -133,9 +133,9 @@ class ContextPackTest {
   @Test
   void twoItemsCannotShareAnIdBecauseTheIdIsTheFinalOrderingKey() {
     ContextItem one =
-        item("i-same", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "state-1", "first");
+        item("i-same", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "state-1", "first");
     ContextItem two =
-        item("i-same", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "state-2", "second");
+        item("i-same", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "state-2", "second");
 
     assertThatThrownBy(() -> pack(GENEROUS, List.of(one, two)))
         .isInstanceOf(IllegalArgumentException.class)
@@ -147,7 +147,7 @@ class ContextPackTest {
     ContextItem foreign =
         new ContextItem(
             "i-foreign",
-            ContextKind.STATE,
+            ContextKind.CURRENT_STATE,
             "synthetic foreign",
             "belongs elsewhere",
             new ContextProvenance(
@@ -169,7 +169,7 @@ class ContextPackTest {
     ContextItem shiftedLeft =
         new ContextItem(
             "i-1",
-            ContextKind.STATE,
+            ContextKind.CURRENT_STATE,
             "x",
             "1" + separator + "2",
             new ContextProvenance(
@@ -177,7 +177,7 @@ class ContextPackTest {
     ContextItem shiftedRight =
         new ContextItem(
             "i-1",
-            ContextKind.STATE,
+            ContextKind.CURRENT_STATE,
             "x" + separator + "1",
             "2",
             new ContextProvenance(
@@ -193,9 +193,9 @@ class ContextPackTest {
         new ContextProvenance(
             ContextSource.of(ContextSourceType.CURRENT_STATE, "s-1"), PROJECT, OBSERVED);
     ContextItem shown =
-        new ContextItem("i-1", ContextKind.STATE, "Current phase", "phase six", provenance);
+        new ContextItem("i-1", ContextKind.CURRENT_STATE, "Current phase", "phase six", provenance);
     ContextItem relabelled =
-        new ContextItem("i-1", ContextKind.STATE, "Something else", "phase six", provenance);
+        new ContextItem("i-1", ContextKind.CURRENT_STATE, "Something else", "phase six", provenance);
 
     assertThat(pack(GENEROUS, List.of(shown)).contentFingerprint())
         .isNotEqualTo(pack(GENEROUS, List.of(relabelled)).contentFingerprint());
@@ -207,14 +207,14 @@ class ContextPackTest {
     ContextItem readEarlier =
         new ContextItem(
             "i-1",
-            ContextKind.STATE,
+            ContextKind.CURRENT_STATE,
             "Current phase",
             "phase six",
             new ContextProvenance(source, PROJECT, OBSERVED));
     ContextItem readLater =
         new ContextItem(
             "i-1",
-            ContextKind.STATE,
+            ContextKind.CURRENT_STATE,
             "Current phase",
             "phase six",
             new ContextProvenance(source, PROJECT, OBSERVED.plusSeconds(3600)));
@@ -229,7 +229,7 @@ class ContextPackTest {
     // grinning face is one code point, two code units and four UTF-8 bytes.
     String grinningFace = new String(Character.toChars(0x1F600));
     ContextItem emoji =
-        item("i-emoji", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "s-1", grinningFace);
+        item("i-emoji", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "s-1", grinningFace);
 
     assertThat(grinningFace.codePointCount(0, grinningFace.length())).isEqualTo(1);
     assertThat(emoji.characterCount()).isEqualTo(2L);

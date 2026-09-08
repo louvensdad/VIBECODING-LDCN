@@ -53,10 +53,10 @@ class ContextOrderingTest {
 
   @Test
   void sourceTypeDecidesEvenWhenEveryLaterKeyDisagrees() {
-    // The rule sorts first on source rank (BRAIN_RULE 70 before CURRENT_TASK 100) while kind,
+    // The rule sorts first on source rank (BRAIN_ENTRY 30 before CURRENT_TASK 60) while kind,
     // source id and item id would all put the task item first.
     ContextItem task = item("i-a", ContextKind.OBJECTIVE, ContextSourceType.CURRENT_TASK, "s-a", "objective");
-    ContextItem rule = item("i-b", ContextKind.RULE, ContextSourceType.BRAIN_RULE, "s-b", "rule");
+    ContextItem rule = item("i-b", ContextKind.RULE, ContextSourceType.BRAIN_ENTRY, "s-b", "rule");
 
     assertThat(idsOf(List.of(task, rule))).containsExactly("i-b", "i-a");
     assertThat(idsOf(List.of(rule, task))).containsExactly("i-b", "i-a");
@@ -81,9 +81,9 @@ class ContextOrderingTest {
     // Same source type and same kind, so keys 1 and 2 are ties. Source id "s-a" sorts before "s-b",
     // and the item ids are chosen to order the other way.
     ContextItem fromA =
-        item("i-z", ContextKind.DECISION, ContextSourceType.BRAIN_DECISION, "s-a", "first record");
+        item("i-z", ContextKind.DECISION, ContextSourceType.BRAIN_ENTRY, "s-a", "first record");
     ContextItem fromB =
-        item("i-a", ContextKind.DECISION, ContextSourceType.BRAIN_DECISION, "s-b", "second record");
+        item("i-a", ContextKind.DECISION, ContextSourceType.BRAIN_ENTRY, "s-b", "second record");
 
     assertThat(ContextItem.CANONICAL_ORDER.compare(fromA, fromB)).isNegative();
     assertThat(idsOf(List.of(fromB, fromA))).containsExactly("i-z", "i-a");
@@ -95,11 +95,11 @@ class ContextOrderingTest {
     // These three tie on source type, kind and source id, so only the final key can separate them.
     // Sorting is stable, so without that key each permutation would keep its insertion order.
     ContextItem alpha =
-        item("i-alpha", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "s-same", "alpha text");
+        item("i-alpha", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "s-same", "alpha text");
     ContextItem beta =
-        item("i-beta", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "s-same", "beta text");
+        item("i-beta", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "s-same", "beta text");
     ContextItem gamma =
-        item("i-gamma", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "s-same", "gamma text");
+        item("i-gamma", ContextKind.CURRENT_STATE, ContextSourceType.CURRENT_STATE, "s-same", "gamma text");
 
     List<String> expected = List.of("i-alpha", "i-beta", "i-gamma");
     String expectedFingerprint = pack(List.of(alpha, beta, gamma)).contentFingerprint();
@@ -145,18 +145,14 @@ class ContextOrderingTest {
   }
 
   @Test
-  void theSourceVocabularyIsExactlyTheApprovedFifteen() {
-    // A sixteenth source is a decision for the architect, not a side effect of a collector needing
+  void theSourceVocabularyIsExactlyTheApprovedEleven() {
+    // A twelfth source is a decision for the architect, not a side effect of a collector needing
     // somewhere to put something. The same goes for quietly dropping one.
     Set<ContextSourceType> approved =
         EnumSet.of(
             ContextSourceType.PROJECT,
             ContextSourceType.CURRENT_STATE,
-            ContextSourceType.BRAIN_VISION,
-            ContextSourceType.BRAIN_REQUIREMENT,
-            ContextSourceType.BRAIN_ARCHITECTURE,
-            ContextSourceType.BRAIN_DECISION,
-            ContextSourceType.BRAIN_RULE,
+            ContextSourceType.BRAIN_ENTRY,
             ContextSourceType.ROADMAP,
             ContextSourceType.CURRENT_PHASE,
             ContextSourceType.CURRENT_TASK,
@@ -166,27 +162,50 @@ class ContextOrderingTest {
             ContextSourceType.ACTIVE_ERRORS,
             ContextSourceType.SECURITY_SUMMARY);
 
-    assertThat(approved).hasSize(15);
+    assertThat(approved).hasSize(11);
     assertThat(EnumSet.allOf(ContextSourceType.class)).isEqualTo(approved);
   }
 
   @Test
-  void theKindVocabularyIsExactlyTheDeclaredTen() {
+  void brainEntryIsTheOnlyBrainSourceBecauseMeaningLivesOnTheOtherAxis() {
+    // A BRAIN_ARCHITECTURE or BRAIN_DECISION constant would fold the entry's meaning into its
+    // origin, which loses the entry types that have no matching constant and misfiles the rest.
+    assertThat(
+            Arrays.stream(ContextSourceType.values())
+                .map(Enum::name)
+                .filter(name -> name.startsWith("BRAIN"))
+                .toList())
+        .containsExactly("BRAIN_ENTRY");
+  }
+
+  @Test
+  void theKindVocabularyIsExactlyTheDeclaredSeventeen() {
+    // Thirteen carry a BrainEntryType name so every kind of memory has a faithful home; four cover
+    // meanings no brain entry expresses. There is no UNKNOWN and no OTHER.
     Set<ContextKind> declared =
         EnumSet.of(
             ContextKind.OBJECTIVE,
             ContextKind.CONSTRAINT,
-            ContextKind.RULE,
-            ContextKind.DECISION,
+            ContextKind.VISION,
             ContextKind.REQUIREMENT,
             ContextKind.ARCHITECTURE,
-            ContextKind.STATE,
+            ContextKind.TECHNOLOGY,
+            ContextKind.DECISION,
+            ContextKind.RULE,
+            ContextKind.CURRENT_STATE,
+            ContextKind.COMPLETED_STEP,
+            ContextKind.NEXT_STEP,
             ContextKind.EVIDENCE,
-            ContextKind.DEFECT,
-            ContextKind.SECURITY_NOTE);
+            ContextKind.PROMPT_RESULT,
+            ContextKind.ERROR,
+            ContextKind.SOLUTION,
+            ContextKind.SECURITY_NOTE,
+            ContextKind.NOTE);
 
-    assertThat(declared).hasSize(10);
+    assertThat(declared).hasSize(17);
     assertThat(EnumSet.allOf(ContextKind.class)).isEqualTo(declared);
+    assertThat(Arrays.stream(ContextKind.values()).map(Enum::name).toList())
+        .doesNotContain("UNKNOWN", "OTHER", "UNCLASSIFIED");
   }
 
   @Test

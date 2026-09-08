@@ -151,6 +151,13 @@ public record ContextPack(
    *
    * <p>It is an equality check, not a security control: it proves nothing about who produced the
    * pack and must not be used as one.
+   *
+   * <p><b>It is not identity either, and persistence must not treat it as such.</b> This is a digest
+   * of logical content: two packs assembled at different times from unchanged state share it by
+   * design, and any change to what is covered changes every digest ever computed. It must not become
+   * a primary key, a foreign key, or a unique business key, and a row must not be found by it.
+   * Persistent identity is {@link #packId()}, a UUID, and stays that way. A digest that a compiler
+   * step needs for caching or change detection belongs to that step, under its own name.
    */
   public String contentFingerprint() {
     StringBuilder canonical = new StringBuilder();
