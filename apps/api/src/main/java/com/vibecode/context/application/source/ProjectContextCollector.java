@@ -16,14 +16,31 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * The project row itself: who it is and what it was for.
  *
- * <p>Each field becomes its own candidate rather than one paragraph stitched together. A single
- * merged item would force the selection step to take the idea and the status together or not at
- * all, and would make a shorter budget lose both. Splitting costs nothing here and leaves the
- * decision where it belongs.
+ * <p>Three candidates, split by what they are rather than by which column they live in. Folding them
+ * into one paragraph would force the selection step to take the idea and the status together or not
+ * at all, and a shorter budget would lose both.
+ *
+ * <p><b>On the kinds, because one of them was wrong.</b> The identity item and the original idea are
+ * both {@link ContextKind#VISION}: that constant means the product vision — what is being built —
+ * and the name-plus-description is the shortest statement the system holds of exactly that, with the
+ * original idea the longest. The status item is {@code CURRENT_STATE}, which as a kind is what a
+ * record <em>says</em> about where things stand, whatever source it was read from.
+ *
+ * <p>These were previously filed as {@code NOTE}, which was a mistake worth naming. {@code NOTE}'s
+ * own javadoc says it is "not a fallback: a note is chosen, never assigned because nothing else
+ * fitted", and that is precisely how it was being used — the fallback the enum exists to forbid.
+ *
+ * <p><b>A vocabulary gap, for the record.</b> None of the seventeen kinds means "the identity of the
+ * thing being built". A bare project name is not a vision, a note or a decision; it is the handle
+ * everything else is addressed by. This collector does not paper over that with a nearest-fit
+ * constant: it emits the name joined to the description, where {@code VISION} is an honest fit for
+ * the pair, and the name is never filed as a kind on its own. If an {@code IDENTITY} kind is ever
+ * wanted so the inspector can tell a name from a vision statement, that is a deliberate change to
+ * {@code ContextKind} and belongs to whoever owns the domain vocabulary, not here.
  *
  * <p>The name and the original idea always exist — the entity refuses to be built without them. The
- * description may be absent, and an absent field yields no item: there is no record to represent, so
- * omitting it is not a filtering decision.
+ * description may be absent, and an absent field adds nothing to the identity item: there is no
+ * record to represent, so omitting it is not a filtering decision.
  */
 @Component
 @Transactional(readOnly = true)
@@ -52,24 +69,23 @@ public class ProjectContextCollector implements ContextCollector {
     ContextProvenance provenance =
         new ContextProvenance(source, project.getId(), project.getUpdatedAt());
 
+    // The name and the description are one statement the schema happens to keep in two columns:
+    // "VibeCode" answers nothing on its own, and a description read without the name it belongs to
+    // is a sentence about an unnamed thing. Emitted together they say what is being built, which is
+    // what VISION means. Both strings appear verbatim, so nothing is lost by joining them.
+    String identity =
+        project.getDescription() == null || project.getDescription().isBlank()
+            ? project.getName()
+            : project.getName() + "\n" + project.getDescription();
+
     List<ContextItem> items = new ArrayList<>();
     items.add(
         new ContextItem(
-            "project:" + project.getId() + ":name",
-            ContextKind.NOTE,
-            "Project name",
-            project.getName(),
+            "project:" + project.getId() + ":identity",
+            ContextKind.VISION,
+            "Project",
+            identity,
             provenance));
-
-    if (project.getDescription() != null && !project.getDescription().isBlank()) {
-      items.add(
-          new ContextItem(
-              "project:" + project.getId() + ":description",
-              ContextKind.NOTE,
-              "Project description",
-              project.getDescription(),
-              provenance));
-    }
 
     items.add(
         new ContextItem(

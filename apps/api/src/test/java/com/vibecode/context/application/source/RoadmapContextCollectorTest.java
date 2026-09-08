@@ -51,6 +51,36 @@ class RoadmapContextCollectorTest extends CollectorTestSupport {
   }
 
   @Test
+  @DisplayName("The outline goes stale when the plan changes, and says so")
+  void outlineIsDatedAtThePhasesItIsBuiltFrom() {
+    Fixture fixture = createFullProject("RoadmapStaleness");
+
+    ContextItem before = outlineOf(fixture);
+    roadmaps.addPhase(fixture.projectId(), 4, "Launch", "Added after the first read");
+    ContextItem after = outlineOf(fixture);
+
+    // The outline's content is built entirely from the phase rows, so adding a phase changes it.
+    assertThat(after.content()).isNotEqualTo(before.content());
+    assertThat(after.content()).contains("4. Launch");
+
+    // Therefore the instant it claims to have been observed at has to move too. Dating the outline
+    // at Roadmap.updatedAt does not: that column is written once in the constructor and never
+    // again, so the item would report the moment an empty roadmap row was inserted and go on
+    // reporting it however much the plan changed underneath. An item that can never be seen as
+    // stale is worse than one that is missing.
+    assertThat(after.provenance().recordedAt()).isAfter(before.provenance().recordedAt());
+  }
+
+  private ContextItem outlineOf(Fixture fixture) {
+    return candidates
+        .collectFrom(ContextSourceType.ROADMAP, fixture.projectId(), ContextReadWindow.DEFAULT)
+        .stream()
+        .filter(item -> item.id().startsWith("roadmap:"))
+        .findFirst()
+        .orElseThrow();
+  }
+
+  @Test
   @DisplayName("A project with no roadmap yields nothing, and does not fail")
   void noRoadmapYieldsNothing() {
     identity.createAndAuthenticate("RoadmapCollectorEmpty");

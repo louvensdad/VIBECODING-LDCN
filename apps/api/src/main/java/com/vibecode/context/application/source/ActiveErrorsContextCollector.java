@@ -5,15 +5,12 @@ import com.vibecode.context.domain.ContextKind;
 import com.vibecode.context.domain.ContextProvenance;
 import com.vibecode.context.domain.ContextSource;
 import com.vibecode.context.domain.ContextSourceType;
-import com.vibecode.output.application.EvidenceService;
 import com.vibecode.output.domain.OutputAnalysisRecord;
-import com.vibecode.output.domain.TaskEvidence;
 import com.vibecode.output.infrastructure.OutputAnalysisRecordRepository;
 import com.vibecode.state.application.ProjectStateService;
 import com.vibecode.task.domain.Task;
 import com.vibecode.task.domain.TaskStatus;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
@@ -44,23 +41,31 @@ import org.springframework.transaction.annotation.Transactional;
  * full by the brain collector, as {@code sourceType=BRAIN_ENTRY, kind=ERROR}. It is the {@code
  * ACTIVE_ERRORS} claim that is withheld, not the content.
  *
- * <p>Analyses are read through the same bounded window as the evidence they judge; see {@link
- * ContextReadWindow}. Blocked tasks are not windowed — a project's task list is bounded by its plan.
+ * <p><b>Neither half is windowed.</b> {@link ContextReadWindow} bounds sources that grow with how
+ * fast a machine produces output; an open problem is not one of those. How many blocked tasks a
+ * project has is bounded by its plan, and how many runs are awaiting correction is a fact about the
+ * project — five hundred of them is a real signal, not noise to be capped. Reading these through the
+ * evidence window would have been worse than a cap: a verdict that fell out of the window would
+ * leave {@code ACTIVE_ERRORS} and {@code LATEST_OUTPUT_ANALYSIS} at the same moment, since both read
+ * the same evidence rows, so the failure would survive nowhere at all. That is content dying in a
+ * collector, which is the one outcome this whole layer exists to prevent — and it is the difference
+ * from the brain {@code ERROR} case above, where only the claim is withheld and the content lives on.
+ *
+ * <p>This collector queries {@code OutputAnalysisRecordRepository} directly, by project id. That
+ * query would answer for anyone, so what scopes it to the caller is the {@code
+ * ProjectStateService.of} call earlier in the same method, which calls {@code requireReadable}
+ * before it computes anything. Removing that call removes the only ownership check on this read.
  */
 @Component
 @Transactional(readOnly = true)
 public class ActiveErrorsContextCollector implements ContextCollector {
 
   private final ProjectStateService state;
-  private final EvidenceService evidence;
   private final OutputAnalysisRecordRepository analyses;
 
   public ActiveErrorsContextCollector(
-      ProjectStateService state,
-      EvidenceService evidence,
-      OutputAnalysisRecordRepository analyses) {
+      ProjectStateService state, OutputAnalysisRecordRepository analyses) {
     this.state = state;
-    this.evidence = evidence;
     this.analyses = analyses;
   }
 
@@ -71,31 +76,25 @@ public class ActiveErrorsContextCollector implements ContextCollector {
 
   @Override
   public List<ContextItem> collect(UUID projectId, ContextReadWindow window) {
-    // Both reads authorize the project first: ProjectStateService.of and
-    // EvidenceService.listRecentForProject each call requireReadable before querying.
+    // This is the ownership check for both reads below, including the repository query, which
+    // takes a project id and would otherwise answer for anyone.
     List<Task> tasks = state.of(projectId).allTasks();
-    List<UUID> evidenceIds =
-        evidence.listRecentForProject(projectId, window.recentRecords()).stream()
-            .map(TaskEvidence::getId)
-            .toList();
 
     List<ContextItem> items = new ArrayList<>();
     tasks.stream()
         .filter(task -> task.getStatus() == TaskStatus.BLOCKED)
-        // allTasks is already in plan order, which is stable; the id keeps ties total.
+        // No tiebreak needed, and none is pretended: listOrdered sorts by phase position then task
+        // position, and V3 declares UNIQUE(phase_id, position), so those two keys are already a
+        // total order. If that constraint is ever relaxed, this becomes non-deterministic and an
+        // explicit tiebreak has to be added here.
         .map(task -> blockedTask(projectId, task))
         .forEach(items::add);
 
-    if (!evidenceIds.isEmpty()) {
-      analyses.findByEvidenceIdIn(evidenceIds).stream()
-          .filter(OutputAnalysisRecord::isRequiresCorrection)
-          .sorted(
-              Comparator.comparing(OutputAnalysisRecord::getCreatedAt)
-                  .reversed()
-                  .thenComparing(analysis -> analysis.getId().toString()))
-          .map(analysis -> failingRun(projectId, analysis))
-          .forEach(items::add);
-    }
+    // Ordered and filtered in the database; see the repository method for why it is unbounded.
+    analyses.findRequiringCorrectionByProjectId(projectId).stream()
+        .map(analysis -> failingRun(projectId, analysis))
+        .forEach(items::add);
+
     return List.copyOf(items);
   }
 

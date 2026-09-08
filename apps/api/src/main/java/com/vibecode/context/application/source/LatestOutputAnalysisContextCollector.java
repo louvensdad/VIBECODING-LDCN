@@ -28,6 +28,12 @@ import org.springframework.transaction.annotation.Transactional;
  * table has no project column of its own, so this is also what keeps the read inside one project:
  * an evidence id the caller could not see produces no analysis here.
  *
+ * <p>Put plainly, since this collector queries {@code OutputAnalysisRecordRepository} directly: the
+ * ownership check it depends on is the {@code requireReadable} inside {@code
+ * EvidenceService.listRecentForProject}, called first in {@link #collect}. The repository is asked
+ * only about ids that read returned, so it is never given an id the caller has not already been
+ * cleared for.
+ *
  * <p>Every verdict in the window is emitted, failing and passing alike. Keeping only the failures
  * would quietly assert that a successful run says nothing worth knowing.
  */

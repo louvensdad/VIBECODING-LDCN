@@ -7,6 +7,8 @@ import com.vibecode.context.domain.ContextSource;
 import com.vibecode.context.domain.ContextSourceType;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.project.domain.Project;
+import com.vibecode.roadmap.application.RoadmapService;
+import com.vibecode.roadmap.domain.RoadmapPhase;
 import com.vibecode.state.application.ProjectStateService;
 import com.vibecode.state.domain.ProjectState;
 import com.vibecode.task.domain.Task;
@@ -44,10 +46,13 @@ public class CurrentStateContextCollector implements ContextCollector {
 
   private final ProjectService projects;
   private final ProjectStateService state;
+  private final RoadmapService roadmaps;
 
-  public CurrentStateContextCollector(ProjectService projects, ProjectStateService state) {
+  public CurrentStateContextCollector(
+      ProjectService projects, ProjectStateService state, RoadmapService roadmaps) {
     this.projects = projects;
     this.state = state;
+    this.roadmaps = roadmaps;
   }
 
   @Override
@@ -61,13 +66,17 @@ public class CurrentStateContextCollector implements ContextCollector {
     // rather than an empty state.
     Project project = projects.requireReadable(projectId);
     ProjectState current = state.of(projectId);
+    // Read for their timestamps only. ProjectState carries the phases that have no tasks by
+    // title alone, and the item's content is derived from all of them, so the fold behind
+    // recordedAt needs the rows themselves.
+    List<RoadmapPhase> phases = roadmaps.listPhases(projectId);
 
     // The computed state has no row of its own, so the project it was computed for is the
     // addressable record behind it. Unversioned: there is nothing to version.
     ContextSource source =
         ContextSource.of(ContextSourceType.CURRENT_STATE, projectId.toString());
     ContextProvenance provenance =
-        new ContextProvenance(source, projectId, observedAt(project, current));
+        new ContextProvenance(source, projectId, observedAt(project, current, phases));
 
     List<ContextItem> items = new ArrayList<>();
     items.add(
@@ -113,13 +122,24 @@ public class CurrentStateContextCollector implements ContextCollector {
     return List.copyOf(items);
   }
 
-  private Instant observedAt(Project project, ProjectState current) {
+  /**
+   * The newest change among every record the state was computed from.
+   *
+   * <p><b>Every phase, not just the current one.</b> {@code phasesWithoutTasks} is derived from all
+   * of them, so a phase nobody has broken down yet is an input to the content whether or not the
+   * work happens to be in it. Folding only the current phase left an item whose text could change
+   * while its provenance swore nothing had been observed to change — the exact staleness blindness
+   * this method exists to prevent.
+   */
+  private Instant observedAt(Project project, ProjectState current, List<RoadmapPhase> phases) {
     Instant latestTask =
         current.allTasks().stream().map(Task::getUpdatedAt).max(Instant::compareTo).orElse(null);
+    Instant latestPhase =
+        phases.stream().map(RoadmapPhase::getUpdatedAt).max(Instant::compareTo).orElse(null);
     return SourceObservation.latestOf(
         project.getUpdatedAt(),
         latestTask,
-        current.currentPhase() == null ? null : current.currentPhase().getUpdatedAt(),
+        latestPhase,
         current.lastEvidence() == null ? null : current.lastEvidence().getCreatedAt(),
         current.lastAnalysis() == null ? null : current.lastAnalysis().getCreatedAt());
   }

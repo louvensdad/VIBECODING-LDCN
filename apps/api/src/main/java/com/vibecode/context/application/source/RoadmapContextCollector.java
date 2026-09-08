@@ -10,6 +10,7 @@ import com.vibecode.roadmap.application.RoadmapService;
 import com.vibecode.roadmap.domain.Roadmap;
 import com.vibecode.roadmap.domain.RoadmapPhase;
 import com.vibecode.roadmap.infrastructure.RoadmapRepository;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -32,6 +33,14 @@ import org.springframework.transaction.annotation.Transactional;
  * different questions, and collapsing them would lose one of the two answers.
  *
  * <p>A project with no roadmap yields nothing. That is the absence of a record, not a filter.
+ *
+ * <p>This collector reads {@code RoadmapRepository} directly, by project id. That query would answer
+ * for anyone, so what scopes it to the caller is the {@code projects.requireReadable} call at the
+ * top of {@link #collect} — and only that call. The roadmap-bearing path happens to authorize again
+ * further down inside {@code listPhases}, but the early return for a project with no roadmap reaches
+ * no service at all, so deleting that one line would hand a stranger an empty list where a
+ * not-found belongs. {@code CollectorOwnershipIsolationTest} keeps an unplanned project in its
+ * fixture for exactly that reason.
  */
 @Component
 @Transactional(readOnly = true)
@@ -88,7 +97,27 @@ public class RoadmapContextCollector implements ContextCollector {
         ContextKind.OBJECTIVE,
         "Roadmap",
         outline,
-        new ContextProvenance(source, projectId, roadmap.getUpdatedAt()));
+        new ContextProvenance(source, projectId, observedAt(roadmap, phases)));
+  }
+
+  /**
+   * When the plan was last observed to change.
+   *
+   * <p><b>Not {@code roadmap.getUpdatedAt()}.</b> That column is written once, in the constructor,
+   * and nothing ever writes it again — no {@code @PreUpdate}, no mutator, nothing in
+   * {@code RoadmapService}. Dating the outline at it would have the item report the instant an empty
+   * roadmap row was inserted, and go on reporting it after ten phases had been added, moved and
+   * completed. Since the outline's content is built entirely from the phase rows, that is an item
+   * whose text changes while its provenance swears it has not — and {@code ContextProvenance}
+   * exists so that a stale item is visible as stale.
+   *
+   * <p>So the outline is dated at the newest phase, with the roadmap's own instant as the floor for
+   * a plan that has no phases yet.
+   */
+  private Instant observedAt(Roadmap roadmap, List<RoadmapPhase> phases) {
+    Instant latestPhase =
+        phases.stream().map(RoadmapPhase::getUpdatedAt).max(Instant::compareTo).orElse(null);
+    return SourceObservation.latestOf(roadmap.getUpdatedAt(), latestPhase);
   }
 
   /**

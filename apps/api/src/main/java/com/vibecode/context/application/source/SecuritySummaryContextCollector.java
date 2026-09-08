@@ -41,6 +41,11 @@ import org.springframework.transaction.annotation.Transactional;
  * the item is dated at the most recent change among the findings the posture was computed from,
  * falling back to the project's own last change when there are none. The findings are read for their
  * timestamps alone; no field of theirs is ever put into an item.
+ *
+ * <p>That timestamp read goes to {@code SecurityFindingRepository} directly, by project id, and such
+ * a query would answer for anyone. What scopes it to the caller is the {@code
+ * projects.requireReadable} call at the top of {@link #collect}; {@code SecurityAssessmentService}
+ * repeats the check for its own read, but it does not cover this one.
  */
 @Component
 @Transactional(readOnly = true)

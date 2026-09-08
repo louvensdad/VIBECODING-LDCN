@@ -52,4 +52,34 @@ class CurrentStateContextCollectorTest extends CollectorTestSupport {
     assertThat(pending.kind()).isEqualTo(ContextKind.NEXT_STEP);
     assertThat(pending.content()).isEqualTo(fixture.phaseWithoutTasks().getTitle());
   }
+
+  @Test
+  @DisplayName("A phase nobody has broken down yet moves the state's observation instant")
+  void stateIsDatedAtEveryRecordItIsComputedFrom() {
+    Fixture fixture = createFullProject("StateStaleness");
+
+    ContextItem before = pendingPhasesOf(fixture);
+    roadmaps.addPhase(fixture.projectId(), 4, "Launch", "Planned, nobody has detailed it");
+    ContextItem after = pendingPhasesOf(fixture);
+
+    // phasesWithoutTasks is computed from every phase row, so a new empty phase changes it.
+    assertThat(after.content()).isNotEqualTo(before.content());
+    assertThat(after.content()).contains("Launch");
+
+    // So the fold behind recordedAt has to see every phase, not only the current one. Folding just
+    // the current phase leaves this item asserting an observation instant from before the record
+    // it is built from existed. All three state items share one provenance, so getting this wrong
+    // misdates the progress item too.
+    assertThat(after.provenance().recordedAt()).isAfter(before.provenance().recordedAt());
+  }
+
+  private ContextItem pendingPhasesOf(Fixture fixture) {
+    return candidates
+        .collectFrom(
+            ContextSourceType.CURRENT_STATE, fixture.projectId(), ContextReadWindow.DEFAULT)
+        .stream()
+        .filter(item -> item.id().endsWith(":phases-without-tasks"))
+        .findFirst()
+        .orElseThrow();
+  }
 }

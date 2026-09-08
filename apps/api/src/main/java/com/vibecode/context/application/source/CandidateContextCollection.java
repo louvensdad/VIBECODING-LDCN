@@ -25,6 +25,15 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>The result is sorted by {@code ContextItem.CANONICAL_ORDER}, which is total here because item
  * ids are unique across collectors. So the order does not depend on the order Spring happened to
  * inject the collectors in, and two collections of unchanged data are identical.
+ *
+ * <p><b>One bad record fails the whole collection, deliberately.</b> {@code ContextItem} rejects
+ * blank content, and several of the columns behind that content carry no non-blank invariant of
+ * their own, so a row that should not exist would throw here and take all eleven sources down with
+ * it rather than costing one item. No reachable case is known — every writer goes through a service
+ * that supplies the field — but the behaviour is a choice, not an oversight. Catching and skipping
+ * would turn a corrupt record into a silently shorter pack, and a context engine whose whole claim
+ * is that the pack can be traced back to state must not quietly omit state it could not read. A
+ * loud failure gets fixed; a missing item gets shipped.
  */
 @Service
 @Transactional(readOnly = true)

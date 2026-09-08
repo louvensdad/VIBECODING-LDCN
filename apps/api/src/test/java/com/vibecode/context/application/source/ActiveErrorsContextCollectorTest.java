@@ -6,6 +6,7 @@ import com.vibecode.brain.domain.BrainEntryType;
 import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextKind;
 import com.vibecode.context.domain.ContextSourceType;
+import com.vibecode.output.domain.EvidenceType;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,37 @@ class ActiveErrorsContextCollectorTest extends CollectorTestSupport {
     assertThat(blocked.provenance().sourceId())
         .isEqualTo(fixture.blockedTask().getId().toString());
     assertThat(blocked.content()).contains(fixture.blockedTask().getTitle());
+  }
+
+  @Test
+  @DisplayName("An open correction outlives the read window, even as it falls out of LATEST_*")
+  void openCorrectionsAreNotWindowed() {
+    Fixture fixture = createFullProject("ActiveErrorsWindow");
+
+    // Bury the failing run under newer evidence. A window of one is the same proof as fifty newer
+    // rows against the default and costs a fraction of the time.
+    for (int run = 0; run < 3; run++) {
+      evidence.record(
+          fixture.projectId(),
+          fixture.blockedTask().getId(),
+          EvidenceType.TEST_RESULT,
+          "Tests run: 4, Failures: 0, Errors: 0",
+          "maven");
+    }
+    ContextReadWindow narrow = new ContextReadWindow(1);
+
+    // The windowed source has genuinely lost sight of it — that is the window doing its job.
+    assertThat(
+            candidates.collectFrom(
+                ContextSourceType.LATEST_OUTPUT_ANALYSIS, fixture.projectId(), narrow))
+        .extracting(ContextItem::id)
+        .doesNotContain("analysis:" + fixture.failingAnalysisId());
+
+    // So if ACTIVE_ERRORS read the same window, the failure would survive nowhere at all. An open
+    // problem is bounded by the project, not by how fast evidence arrives, so it is not windowed.
+    assertThat(candidates.collectFrom(ContextSourceType.ACTIVE_ERRORS, fixture.projectId(), narrow))
+        .extracting(ContextItem::id)
+        .contains("active-error:analysis:" + fixture.failingAnalysisId());
   }
 
   @Test
