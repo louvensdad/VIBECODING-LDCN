@@ -51,7 +51,12 @@ class ProductionLoggingConfigTest {
           // Bean Validation, on the same request as the two above.
           "org.hibernate.validator.internal.engine.resolver.JPATraversableResolver",
           // The rejected request: the value leaves through the exception, not the body.
-          "org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver");
+          "org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver",
+          // The rejected write. A driver builds the failing value into its exception message, and
+          // this one concatenates the exception into its own message on every rollback — which is
+          // the one carrier SqlErrorDetailTurboFilter cannot reach, because a TurboFilter allows or
+          // denies and never rewrites.
+          "org.springframework.transaction.interceptor.TransactionInterceptor");
 
   @Test
   @DisplayName("The shipped application.yml pins every value-printing Hibernate category")

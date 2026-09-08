@@ -54,27 +54,54 @@ spring:
 # deliberately, in an environment where the operator accepts that the log file now contains user
 # data. That is the intended escape hatch, and it should never be a standing setting.
 #
-# Known residual, reachable today: `org.hibernate.engine.jdbc.spi.SqlExceptionHelper` logs the
-# driver's exception message, and the driver builds that message out of the value that caused the
-# failure. It logs at ERROR, so no level pin can reach it and no operator has to opt in — an
-# ordinary constraint violation is enough. On H2 an over-length column produces
-# `Value too long for column "title CHARACTER VARYING(200)": "'<the value>...`; on PostgreSQL,
-# pgjdbc copies the server's DETAIL line into the message, which carries the conflicting key for a
-# unique violation and every column of the row for a check violation. What keeps this narrow is
-# validation upstream — the web DTO @Size maxima match their column lengths — not anything here.
-# Closing it properly needs a Logback TurboFilter or MessageConverter in src/main/java, or
-# `logServerErrorDetail=false` on the JDBC URL, which costs real diagnostic value and does nothing
-# for H2. That is a deliberate trade and it has not been made.
+# The residual this file used to record as open is closed, and not by a level. A driver builds the
+# value that caused a failure into the message of the SQLException it throws;
+# `org.hibernate.engine.jdbc.spi.SqlExceptionHelper` prints that message verbatim at ERROR, on an
+# ordinary constraint violation, with nobody opting in — so no pin here could ever have reached it.
+# Both halves of the note that used to stand here were reproduced before anything was changed, on
+# this repository's own H2 test database: an over-length `display_name` produced `Value too long for
+# column "display_name CHARACTER VARYING(80)": "'<the value>...`, and a duplicate email produced the
+# whole conflicting key inside `Unique index or primary key violation: "... VALUES ( '<the value>'
+# )"`. PostgreSQL was checked separately, on a throwaway database created and dropped for the
+# purpose: a unique violation answers `DETAIL: Key (email)=(<the value>) already exists.` and a check
+# violation answers `DETAIL: Failing row contains (<every column of the row>).`, while an
+# over-length value is refused with `value too long for type character varying(20)` and no echo at
+# all. pgjdbc copies that DETAIL line into the exception message unless `logServerErrorDetail=false`
+# is set on the URL, so the same ERROR line carries it there. That last part is the one claim here
+# taken from pgjdbc's documented behaviour rather than observed in this repository: the suite runs
+# on H2, and the fix does not depend on which driver is underneath.
 #
-# This note is not an inventory, and should not be read as one. Once the driver has built the value
-# into an exception message, that message travels wherever the exception does:
-# `org.springframework.transaction.interceptor.TransactionInterceptor` carries it too, at TRACE,
-# and unlike SqlExceptionHelper that one is pin-reachable. It is deliberately not pinned. Silencing
-# the second vehicle while the first still emits at ERROR would lengthen this list without changing
-# what ends up in the log file, which is the security theatre the rule at the top exists to
-# prevent. The thing that would actually matter is closing the ERROR-level path; until then, assume
-# any category that logs an exception can carry the value, and treat the list above as covering the
-# categories that print values deliberately, not every route an exception can take.
+# What closes it is a Logback TurboFilter, `com.vibecode.shared.logging.SqlErrorDetailTurboFilter`,
+# registered in logback-spring.xml. Logback consults a TurboFilter before the level check and at the
+# call site, so it sees the ERROR whatever the levels say and every appender inherits the result.
+# The class documents its two rules and its own limits; what matters here is that it is not a
+# blanket silence. The `SQL Error: <code>, SQLState: <state>` line from the same Hibernate class
+# passes through untouched, every denial is replaced by a line of the filter's own at the same
+# level, and stack traces are re-emitted with class names and frames intact and messages removed.
+# A failing write still announces itself, with a code an operator can classify.
+#
+# The alternatives were rejected on reach rather than on taste. A MessageConverter only sanitizes
+# appenders configured to use it, so a JSON encoder or a log shipper added later would leak again.
+# An @ControllerAdvice runs long after the line is written, and never at all for a scheduled job or
+# a failed startup. A Hibernate SQLExceptionConverter would sanitize the exception rather than the
+# log — the better fix in principle, and it is the one thing a TurboFilter cannot do — but Hibernate
+# 6.6 exposes no setting for it, so installing one means mutating a SqlExceptionHelper reached
+# through SessionFactory internals, which is version-fragile in a way a security control should not
+# be. And `logServerErrorDetail=false` on the JDBC URL is external configuration that proves nothing
+# about an environment we do not control, and does nothing at all for H2.
+#
+# One vehicle is left to a pin, and it is now a pin rather than theatre. Once the driver's text is
+# in the exception message it travels wherever the exception does, and
+# `org.springframework.transaction.interceptor.TransactionInterceptor` builds it into its own
+# message string by concatenation rather than attaching the exception as a throwable. A TurboFilter
+# may only allow or deny, never rewrite, so that one is out of the filter's reach and is pinned
+# below. While the ERROR path was open, pinning it would have changed nothing about what reached the
+# log file; with that path closed it is the difference between leaking and not.
+#
+# This note is still not an inventory. Assume any category that logs a persistence exception can
+# carry the value, and treat the list below as covering the categories that print values
+# deliberately plus the one exception-carrier reachable on the ordinary rollback path — not every
+# route an exception can take.
 #
 # One boundary deliberately left alone: request URIs. Spring logs the query string at DEBUG, so a
 # free-text value in a @RequestParam or a path variable would appear there. Nothing in this API
@@ -138,6 +165,14 @@ logging:
     # failure is not an unusual condition; it is Tuesday, and it is the one path where the value
     # in the log line is disproportionately likely to be a password.
     org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver: INFO
+    # The rejected write, as ExceptionHandlerExceptionResolver above is the rejected request. On
+    # every rollback this prints "Completing transaction for [...] after exception: " followed by
+    # the exception, and a persistence exception's message contains whatever the driver built into
+    # it — the conflicting key, the over-length value. It concatenates the exception into its own
+    # message rather than attaching it, which is precisely what SqlErrorDetailTurboFilter cannot
+    # reach: a TurboFilter allows or denies, it does not rewrite. So this one is a level, and it
+    # costs the transaction-boundary trace, which is a real loss for anyone debugging propagation.
+    org.springframework.transaction.interceptor.TransactionInterceptor: INFO
 
 server:
   port: ${SERVER_PORT:9000}

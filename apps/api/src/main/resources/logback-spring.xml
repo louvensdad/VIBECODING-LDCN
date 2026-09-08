@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  This file exists for one line: the turboFilter below. Everything else is Spring Boot's own default
+  configuration, included rather than restated, so console and file output, the pattern, the colours
+  and every logging.level.* property in application.yml keep working exactly as they did before this
+  file existed. Boot applies those levels after reading this file, so nothing here overrides them.
+
+  A TurboFilter has to be registered on the LoggerContext, and registering it here rather than from
+  a @Bean means it is installed while the logging system starts - before Hibernate, before the
+  Spring context, and still in force if the context never finishes starting. That matters: a startup
+  failure is one of the moments a driver exception is most likely to be logged.
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/base.xml"/>
+  <turboFilter class="com.vibecode.shared.logging.SqlErrorDetailTurboFilter"/>
+</configuration>
