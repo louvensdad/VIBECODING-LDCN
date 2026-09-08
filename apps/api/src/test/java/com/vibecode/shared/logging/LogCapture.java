@@ -3,10 +3,14 @@ package com.vibecode.shared.logging;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.core.read.ListAppender;
 import com.vibecode.support.logging.LoggerLevels;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import org.slf4j.LoggerFactory;
 
 /**
@@ -60,13 +64,54 @@ final class LogCapture {
   static List<String> occurrences(List<ILoggingEvent> events, String fixture) {
     List<String> hits = new ArrayList<>();
     for (ILoggingEvent event : events) {
-      // The formatted message is what an appender writes; the throwable is the other half of the
-      // line, and an exception carrying a value in its message leaks just as effectively.
-      String line = event.getFormattedMessage() + " " + event.getThrowableProxy();
+      String line = lineOf(event);
       if (line.contains(fixture)) {
         hits.add(event.getLoggerName() + " @" + event.getLevel() + ": " + line);
       }
     }
     return hits;
+  }
+
+  /**
+   * One captured event as the text an appender would write: the formatted message, then every
+   * throwable attached to it.
+   *
+   * <p>The throwable half is not decoration. A failed database write puts the offending value in
+   * the driver's exception message, and that message travels wherever the exception does — logged
+   * as text by one category, as an attachment by the next. A helper that reads only the formatted
+   * message reports zero hits while the appender writes the value in full.
+   *
+   * <p>This method exists because appending the proxy itself did exactly that.
+   * {@code ThrowableProxy} has no {@code toString}, so {@code "" + event.getThrowableProxy()}
+   * yielded {@code ThrowableProxy@1f69937a} and never the message — a scan that claimed to cover
+   * exceptions and covered nothing.
+   */
+  static String lineOf(ILoggingEvent event) {
+    StringBuilder line = new StringBuilder(event.getFormattedMessage());
+    append(line, event.getThrowableProxy(), Collections.newSetFromMap(new IdentityHashMap<>()));
+    return line.toString();
+  }
+
+  /**
+   * Appends one throwable and everything hanging off it: the cause chain, because a wrapped
+   * exception keeps the original message, and the suppressed list, because a try-with-resources
+   * failure during rollback carries the same value out by a different door.
+   *
+   * <p>{@code seen} is not theoretical tidiness. A cause chain is a graph, not a list, and a
+   * mutually-referencing pair would otherwise recurse until the stack ran out — turning a leak
+   * check into a crash.
+   */
+  private static void append(StringBuilder into, IThrowableProxy throwable, Set<IThrowableProxy> seen) {
+    if (throwable == null || !seen.add(throwable)) {
+      return;
+    }
+    into.append(' ').append(throwable.getClassName()).append(": ").append(throwable.getMessage());
+    append(into, throwable.getCause(), seen);
+    IThrowableProxy[] suppressed = throwable.getSuppressed();
+    if (suppressed != null) {
+      for (IThrowableProxy each : suppressed) {
+        append(into, each, seen);
+      }
+    }
   }
 }
