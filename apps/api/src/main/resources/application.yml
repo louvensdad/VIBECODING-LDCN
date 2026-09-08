@@ -12,7 +12,13 @@ spring:
   flyway:
     enabled: true
 
-# Nothing a user typed may reach a log line.
+# Nothing a user typed reaches a log line through the ORM's value-printing categories.
+#
+# That is the boundary these levels draw, and it is narrower than "nothing leaks". What they cover
+# is the machinery that prints values as a matter of course: bind parameters, extracted values, the
+# entity dump at flush, and the statement object on release. What they do not cover is a driver
+# building a value into an exception message, which is a different mechanism at a different level
+# and is described under "Known residual" below.
 #
 # The ORM emits values from below the application: a task objective, a Brain entry or a piece of
 # evidence is printed by Hibernate itself when a session flushes, and no redaction inside any
@@ -32,9 +38,21 @@ spring:
 # deliberately, in an environment where the operator accepts that the log file now contains user
 # data. That is the intended escape hatch, and it should never be a standing setting.
 #
-# Known residual: `org.hibernate.SQL_SLOW` logs `statement.toString()`, which the H2 and pgjdbc
-# drivers render with the bound values substituted. It logs at INFO, so a level pin would not stop
-# it — what stops it is that Hibernate only records slow queries when
+# Known residual, reachable today: `org.hibernate.engine.jdbc.spi.SqlExceptionHelper` logs the
+# driver's exception message, and the driver builds that message out of the value that caused the
+# failure. It logs at ERROR, so no level pin can reach it and no operator has to opt in — an
+# ordinary constraint violation is enough. On H2 an over-length column produces
+# `Value too long for column "title CHARACTER VARYING(200)": "'<the value>...`; on PostgreSQL,
+# pgjdbc copies the server's DETAIL line into the message, which carries the conflicting key for a
+# unique violation and every column of the row for a check violation. What keeps this narrow is
+# validation upstream — the web DTO @Size maxima match their column lengths — not anything here.
+# Closing it properly needs a Logback TurboFilter or MessageConverter in src/main/java, or
+# `logServerErrorDetail=false` on the JDBC URL, which costs real diagnostic value and does nothing
+# for H2. That is a deliberate trade and it has not been made.
+#
+# Known residual, not reachable today: `org.hibernate.SQL_SLOW` logs `statement.toString()`, which
+# the H2 and pgjdbc drivers render with the bound values substituted. It logs at INFO, so a level
+# pin would not stop it either — what stops it is that Hibernate only records slow queries when
 # `hibernate.session.events.log.LOG_QUERIES_SLOWER_THAN_MS` is set, and this application never sets
 # it. Setting it would reintroduce the leak.
 logging:
@@ -51,8 +69,14 @@ logging:
     # obvious of the four: both H2 and pgjdbc include the bound parameters in the statement's
     # toString, so this line carries the values even though the message never asks for them.
     org.hibernate.resource.jdbc.internal.ResourceRegistryStandardImpl: INFO
-    # org.hibernate.SQL is deliberately NOT pinned. It prints statements with `?` placeholders and
-    # no values, and it is the log a developer actually needs when diagnosing a query.
+    # org.hibernate.SQL is deliberately NOT pinned, and neither are the query-compilation
+    # categories such as org.hibernate.orm.query.hql. They print the statement as it was built, so
+    # they are safe for exactly as long as this codebase's statements are built the way they are
+    # now — every query parameterized, nothing concatenating a user value into JPQL, HQL or SQL.
+    # That is a property of the queries, not of the logger: an inlined literal would be printed
+    # verbatim, and org.hibernate.orm.query.hql prints at DEBUG, which `--debug` reaches. Keep the
+    # queries parameterized and this stays true; the statement log with its `?` placeholders is
+    # what a developer actually needs when diagnosing a query, which is why it is left on.
 
 server:
   port: ${SERVER_PORT:9000}

@@ -154,9 +154,13 @@ class HibernateValueLoggingTest {
   }
 
   private void assertClean(List<ILoggingEvent> events) {
-    // An empty capture would make the assertion below vacuous: it has to be true that logging
-    // happened and the value still was not in it.
-    assertThat(events).isNotEmpty();
+    // "Not empty" would be satisfied by a Spring transaction line, which proves nothing about the
+    // ORM. Requiring a statement from org.hibernate.SQL is what makes the assertion below mean
+    // what it says: a flush really happened inside the captured window, so the categories that
+    // would have printed its values had their chance and stayed quiet.
+    assertThat(events)
+        .as("no ORM statement was logged, so this capture proves nothing about the ORM")
+        .anyMatch(event -> event.getLoggerName().equals("org.hibernate.SQL"));
     assertThat(LogCapture.occurrences(events, FIXTURE)).isEmpty();
     // Not a fragment either — a truncated dump is still a disclosure.
     assertThat(LogCapture.occurrences(events, "847291")).isEmpty();

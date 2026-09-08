@@ -24,9 +24,15 @@ import org.springframework.test.context.TestPropertySource;
  *
  * <p>Turning debug logging on is not an unusual act; it is the first thing anyone does with a
  * misbehaving query. So the interesting question is not whether the values stay out of an INFO log
- * — they always did — but whether they stay out when someone raises the level on the root logger,
- * on all of Hibernate, and on a profile that does not exist yet. They do, because each leaking
+ * — they always did — but whether they stay out when someone raises the level on the parents of
+ * the pinned categories, and on a profile that does not exist yet. They do, because each leaking
  * category carries a level of its own and an inherited level cannot override one that is set.
+ *
+ * <p>The parent levels below are not uniform, and that is deliberate. Two of the four categories
+ * only emit at TRACE — JdbcBindingLogging guards its calls with {@code isTraceEnabled()} — so
+ * setting their parents to DEBUG would assert nothing: DEBUG could not have re-enabled them even
+ * with no pins at all. Each parent is therefore raised to the level that would actually reopen its
+ * child, which is TRACE for the two jdbc categories and DEBUG for the entity printer.
  *
  * <p>What this does not claim: naming a leaking category directly, as
  * {@code logging.level.org.hibernate.orm.jdbc.bind=TRACE}, does re-enable it. That is the
@@ -38,9 +44,14 @@ import org.springframework.test.context.TestPropertySource;
 @TestPropertySource(
     properties = {
       "logging.level.root=DEBUG",
+      // The direct parent of jdbc.bind and jdbc.extract, at the only level that could reopen them.
+      "logging.level.org.hibernate.orm.jdbc=TRACE",
+      // The direct parent of ResourceRegistryStandardImpl, likewise.
+      "logging.level.org.hibernate.resource.jdbc=TRACE",
+      // EntityPrinter's parent. It logs at DEBUG, so DEBUG is the level that matters here.
+      "logging.level.org.hibernate.internal.util=DEBUG",
       "logging.level.org.hibernate=DEBUG",
       "logging.level.org.hibernate.orm=DEBUG",
-      "logging.level.org.hibernate.orm.jdbc=DEBUG",
       "logging.level.org.hibernate.SQL=DEBUG",
       "spring.jpa.show-sql=true",
       // The prod profile makes the vault refuse the local key provider, which is correct and not
@@ -68,7 +79,7 @@ class HibernateValueLoggingUnderDebugTest {
   }
 
   @Test
-  @DisplayName("Debug logging everywhere, and an unknown profile, still print no field values")
+  @DisplayName("Every parent raised to the level that would reopen its child still prints no values")
   void debugEverywhereStillPrintsNoValues() {
     UUID projectId = projects.create("Debug logging", "", "Idea").getId();
     roadmaps.createOrGet(projectId);
