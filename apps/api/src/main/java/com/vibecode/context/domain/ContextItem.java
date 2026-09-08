@@ -15,6 +15,13 @@ import java.util.Comparator;
  * separators or headings a later assembly step puts <em>between</em> items is that step's cost to
  * account for — this class does not know about them and does not pretend to.
  *
+ * <p>Items are ordered by {@link #CANONICAL_ORDER} and by nothing else. This type deliberately does
+ * not implement {@link Comparable}: the comparator's last key is the item id, so two items sharing
+ * an id but differing in content compare equal while {@code equals} says they are not. A pack
+ * rejects duplicate ids and so never meets that case, but a {@code Comparable} item would invite a
+ * sorted set or map somewhere else in the pipeline to discard one of the two silently. One ordering
+ * authority, reachable only where it is meant to be used.
+ *
  * <p>Nothing here may ever hold secret material. Not a credential, not a token, not a vault handle:
  * an item is text drawn from official records, and a record that would carry a secret is not a
  * source this engine reads.
@@ -26,17 +33,20 @@ import java.util.Comparator;
  * @param provenance where it came from; mandatory
  */
 public record ContextItem(
-    String id, ContextKind kind, String label, String content, ContextProvenance provenance)
-    implements Comparable<ContextItem> {
+    String id, ContextKind kind, String label, String content, ContextProvenance provenance) {
 
   /**
-   * The canonical total order of items.
+   * The canonical order of items — total within a pack, where item ids are unique.
    *
    * <p>Source first, then kind, then the source record's identifier, then the item id. The last key
-   * is what makes the order <em>total</em>: item ids are unique within a pack, so no two items can
-   * compare equal and no comparison outcome is left to the order the caller happened to hand items
-   * in. Nothing here consults a hash, a clock or insertion order — all three vary between runs that
-   * should produce identical packs.
+   * is what makes the order total <em>in a pack</em>: ids are unique there, so no two items compare
+   * equal and no outcome is left to the order the caller happened to hand items in. Over an
+   * arbitrary collection that has not been through {@link ContextPack}, two items sharing an id
+   * still compare equal — the uniqueness the totality rests on is the pack's invariant, not this
+   * comparator's.
+   *
+   * <p>Nothing here consults a hash, a clock or insertion order: all three vary between runs that
+   * must produce identical packs.
    */
   public static final Comparator<ContextItem> CANONICAL_ORDER =
       Comparator.comparingInt((ContextItem item) -> item.provenance().sourceType().orderingRank())
@@ -63,7 +73,16 @@ public record ContextItem(
     }
   }
 
-  /** Exact, by definition — {@code content} is already in memory. */
+  /**
+   * The length of {@code content} in <b>UTF-16 code units</b>, which is what {@link String#length()}
+   * counts and what {@link ContextBudget#maxCharacters()} is measured against.
+   *
+   * <p>It is exact, but it is not a count of user-visible characters: "😀" counts 2, and every
+   * character outside the Basic Multilingual Plane counts 2. Anything downstream that trims content
+   * must trim in the same unit — a truncator written against {@code codePointCount} would compare
+   * against a budget measured in a different currency, and one written against {@code substring}
+   * must not cut between the halves of a surrogate pair.
+   */
   public long characterCount() {
     return content.length();
   }
@@ -71,10 +90,5 @@ public record ContextItem(
   /** Exact for UTF-8, which is what every transport in this system uses. */
   public long byteCount() {
     return content.getBytes(StandardCharsets.UTF_8).length;
-  }
-
-  @Override
-  public int compareTo(ContextItem other) {
-    return CANONICAL_ORDER.compare(this, other);
   }
 }

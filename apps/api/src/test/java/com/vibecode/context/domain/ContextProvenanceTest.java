@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -61,6 +62,18 @@ class ContextProvenanceTest {
           .as("ContextItem must expose no mutator")
           .doesNotStartWith("set")
           .doesNotStartWith("with");
+    }
+    // A static factory is the other way an item could appear without provenance, and it would slip
+    // past a constructor-only check.
+    for (Method factory : ContextItem.class.getDeclaredMethods()) {
+      if (!Modifier.isStatic(factory.getModifiers())
+          || !Modifier.isPublic(factory.getModifiers())
+          || factory.getReturnType() != ContextItem.class) {
+        continue;
+      }
+      assertThat(factory.getParameterTypes())
+          .as("factory %s must demand provenance", factory.getName())
+          .contains(ContextProvenance.class);
     }
   }
 

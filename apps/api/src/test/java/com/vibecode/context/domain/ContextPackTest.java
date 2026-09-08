@@ -159,4 +159,97 @@ class ContextPackTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("not the project this pack describes");
   }
+
+@Test
+  void aFieldsOwnTextCannotForgeADigestBoundary() {
+    // The separator is a character like any other and can appear inside content this domain does
+    // not control. Shifting one across the label/content boundary produced the same flattened
+    // string before every field was length-prefixed.
+    String separator = String.valueOf((char) 0x1F);
+    ContextItem shiftedLeft =
+        new ContextItem(
+            "i-1",
+            ContextKind.STATE,
+            "x",
+            "1" + separator + "2",
+            new ContextProvenance(
+                ContextSource.of(ContextSourceType.CURRENT_STATE, "s-1"), PROJECT, OBSERVED));
+    ContextItem shiftedRight =
+        new ContextItem(
+            "i-1",
+            ContextKind.STATE,
+            "x" + separator + "1",
+            "2",
+            new ContextProvenance(
+                ContextSource.of(ContextSourceType.CURRENT_STATE, "s-1"), PROJECT, OBSERVED));
+
+    assertThat(pack(GENEROUS, List.of(shiftedLeft)).contentFingerprint())
+        .isNotEqualTo(pack(GENEROUS, List.of(shiftedRight)).contentFingerprint());
+  }
+
+  @Test
+  void theDigestCoversTheLabelBecauseALabelIsDisplayedText() {
+    ContextProvenance provenance =
+        new ContextProvenance(
+            ContextSource.of(ContextSourceType.CURRENT_STATE, "s-1"), PROJECT, OBSERVED);
+    ContextItem shown =
+        new ContextItem("i-1", ContextKind.STATE, "Current phase", "phase six", provenance);
+    ContextItem relabelled =
+        new ContextItem("i-1", ContextKind.STATE, "Something else", "phase six", provenance);
+
+    assertThat(pack(GENEROUS, List.of(shown)).contentFingerprint())
+        .isNotEqualTo(pack(GENEROUS, List.of(relabelled)).contentFingerprint());
+  }
+
+  @Test
+  void theDigestIgnoresWhenTheSourceWasReadSoUnchangedStateKeepsItsDigest() {
+    ContextSource source = ContextSource.of(ContextSourceType.CURRENT_STATE, "s-1");
+    ContextItem readEarlier =
+        new ContextItem(
+            "i-1",
+            ContextKind.STATE,
+            "Current phase",
+            "phase six",
+            new ContextProvenance(source, PROJECT, OBSERVED));
+    ContextItem readLater =
+        new ContextItem(
+            "i-1",
+            ContextKind.STATE,
+            "Current phase",
+            "phase six",
+            new ContextProvenance(source, PROJECT, OBSERVED.plusSeconds(3600)));
+
+    assertThat(pack(GENEROUS, List.of(readEarlier)).contentFingerprint())
+        .isEqualTo(pack(GENEROUS, List.of(readLater)).contentFingerprint());
+  }
+
+  @Test
+  void charactersAreCountedInUtf16CodeUnitsNotUserVisibleCharacters() {
+    // Stated so a later truncator measures in the same unit the budget is expressed in: one
+    // grinning face is one code point, two code units and four UTF-8 bytes.
+    String grinningFace = new String(Character.toChars(0x1F600));
+    ContextItem emoji =
+        item("i-emoji", ContextKind.STATE, ContextSourceType.CURRENT_STATE, "s-1", grinningFace);
+
+    assertThat(grinningFace.codePointCount(0, grinningFace.length())).isEqualTo(1);
+    assertThat(emoji.characterCount()).isEqualTo(2L);
+    assertThat(emoji.byteCount()).isEqualTo(4L);
+  }
+
+  @Test
+  void aByteCeilingBelowTheCharacterCeilingIsALegitimateConfiguration() {
+    // Characters as a rough size guide, bytes as a transport limit. The byte limit simply binds
+    // first, which is the point of setting it.
+    ContextBudget transportBound = new ContextBudget(50, 4_000L, 2_000L);
+
+    assertThat(transportBound.maxBytes()).isEqualTo(2_000L);
+    assertThat(transportBound.admits(new ContextUsage(1, 3_000L, 3_000L))).isFalse();
+    assertThat(transportBound.admits(new ContextUsage(1, 1_500L, 1_500L))).isTrue();
+  }
+
+  @Test
+  void firstBreachIsEmptyWhenTheUsageFits() {
+    assertThat(GENEROUS.firstBreach(new ContextUsage(1, 10L, 10L))).isEmpty();
+    assertThat(GENEROUS.firstBreach(new ContextUsage(500, 10L, 10L))).contains("items: 500 > 50");
+  }
 }

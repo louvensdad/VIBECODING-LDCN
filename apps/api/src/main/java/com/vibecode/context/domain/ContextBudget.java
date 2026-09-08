@@ -1,5 +1,7 @@
 package com.vibecode.context.domain;
 
+import java.util.Optional;
+
 /**
  * The ceiling a pack must fit under, expressed only in things that can be counted exactly.
  *
@@ -17,8 +19,13 @@ package com.vibecode.context.domain;
  * already owns {@code ProjectBudget}, which is about money. These two must not be confused: this one
  * cannot be spent.
  *
+ * <p>The two size dimensions are independent on purpose, and neither implies the other. A character
+ * ceiling as a rough size guide alongside a much smaller byte ceiling as a transport limit is a
+ * legitimate configuration and is accepted.
+ *
  * @param maxItems the most items a pack may hold
- * @param maxCharacters the most content characters a pack may hold
+ * @param maxCharacters the most content <b>UTF-16 code units</b> a pack may hold — the unit {@link
+ *     String#length()} and {@link ContextItem#characterCount()} count, in which "😀" is 2, not 1
  * @param maxBytes the most content bytes (UTF-8) a pack may hold
  */
 public record ContextBudget(int maxItems, long maxCharacters, long maxBytes) {
@@ -33,16 +40,6 @@ public record ContextBudget(int maxItems, long maxCharacters, long maxBytes) {
     if (maxBytes <= 0) {
       throw new IllegalArgumentException("A budget must allow at least one byte");
     }
-    if (maxBytes < maxCharacters) {
-      // UTF-8 never encodes a character in less than one byte, so a byte ceiling below the
-      // character ceiling can never bind and is a sign the two were transposed.
-      throw new IllegalArgumentException(
-          "A byte ceiling below the character ceiling is unreachable: "
-              + maxBytes
-              + " bytes < "
-              + maxCharacters
-              + " characters");
-    }
   }
 
   /** Whether the given measured usage fits. Exact in all three dimensions. */
@@ -53,21 +50,21 @@ public record ContextBudget(int maxItems, long maxCharacters, long maxBytes) {
   }
 
   /**
-   * The dimension that is over, or {@code null} when nothing is.
+   * The dimension that is over, or empty when nothing is.
    *
    * <p>Returned as text because its only job is to explain a rejection to a person; callers deciding
    * anything should ask {@link #admits(ContextUsage)}.
    */
-  public String firstBreach(ContextUsage usage) {
+  public Optional<String> firstBreach(ContextUsage usage) {
     if (usage.items() > maxItems) {
-      return "items: " + usage.items() + " > " + maxItems;
+      return Optional.of("items: " + usage.items() + " > " + maxItems);
     }
     if (usage.characters() > maxCharacters) {
-      return "characters: " + usage.characters() + " > " + maxCharacters;
+      return Optional.of("characters: " + usage.characters() + " > " + maxCharacters);
     }
     if (usage.bytes() > maxBytes) {
-      return "bytes: " + usage.bytes() + " > " + maxBytes;
+      return Optional.of("bytes: " + usage.bytes() + " > " + maxBytes);
     }
-    return null;
+    return Optional.empty();
   }
 }

@@ -37,7 +37,8 @@ import java.util.UUID;
  * @param taskReference the task the pack was assembled for — part of what "same inputs" means
  * @param assembledAt when the snapshot was taken
  * @param budget the ceiling this pack was held to
- * @param items the selected items, in canonical order
+ * @param items the selected items in any order; the constructor sorts them into canonical order,
+ *     so the order given here is not a caller obligation and has no effect on the result
  */
 public record ContextPack(
     UUID packId,
@@ -48,8 +49,9 @@ public record ContextPack(
     List<ContextItem> items) {
 
   /**
-   * Separates fields inside the fingerprint's canonical form, so that two different item lists
-   * cannot flatten to the same string by moving a character across a boundary.
+   * Separates fields inside the fingerprint's canonical form. It is a readability aid only — the
+   * length prefix in front of every field is what actually makes the encoding unambiguous, because
+   * no separator character can be reserved from text this domain does not control.
    */
   private static final String FIELD_SEPARATOR = String.valueOf((char) 0x1F);
 
@@ -97,10 +99,12 @@ public record ContextPack(
     items = List.copyOf(ordered);
 
     ContextUsage usage = measure(items);
-    String breach = budget.firstBreach(usage);
-    if (breach != null) {
-      throw new IllegalArgumentException("Pack exceeds its budget — " + breach);
-    }
+    budget
+        .firstBreach(usage)
+        .ifPresent(
+            breach -> {
+              throw new IllegalArgumentException("Pack exceeds its budget — " + breach);
+            });
   }
 
   private static ContextUsage measure(List<ContextItem> items) {
@@ -128,9 +132,22 @@ public record ContextPack(
    * A digest over the ordered content of this pack.
    *
    * <p>Its purpose is to make "the same inputs produced the same pack" a single comparison instead
-   * of a walk over two lists. It covers the items, their order and their provenance — not the pack
-   * id, assembly time or budget, which differ between two rebuilds that are nonetheless the same
-   * context.
+   * of a walk over two lists.
+   *
+   * <p><b>Covered:</b> each item's id, kind, label, content, source type, source id and source
+   * version, and the order they appear in. Label is included because it is displayed text, so two
+   * packs differing only in a label are not the same pack to a reader.
+   *
+   * <p><b>Deliberately not covered:</b> the pack id, assembly time and budget, which differ between
+   * two rebuilds that nonetheless carry the same context; {@code provenance.recordedAt}, because it
+   * changes every time unchanged state is re-read and including it would defeat the one thing this
+   * digest is for; and {@code provenance.projectId}, which the constructor has already forced equal
+   * to the pack's own project for every item, so it can add no distinguishing information.
+   *
+   * <p>Every field is length-prefixed. A separator alone would not be enough: item content is text
+   * this domain does not control, so any character used as a boundary can also appear inside a
+   * field, and without the prefix a two-item pack could flatten to the same string as a one-item
+   * pack whose content embeds the separator.
    *
    * <p>It is an equality check, not a security control: it proves nothing about who produced the
    * pack and must not be used as one.
@@ -139,21 +156,20 @@ public record ContextPack(
     StringBuilder canonical = new StringBuilder();
     for (ContextItem item : items) {
       ContextProvenance provenance = item.provenance();
-      canonical
-          .append(item.id())
-          .append(FIELD_SEPARATOR)
-          .append(item.kind())
-          .append(FIELD_SEPARATOR)
-          .append(provenance.sourceType())
-          .append(FIELD_SEPARATOR)
-          .append(provenance.sourceId())
-          .append(FIELD_SEPARATOR)
-          .append(provenance.sourceVersion().map(String::valueOf).orElse("-"))
-          .append(FIELD_SEPARATOR)
-          .append(item.content())
-          .append(FIELD_SEPARATOR);
+      appendField(canonical, item.id());
+      appendField(canonical, item.kind().name());
+      appendField(canonical, item.label());
+      appendField(canonical, item.content());
+      appendField(canonical, provenance.sourceType().name());
+      appendField(canonical, provenance.sourceId());
+      appendField(canonical, provenance.sourceVersion().map(String::valueOf).orElse("-"));
     }
     return hex(canonical.toString());
+  }
+
+  /** Length first, so the field's own text cannot forge a boundary. */
+  private static void appendField(StringBuilder canonical, String field) {
+    canonical.append(field.length()).append(FIELD_SEPARATOR).append(field).append(FIELD_SEPARATOR);
   }
 
   private static String hex(String canonical) {
