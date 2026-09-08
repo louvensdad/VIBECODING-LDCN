@@ -38,8 +38,15 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 class ProviderAccountApiTest {
 
-  private static final String CREDENTIAL = "vc_anthropic_test_secret_928475";
-  private static final String ROTATED = "vc_anthropic_test_secret_928476";
+  // The last four characters carry weight: the sweeps below forbid them everywhere, because a
+  // masked key shows its suffix and the suffix is the piece that confirms to an attacker which key
+  // they are holding. They are deliberately outside the hexadecimal alphabet. A numeric suffix is a
+  // four-character needle, and the audit trail is full of UUIDs — one of them contains any given
+  // four hex digits often enough that this test went red on a coincidence rather than a leak,
+  // measured at roughly one full-suite run in fifty. "zqxw" cannot occur inside a UUID, a timestamp
+  // or a generated identifier, so a hit is a leak and nothing else.
+  private static final String CREDENTIAL = "vc_anthropic_test_secret_92zqxw";
+  private static final String ROTATED = "vc_anthropic_test_secret_92zqxy";
 
   @Autowired MockMvc mvc;
   @Autowired ObjectMapper json;
@@ -207,6 +214,15 @@ class ProviderAccountApiTest {
 
     assertThat(rows).anyMatch(row -> row.contains("PROVIDER_CREDENTIAL_STORED"));
     assertThat(rows).anyMatch(row -> row.contains("PROVIDER_ACCOUNT_CREATED"));
+
+    // Every row in the table, not only the ones this test wrote: the class commits, so the sweep
+    // covers whatever else the suite recorded, and a credential fragment surfacing in someone
+    // else's audit row is exactly as bad as it surfacing here. That breadth is only affordable
+    // while the forbidden suffix cannot appear by accident, so the fixture's shape is pinned here
+    // rather than left to a comment.
+    assertThat(CREDENTIAL.substring(CREDENTIAL.length() - 4))
+        .as("a hex-legal suffix would collide with the UUIDs in this table")
+        .doesNotMatch("[0-9a-fA-F]{4}");
 
     for (String row : rows) {
       assertThat(row).doesNotContain(CREDENTIAL);
