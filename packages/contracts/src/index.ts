@@ -608,8 +608,10 @@ export type ContextSourceType =
  * What a context item *means*, as opposed to where it came from.
  *
  * Thirteen of these carry the same names as {@link BrainEntryType} so every kind of official memory
- * has a faithful home; the other four — `OBJECTIVE`, `CONSTRAINT`, `EVIDENCE`, `SECURITY_NOTE` —
- * cover meanings no brain entry type expresses.
+ * has a faithful home; the other five — `PROJECT_IDENTITY`, `OBJECTIVE`, `CONSTRAINT`, `EVIDENCE`,
+ * `SECURITY_NOTE` — cover meanings no brain entry type expresses. `PROJECT_IDENTITY` is the project
+ * row's own name and description: the handle everything else is addressed by, and not `VISION`,
+ * which stays the product vision.
  *
  * There is no `UNKNOWN` and no `OTHER`. A fallback constant is how unmapped content quietly enters
  * a pack wearing the wrong meaning; if something has no kind here, the vocabulary is wrong and must
@@ -626,6 +628,7 @@ export type ContextSourceType =
  * leave out when a budget binds is a separate decision the selection step owns under its own name.
  */
 export type ContextKind =
+  | "PROJECT_IDENTITY"
   | "OBJECTIVE"
   | "CONSTRAINT"
   | "VISION"

@@ -60,7 +60,11 @@ public class RoadmapService {
     if (phases.existsByRoadmapIdAndPosition(roadmap.getId(), position)) {
       throw new DomainRuleException("Phase position " + position + " is already taken");
     }
-    return phases.save(new RoadmapPhase(roadmap.getId(), position, title, description));
+    RoadmapPhase added = phases.save(new RoadmapPhase(roadmap.getId(), position, title, description));
+    // The plan now has a phase it did not have, which is a change to its shape. Recorded after the
+    // save so that a rejected position leaves the roadmap's instant untouched.
+    roadmap.recordStructuralChange();
+    return added;
   }
 
   @Transactional(readOnly = true)
@@ -84,6 +88,7 @@ public class RoadmapService {
   public List<RoadmapPhase> movePhase(UUID projectId, UUID phaseId, int newPosition) {
     projects.requireWritable(projectId);
     RoadmapPhase phase = requirePhase(projectId, phaseId);
+    Roadmap roadmap = require(projectId);
     List<RoadmapPhase> ordered =
         new java.util.ArrayList<>(phases.findByRoadmapIdOrderByPosition(phase.getRoadmapId()));
     if (newPosition < 1 || newPosition > ordered.size()) {
@@ -105,6 +110,9 @@ public class RoadmapService {
       current.moveTo(sequence++);
     }
     phases.flush();
+    // The order of the phases is the shape of the plan, so a reorder is structural even though no
+    // phase was added or lost. Recorded after both renumbering passes have succeeded.
+    roadmap.recordStructuralChange();
     return ordered;
   }
 }

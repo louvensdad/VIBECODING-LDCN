@@ -179,11 +179,12 @@ class ContextOrderingTest {
   }
 
   @Test
-  void theKindVocabularyIsExactlyTheDeclaredSeventeen() {
-    // Thirteen carry a BrainEntryType name so every kind of memory has a faithful home; four cover
+  void theKindVocabularyIsExactlyTheDeclaredEighteen() {
+    // Thirteen carry a BrainEntryType name so every kind of memory has a faithful home; five cover
     // meanings no brain entry expresses. There is no UNKNOWN and no OTHER.
     Set<ContextKind> declared =
         EnumSet.of(
+            ContextKind.PROJECT_IDENTITY,
             ContextKind.OBJECTIVE,
             ContextKind.CONSTRAINT,
             ContextKind.VISION,
@@ -202,10 +203,34 @@ class ContextOrderingTest {
             ContextKind.SECURITY_NOTE,
             ContextKind.NOTE);
 
-    assertThat(declared).hasSize(17);
+    assertThat(declared).hasSize(18);
     assertThat(EnumSet.allOf(ContextKind.class)).isEqualTo(declared);
     assertThat(Arrays.stream(ContextKind.values()).map(Enum::name).toList())
         .doesNotContain("UNKNOWN", "OTHER", "UNCLASSIFIED");
+  }
+
+  @Test
+  void projectIdentityIsItsOwnKindAndNotTheNearestFitItReplaced() {
+    // The project's name and description were filed as NOTE, then as VISION, because the vocabulary
+    // had no word for identity. Both of those are still in the vocabulary and still mean what they
+    // meant, so the only thing keeping the old filing from creeping back is that this is a distinct
+    // constant. Asserted rather than assumed.
+    assertThat(ContextKind.PROJECT_IDENTITY).isNotEqualTo(ContextKind.VISION);
+    assertThat(ContextKind.PROJECT_IDENTITY).isNotEqualTo(ContextKind.NOTE);
+    assertThat(ContextKind.PROJECT_IDENTITY.orderingRank())
+        .isNotEqualTo(ContextKind.VISION.orderingRank())
+        .isNotEqualTo(ContextKind.NOTE.orderingRank());
+  }
+
+  @Test
+  void projectIdentityWasAddedInTheFreeGapWithoutRenumberingAnythingElse() {
+    // The ranks below run 10..170 in tens; the space beneath the first of them was free, so the new
+    // constant took rank 5 and no other rank moved. That matters beyond tidiness:
+    // ContextPackEntity.toDomain() rejects a stored pack whose item order disagrees with
+    // CANONICAL_ORDER, so renumbering an existing kind would invalidate packs written before it.
+    assertThat(ContextKind.PROJECT_IDENTITY.orderingRank()).isEqualTo(5);
+    assertThat(ContextKind.OBJECTIVE.orderingRank()).isEqualTo(10);
+    assertThat(ContextKind.NOTE.orderingRank()).isEqualTo(170);
   }
 
   @Test

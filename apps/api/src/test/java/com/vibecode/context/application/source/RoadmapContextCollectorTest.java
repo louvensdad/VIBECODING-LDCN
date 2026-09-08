@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextKind;
 import com.vibecode.context.domain.ContextSourceType;
+import com.vibecode.roadmap.domain.RoadmapPhase;
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -71,9 +74,36 @@ class RoadmapContextCollectorTest extends CollectorTestSupport {
     assertThat(after.provenance().recordedAt()).isAfter(before.provenance().recordedAt());
   }
 
+  @Test
+  @DisplayName("The outline is observed at the newest record it was built from, not at T1")
+  void outlineIsObservedAtTheLatestContributingRecord() {
+    identity.createAndAuthenticate("RoadmapOutlineFreshness");
+    var project = projects.create("Freshness", "", "An idea and a plan");
+    roadmaps.createOrGet(project.getId());
+    // T1: the roadmap exists and has nothing in it.
+    Instant t1 = roadmaps.require(project.getId()).getUpdatedAt();
+
+    RoadmapPhase phase = roadmaps.addPhase(project.getId(), 1, "Foundations", null);
+    // T2: the newest of the records the outline is now built from.
+    Instant phaseAt = roadmaps.requirePhase(project.getId(), phase.getId()).getUpdatedAt();
+    Instant roadmapAt = roadmaps.require(project.getId()).getUpdatedAt();
+    Instant t2 = phaseAt.isAfter(roadmapAt) ? phaseAt : roadmapAt;
+
+    ContextItem outline = outlineOf(project.getId());
+
+    assertThat(t2).as("the fixture is only meaningful if T2 really is later").isAfter(t1);
+    // Observed at T2 and not at T1: the rule is the maximum over roadmap.updatedAt and every phase
+    // that contributed a line, not the roadmap's own instant and not the newest phase alone.
+    assertThat(outline.provenance().recordedAt()).isEqualTo(t2).isNotEqualTo(t1).isAfter(t1);
+  }
+
   private ContextItem outlineOf(Fixture fixture) {
+    return outlineOf(fixture.projectId());
+  }
+
+  private ContextItem outlineOf(UUID projectId) {
     return candidates
-        .collectFrom(ContextSourceType.ROADMAP, fixture.projectId(), ContextReadWindow.DEFAULT)
+        .collectFrom(ContextSourceType.ROADMAP, projectId, ContextReadWindow.DEFAULT)
         .stream()
         .filter(item -> item.id().startsWith("roadmap:"))
         .findFirst()

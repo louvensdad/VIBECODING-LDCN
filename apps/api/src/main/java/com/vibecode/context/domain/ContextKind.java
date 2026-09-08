@@ -20,7 +20,7 @@ package com.vibecode.context.domain;
  *
  * <p>Thirteen constants below carry the same names as {@code BrainEntryType} and exist so that every
  * kind of official memory has a faithful home. That correspondence is enforced by {@link
- * BrainEntryContextMapping}, not by this comment. The remaining four cover meanings no brain entry
+ * BrainEntryContextMapping}, not by this comment. The remaining five cover meanings no brain entry
  * type expresses, and each names the sources that produce it.
  *
  * <p>There is no {@code UNKNOWN} or {@code OTHER}. A fallback constant is how unmapped content
@@ -36,7 +36,7 @@ package com.vibecode.context.domain;
  *
  * <p>The declared order is therefore deliberate and stable rather than meaningful: the thirteen
  * brain-named constants are grouped in {@code BrainEntryType}'s own declaration order so the two
- * vocabularies read alike, with the four others placed where they belong among them. Stability is
+ * vocabularies read alike, with the five others placed where they belong among them. Stability is
  * the property that matters — a reader should be able to rely on the order not moving, not to infer
  * importance from it.
  *
@@ -44,6 +44,27 @@ package com.vibecode.context.domain;
  * {@link ContextSourceType}; the two would be easy to confuse at a call site where both appear.
  */
 public enum ContextKind {
+
+  /**
+   * The basic identity of the {@code Project} entity — the handle everything else is addressed by.
+   * Produced by {@code PROJECT}, from the project row's own name and description.
+   *
+   * <p>Deliberately none of its neighbours. It is not {@link #VISION}, which means the product
+   * vision — what is being built — and stays the home of the project's original idea; a name is not
+   * a statement of intent. It is not {@link #ARCHITECTURE}, which is a structural fact about the
+   * system. And it is emphatically not {@link #NOTE}, whose own javadoc forbids exactly the
+   * nearest-fit assignment that filing a project name there would be.
+   *
+   * <p><b>Rank 5, ahead of everything.</b> The ranks run 10..170 in tens, and the gap below the
+   * first of them was free — so this constant could be added without renumbering any other, which
+   * matters because {@code ContextPackEntity.toDomain()} rejects a stored pack whose item order
+   * disagrees with {@code ContextItem.CANONICAL_ORDER}, and every renumber invalidates packs
+   * written under the old ranks. Ahead rather than behind because rank is presentation: a pack that
+   * opens by naming the project it is about reads correctly, and nothing else in the vocabulary
+   * makes sense before the reader knows what is being described. That is a reading order, not a
+   * claim that identity matters most under a binding budget.
+   */
+  PROJECT_IDENTITY(5),
 
   /**
    * What the work in front of the user is trying to achieve. Produced by {@code CURRENT_TASK},
@@ -66,7 +87,10 @@ public enum ContextKind {
    */
   CONSTRAINT(20),
 
-  /** The product vision. */
+  /**
+   * The product vision: what is being built, and to what end. Distinct from {@link
+   * #PROJECT_IDENTITY}, which is only the name the project answers to — the handle, not the intent.
+   */
   VISION(30),
 
   /** Something the system must do. */

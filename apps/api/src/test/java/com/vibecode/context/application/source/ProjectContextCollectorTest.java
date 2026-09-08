@@ -51,8 +51,8 @@ class ProjectContextCollectorTest extends CollectorTestSupport {
   }
 
   @Test
-  @DisplayName("Nothing is filed as NOTE because nothing else fitted")
-  void noKindIsAssignedAsAFallback() {
+  @DisplayName("The project's identity is filed as PROJECT_IDENTITY, not as a nearest fit")
+  void identityIsItsOwnKind() {
     Fixture fixture = createFullProject("ProjectCollectorKinds");
 
     List<ContextItem> items =
@@ -65,10 +65,67 @@ class ProjectContextCollectorTest extends CollectorTestSupport {
 
     ContextItem identity =
         items.stream().filter(item -> item.id().endsWith(":identity")).findFirst().orElseThrow();
-    assertThat(identity.kind()).isEqualTo(ContextKind.VISION);
+    assertThat(identity.kind()).isEqualTo(ContextKind.PROJECT_IDENTITY);
+    // Both of the constants this filing passed through on its way here, asserted explicitly so a
+    // regression to either fails by name rather than by a count.
+    assertThat(identity.kind()).isNotEqualTo(ContextKind.VISION);
+    assertThat(identity.kind()).isNotEqualTo(ContextKind.NOTE);
     // The name and the description are one statement; both survive verbatim.
     assertThat(identity.content())
         .contains(fixture.project().getName())
         .contains(fixture.project().getDescription());
+  }
+
+  @Test
+  @DisplayName("The name and the description never enter as VISION or as NOTE")
+  void neitherNameNorDescriptionEntersAsASemanticFallback() {
+    Fixture fixture = createFullProject("ProjectCollectorNoFallback");
+    String name = fixture.project().getName();
+    String description = fixture.project().getDescription();
+
+    List<ContextItem> items =
+        candidates.collectFrom(
+            ContextSourceType.PROJECT, fixture.projectId(), ContextReadWindow.DEFAULT);
+
+    // No item of either kind may carry the name or the description. VISION still legitimately
+    // appears in this collector's output — the original idea the project was created from is the
+    // product vision and nothing else — so a blanket "emits no VISION" assertion would be false
+    // for an honest reason and would have to be deleted the moment anyone read it. This asserts the
+    // thing that was actually wrong: identity being filed under a kind that means something else.
+    assertThat(items)
+        .filteredOn(item -> item.kind() == ContextKind.VISION || item.kind() == ContextKind.NOTE)
+        .allSatisfy(
+            item -> {
+              assertThat(item.content()).doesNotContain(name);
+              assertThat(item.content()).doesNotContain(description);
+            });
+
+    // And the one VISION item there is, is the original idea verbatim — not a paraphrase, and not
+    // the identity wearing a borrowed kind.
+    assertThat(items)
+        .filteredOn(item -> item.kind() == ContextKind.VISION)
+        .singleElement()
+        .satisfies(
+            item -> assertThat(item.content()).isEqualTo(fixture.project().getOriginalIdea()));
+  }
+
+  @Test
+  @DisplayName("A project with no description gets no invented description")
+  void anAbsentDescriptionIsAnAbsentRecord() {
+    identity.createAndAuthenticate("ProjectNoDescription");
+    var project = projects.create("Nameless idea", null, "The idea the project started from");
+
+    ContextItem item =
+        candidates
+            .collectFrom(ContextSourceType.PROJECT, project.getId(), ContextReadWindow.DEFAULT)
+            .stream()
+            .filter(candidate -> candidate.id().endsWith(":identity"))
+            .findFirst()
+            .orElseThrow();
+
+    // Exactly the name and nothing more: no separator left dangling, no template sentence, nothing
+    // a later reader could mistake for something the project said about itself.
+    assertThat(item.content()).isEqualTo("Nameless idea");
+    assertThat(item.kind()).isEqualTo(ContextKind.PROJECT_IDENTITY);
   }
 }

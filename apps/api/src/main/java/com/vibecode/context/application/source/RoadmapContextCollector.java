@@ -101,18 +101,17 @@ public class RoadmapContextCollector implements ContextCollector {
   }
 
   /**
-   * When the plan was last observed to change.
+   * When the plan was last observed to change: the newest instant among the records the outline was
+   * built from — {@code roadmap.updatedAt} and the {@code updatedAt} of every phase that contributed
+   * a line — and {@code roadmap.updatedAt} alone when there are no phases.
    *
-   * <p><b>Not {@code roadmap.getUpdatedAt()}.</b> That column is written once, in the constructor,
-   * and nothing ever writes it again — no {@code @PreUpdate}, no mutator, nothing in
-   * {@code RoadmapService}. Dating the outline at it would have the item report the instant an empty
-   * roadmap row was inserted, and go on reporting it after ten phases had been added, moved and
-   * completed. Since the outline's content is built entirely from the phase rows, that is an item
-   * whose text changes while its provenance swears it has not — and {@code ContextProvenance}
-   * exists so that a stale item is visible as stale.
-   *
-   * <p>So the outline is dated at the newest phase, with the roadmap's own instant as the floor for
-   * a plan that has no phases yet.
+   * <p><b>Not {@code roadmap.getUpdatedAt()} on its own</b>, even now that it moves. It moves for
+   * structural changes only, by design, so it does not answer for a phase whose title or status
+   * changed under an unchanged outline shape — and the outline prints both. Taking the maximum is
+   * what makes the claim true of the text actually emitted: the item's content is a function of
+   * these rows, so its instant has to be a function of the same rows. {@code ContextProvenance}
+   * exists so that a stale item is visible as stale, and an instant that can lag its own content
+   * defeats that.
    */
   private Instant observedAt(Roadmap roadmap, List<RoadmapPhase> phases) {
     Instant latestPhase =

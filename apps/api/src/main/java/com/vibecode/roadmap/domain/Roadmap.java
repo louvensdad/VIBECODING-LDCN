@@ -38,6 +38,25 @@ public class Roadmap {
     this.updatedAt = this.createdAt;
   }
 
+  /**
+   * Records that the shape of the plan changed: today that is a phase added or reordered, the
+   * only two structural operations the service offers. Removal belongs here too, when it exists.
+   *
+   * <p>Called by {@code RoadmapService}, which is the only thing that can see a structural change
+   * happen — the roadmap row holds no phases of its own, so the entity cannot notice one by itself.
+   * A {@code @PreUpdate} hook would be no help either: nothing on this row is written when a phase
+   * appears, so there is no update for JPA to intercept.
+   *
+   * <p><b>Deliberately not "something below me changed".</b> A phase's own status being recomputed
+   * or its title edited is the phase's business and is carried by {@code RoadmapPhase.updatedAt}. If
+   * this instant moved for those too it would stop distinguishing anything and would only be a
+   * different kind of lie than the one it used to tell, when it was written once in the constructor
+   * and never again.
+   */
+  public void recordStructuralChange() {
+    this.updatedAt = Instant.now();
+  }
+
   public UUID getId() {
     return id;
   }
