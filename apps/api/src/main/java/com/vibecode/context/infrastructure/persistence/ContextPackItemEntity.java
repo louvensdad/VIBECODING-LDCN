@@ -58,7 +58,8 @@ public class ContextPackItemEntity {
   @Column(name = "kind", nullable = false, length = 40)
   private ContextKind kind;
 
-  @Column(name = "label", nullable = false, length = 200)
+  /** 500, not 200: a label is human text and is displayed. See the column comment in V9. */
+  @Column(name = "label", nullable = false, length = 500)
   private String label;
 
   @Column(name = "content", nullable = false, columnDefinition = "TEXT")

@@ -1,6 +1,7 @@
 package com.vibecode.context.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.vibecode.context.domain.ContextBudget;
 import com.vibecode.context.domain.ContextItem;
@@ -11,7 +12,9 @@ import com.vibecode.context.domain.ContextSource;
 import com.vibecode.context.domain.ContextSourceType;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.support.TestIdentity;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -23,6 +26,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
@@ -196,6 +200,173 @@ class ContextPackPersistenceTest {
     assertThat(packs.findByProjectIdOrderByAssembledAtDesc(projectId))
         .extracting(ContextPackEntity::getId)
         .containsExactly(second.packId(), first.packId());
+  }
+
+  @Test
+  @DisplayName("A pack whose stored positions were altered refuses to load")
+  void tamperedOrderIsRejected() {
+    ContextPack written =
+        packOf(
+            List.of(
+                item("tamper-a", ContextKind.OBJECTIVE, ContextSourceType.CURRENT_TASK, "task-1", null),
+                item("tamper-b", ContextKind.RULE, ContextSourceType.BRAIN_ENTRY, "entry-1", 1),
+                item("tamper-c", ContextKind.ERROR, ContextSourceType.ACTIVE_ERRORS, "err-1", null)));
+    packs.save(ContextPackEntity.from(written));
+
+    // Swap the first two positions behind the mapping's back, through a temporary value because
+    // the database will not let two items claim the same place even for an instant.
+    swapPositions(written.packId(), 0, 1);
+
+    ContextPackEntity stored = packs.findById(written.packId()).orElseThrow();
+
+    // The canonical order is by source first, so the pack was written as [b, a, c]:
+    // BRAIN_ENTRY(30), CURRENT_TASK(60), ACTIVE_ERRORS(100). After the swap the entity view
+    // faithfully reports [a, b, c] — @OrderBy is load-bearing — which is exactly why the domain
+    // view must not quietly sort it back and disagree with it.
+    assertThat(stored.getItems())
+        .extracting(ContextPackItemEntity::getItemId)
+        .containsExactly("tamper-a", "tamper-b", "tamper-c");
+
+    assertThatThrownBy(stored::toDomain)
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("is not in canonical order")
+        .hasMessageContaining("item_position values were altered")
+        .hasMessageContaining("CANONICAL_ORDER has changed");
+  }
+
+  @Test
+  @DisplayName("The database rejects an item that claims a place before the beginning")
+  void negativePositionIsRejected() {
+    ContextPack written =
+        packOf(List.of(item("only", ContextKind.NOTE, ContextSourceType.PROJECT, "project-1", null)));
+    packs.save(ContextPackEntity.from(written));
+
+    // Uniqueness alone would have accepted this row: no other item claims position -1.
+    assertThatThrownBy(
+            () ->
+                jdbc.update(
+                    "INSERT INTO context_pack_items (id, pack_id, item_position, item_id, kind, "
+                        + "label, content, source_type, source_id, source_version, "
+                        + "provenance_project_id, recorded_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    UUID.randomUUID(),
+                    written.packId(),
+                    -1,
+                    "before-the-beginning",
+                    ContextKind.NOTE.name(),
+                    "Synthetic label",
+                    "Synthetic content",
+                    ContextSourceType.PROJECT.name(),
+                    "project-1",
+                    null,
+                    projectId,
+                    OBSERVED_AT))
+        .isInstanceOf(DataIntegrityViolationException.class);
+  }
+
+  @Test
+  @DisplayName("Human text longer than 200 characters persists: task reference and label are 500")
+  void longHumanTextPersists() {
+    // The realistic shape of the overflow: a reference decorated with a task title that is itself
+    // allowed to be 200 characters long.
+    String longTaskReference = "TASK-42: " + "t".repeat(200);
+    String longLabel = "l".repeat(400);
+    assertThat(longTaskReference.length()).isGreaterThan(200);
+
+    ContextSource source = new ContextSource(ContextSourceType.CURRENT_TASK, "task-1", null);
+    ContextItem labelled =
+        new ContextItem(
+            "long-label",
+            ContextKind.OBJECTIVE,
+            longLabel,
+            "Synthetic content",
+            new ContextProvenance(source, projectId, OBSERVED_AT));
+    ContextPack written =
+        new ContextPack(
+            UUID.randomUUID(),
+            projectId,
+            longTaskReference,
+            ASSEMBLED_AT,
+            BUDGET,
+            List.of(labelled));
+
+    packs.save(ContextPackEntity.from(written));
+
+    ContextPack read = packs.findById(written.packId()).orElseThrow().toDomain();
+    assertThat(read.taskReference()).isEqualTo(longTaskReference);
+    assertThat(itemNamed(read, "long-label").label()).isEqualTo(longLabel);
+  }
+
+  @Test
+  @DisplayName("Timestamps come back at microsecond precision, and this test says so out loud")
+  void subSecondPrecisionIsMicroseconds() {
+    // Deliberately not rounded off in the fixture. Both engines this project runs on store
+    // TIMESTAMP WITH TIME ZONE at microsecond resolution, so the last three digits of a
+    // nanosecond Instant do not survive the write. The behaviour is recorded here rather than
+    // avoided, because the other tests use whole seconds and would never reveal it.
+    //
+    // Truncating at the entity boundary was considered and rejected: it would not make write and
+    // read agree — the in-memory Instant still carries nanoseconds either way — it would only
+    // replace the database's rounding with our own silent truncation, which is a transformation
+    // someone would later have to discover. The schema is unchanged; the loss is documented.
+    Instant nanosecondPrecision = Instant.parse("2026-03-01T10:15:30.123456789Z");
+    ContextSource source = new ContextSource(ContextSourceType.BRAIN_ENTRY, "entry-1", 1);
+    ContextItem precise =
+        new ContextItem(
+            "precise",
+            ContextKind.DECISION,
+            "Label for precise",
+            "Synthetic content for precise",
+            new ContextProvenance(source, projectId, nanosecondPrecision));
+    ContextPack written =
+        new ContextPack(
+            UUID.randomUUID(), projectId, "TASK-42", nanosecondPrecision, BUDGET, List.of(precise));
+
+    packs.save(ContextPackEntity.from(written));
+    ContextPack read = packs.findById(written.packId()).orElseThrow().toDomain();
+
+    Instant readAssembledAt = read.assembledAt();
+    Instant readRecordedAt = itemNamed(read, "precise").provenance().recordedAt();
+
+    // What is kept: the second, and every digit down to the microsecond.
+    assertThat(readAssembledAt.truncatedTo(ChronoUnit.SECONDS))
+        .isEqualTo(nanosecondPrecision.truncatedTo(ChronoUnit.SECONDS));
+
+    // What is lost: the nanosecond remainder. Asserted as "no sub-microsecond digits survive" and
+    // "within one microsecond of what was written" rather than as an exact value, because the
+    // engines disagree on how they discard it — H2 in PostgreSQL mode and PostgreSQL 16 both round
+    // .123456789 up to .123457, while a truncating engine would give .123456. Nothing downstream
+    // should depend on which, so this test does not either.
+    assertThat(readAssembledAt.getNano() % 1_000).isZero();
+    assertThat(readRecordedAt.getNano() % 1_000).isZero();
+    assertThat(Duration.between(nanosecondPrecision, readAssembledAt).abs())
+        .isLessThan(Duration.ofNanos(1_000));
+    assertThat(Duration.between(nanosecondPrecision, readRecordedAt).abs())
+        .isLessThan(Duration.ofNanos(1_000));
+
+    // And so a nanosecond-precision instant does NOT round trip. Stated as an assertion so that a
+    // future engine or column type that does preserve it fails this test and gets read.
+    assertThat(readAssembledAt).isNotEqualTo(nanosecondPrecision);
+  }
+
+  /** Swaps two stored positions through a spare one, since no two items may share a place. */
+  private void swapPositions(UUID packId, int first, int second) {
+    int parking = 1_000;
+    jdbc.update(
+        "UPDATE context_pack_items SET item_position = ? WHERE pack_id = ? AND item_position = ?",
+        parking,
+        packId,
+        first);
+    jdbc.update(
+        "UPDATE context_pack_items SET item_position = ? WHERE pack_id = ? AND item_position = ?",
+        first,
+        packId,
+        second);
+    jdbc.update(
+        "UPDATE context_pack_items SET item_position = ? WHERE pack_id = ? AND item_position = ?",
+        second,
+        packId,
+        parking);
   }
 
   private ContextItem itemNamed(ContextPack pack, String id) {

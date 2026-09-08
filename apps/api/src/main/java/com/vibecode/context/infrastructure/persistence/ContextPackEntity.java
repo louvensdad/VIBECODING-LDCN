@@ -38,7 +38,7 @@ public class ContextPackEntity {
   @Column(name = "project_id", nullable = false)
   private UUID projectId;
 
-  @Column(name = "task_reference", nullable = false, length = 200)
+  @Column(name = "task_reference", nullable = false, length = 500)
   private String taskReference;
 
   @Column(name = "assembled_at", nullable = false)
@@ -104,24 +104,61 @@ public class ContextPackEntity {
   }
 
   /**
-   * Rebuilds the domain snapshot.
+   * Rebuilds the domain snapshot, and refuses to rebuild one whose stored order is wrong.
    *
-   * <p>The pack's constructor re-sorts and re-validates what comes back, so a row that drifted out
-   * of canonical order or out of budget is rejected here rather than travelling on as if it were a
-   * pack this engine had produced.
+   * <p>{@link ContextPack}'s constructor sorts whatever it is handed into canonical order, so on
+   * its own it would <em>repair</em> a tampered {@code item_position} sequence rather than notice
+   * it — and the repair would be invisible, because the fingerprint is computed after the sort.
+   * Worse, {@link #getItems()} honours the stored order faithfully, so the two views of the same
+   * pack would disagree and nothing would say so. The check below is what stops that: the stored
+   * sequence is compared against the canonical one before the pack is built, and a mismatch is an
+   * exception rather than a quiet correction.
+   *
+   * <p>Two different things make it fail, and the message names both because they call for
+   * opposite responses. Either these rows were altered after the pack was written, or {@link
+   * ContextItem#CANONICAL_ORDER} has changed since. <b>If the ordering rule is ever changed, every
+   * previously stored pack stops loading — and that is the correct outcome.</b> A snapshot is a
+   * record of what context looked like; silently re-sorting it under a rule invented afterwards
+   * would rewrite the thing it claims to be a record of. The loud failure is the feature. The
+   * answer then is a migration that decides explicitly what happens to packs written under the old
+   * rule, not a relaxation of this check.
+   *
+   * <p>The pack's own constructor still re-validates everything else it owns — the budget above
+   * all, so a pack edited into overrunning its ceiling is rejected here too.
    */
   public ContextPack toDomain() {
-    List<ContextItem> domainItems = new ArrayList<>(items.size());
+    List<ContextItem> storedOrder = new ArrayList<>(items.size());
     for (ContextPackItemEntity item : items) {
-      domainItems.add(item.toDomain());
+      storedOrder.add(item.toDomain());
     }
+
+    List<ContextItem> canonicalOrder = new ArrayList<>(storedOrder);
+    canonicalOrder.sort(ContextItem.CANONICAL_ORDER);
+    if (!idsOf(storedOrder).equals(idsOf(canonicalOrder))) {
+      throw new IllegalStateException(
+          "Stored pack "
+              + id
+              + " is not in canonical order. Stored: "
+              + idsOf(storedOrder)
+              + ", canonical: "
+              + idsOf(canonicalOrder)
+              + ". Either the item_position values were altered after the pack was written, or"
+              + " ContextItem.CANONICAL_ORDER has changed since — the second makes every pack"
+              + " written under the old rule fail to load, which is intended: a snapshot must not"
+              + " be silently re-sorted under a rule invented after it was taken.");
+    }
+
     return new ContextPack(
         id,
         projectId,
         taskReference,
         assembledAt,
         new ContextBudget(budgetMaxItems, budgetMaxCharacters, budgetMaxBytes),
-        domainItems);
+        storedOrder);
+  }
+
+  private static List<String> idsOf(List<ContextItem> items) {
+    return items.stream().map(ContextItem::id).toList();
   }
 
   public UUID getId() {
