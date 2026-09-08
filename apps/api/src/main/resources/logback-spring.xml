@@ -1,16 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  This file exists for one line: the turboFilter below. Everything else is Spring Boot's own default
-  configuration, included rather than restated, so console and file output, the pattern, the colours
-  and every logging.level.* property in application.yml keep working exactly as they did before this
-  file existed. Boot applies those levels after reading this file, so nothing here overrides them.
+  This file exists for one line, the turboFilter. Everything around it is here to reproduce what
+  Spring Boot applies when there is no logback configuration at all, because the moment this file
+  exists Boot stops applying its own defaults and uses only what is written here.
 
-  A TurboFilter has to be registered on the LoggerContext, and registering it here rather than from
-  a @Bean means it is installed while the logging system starts - before Hibernate, before the
-  Spring context, and still in force if the context never finishes starting. That matters: a startup
-  failure is one of the moments a driver exception is most likely to be logged.
+  It does NOT include base.xml, and that is the whole point of the three lines below. base.xml is a
+  Spring Boot 1.1 compatibility shim, not "the defaults": it defines LOG_FILE with a fallback to
+  ${java.io.tmpdir}/spring.log and attaches the FILE appender to the root unconditionally. Boot's
+  programmatic default attaches FILE only when logging.file.name or logging.file.path is set, and
+  this application sets neither. Including base.xml therefore created a 9 MB rolling log file in the
+  shared temp directory, with a week of retention, in an application that had never written a log
+  file — and everything the logging.level pins in application.yml deliberately tolerate at INFO,
+  including the email addresses SecurityEventLogger records, went to disk with it. A change made to
+  narrow what reaches a log file must not begin by creating one.
+
+  defaults.xml carries the conversion rules and the patterns; console-appender.xml defines CONSOLE
+  against them; the root binds CONSOLE alone at INFO. Boot applies every logging.level.* property
+  from application.yml after reading this file, so nothing here overrides them, and setting
+  logging.file.name still works — Boot's LogbackLoggingSystem does not need base.xml for that.
+  LogFileAppenderIsNotAttachedTest holds this shape in place.
+
+  Registering the filter here rather than from a @Bean installs it when Boot's
+  LoggingApplicationListener configures logging, at ApplicationEnvironmentPreparedEvent — early
+  enough to cover Flyway, Hibernate and a context that never finishes starting, which is one of the
+  moments a driver exception is most likely to be logged. It is not "before everything": anything
+  logged ahead of that event, or during a LoggerContext reset, is unfiltered.
 -->
 <configuration>
-  <include resource="org/springframework/boot/logging/logback/base.xml"/>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+  <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
   <turboFilter class="com.vibecode.shared.logging.SqlErrorDetailTurboFilter"/>
 </configuration>

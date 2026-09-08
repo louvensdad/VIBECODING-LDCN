@@ -77,8 +77,13 @@ spring:
 # The class documents its two rules and its own limits; what matters here is that it is not a
 # blanket silence. The `SQL Error: <code>, SQLState: <state>` line from the same Hibernate class
 # passes through untouched, every denial is replaced by a line of the filter's own at the same
-# level, and stack traces are re-emitted with class names and frames intact and messages removed.
-# A failing write still announces itself, with a code an operator can classify.
+# level, and stack traces are re-emitted with class names, frames and suppressed entries intact and
+# messages removed. A failing write still announces itself, with a code an operator can classify.
+# A failing migration keeps more, because the words are the developer's: the script, the line, the
+# failing statement and the SQLState all survive, and the single field Flyway folds the driver's
+# message into is the one that does not. That is verified rather than assumed — Flyway builds the
+# driver's text into its own report, so keeping the report whole would have reprinted exactly what
+# the nested SQLException is withheld for.
 #
 # The alternatives were rejected on reach rather than on taste. A MessageConverter only sanitizes
 # appenders configured to use it, so a JSON encoder or a log shipper added later would leak again.
@@ -97,6 +102,13 @@ spring:
 # may only allow or deny, never rewrite, so that one is out of the filter's reach and is pinned
 # below. While the ERROR path was open, pinning it would have changed nothing about what reached the
 # log file; with that path closed it is the difference between leaking and not.
+#
+# A second boundary of the same shape, named rather than pinned: `FrameworkServlet` concatenates
+# `e.getMessage()` into three lines at DEBUG and TRACE under the `DispatcherServlet` category, and
+# is filter-proof for exactly the reason TransactionInterceptor is. It is not pinned because it
+# cannot currently fire — ApiExceptionHandler's catch-all means the servlet's failureCause is null
+# by the time those lines are reached — so pinning it would cost the request-dispatch trace to
+# close a route nothing travels. If that catch-all ever narrows, this becomes a category to pin.
 #
 # This note is still not an inventory. Assume any category that logs a persistence exception can
 # carry the value, and treat the list below as covering the categories that print values
