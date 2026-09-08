@@ -99,6 +99,13 @@ class RoadmapFreshnessTest {
     RoadmapPhase second = roadmaps.addPhase(projectId, 2, "Delivery", null);
     Instant beforeMove = roadmaps.require(projectId).getUpdatedAt();
 
+    // Same microsecond race as in the test above: the stamp taken when the second phase was added
+    // and the one taken when the reorder completes can land on the same stored microsecond, and
+    // then a roadmap that recorded the reorder perfectly still fails the assertion. There is more
+    // work between the two stamps here — two renumbering passes and their flushes — so it loses the
+    // race less often, not never.
+    awaitClockStrictlyPast(beforeMove);
+
     roadmaps.movePhase(projectId, second.getId(), 1);
 
     assertThat(roadmaps.require(projectId).getUpdatedAt()).isAfter(beforeMove);
@@ -134,6 +141,14 @@ class RoadmapFreshnessTest {
     RoadmapPhase phase = roadmaps.addPhase(projectId, 1, "Foundations", null);
     Instant roadmapBefore = roadmaps.require(projectId).getUpdatedAt();
     Instant phaseBefore = roadmaps.requirePhase(projectId, phase.getId()).getUpdatedAt();
+
+    // Only the phase's side of this test races: it asserts strictly-after against a stamp taken
+    // when the phase was constructed, and the status recomputation below lands on that same stored
+    // microsecond often enough to have been caught doing it — rarely, because adding a task is a
+    // lot of work between the two stamps, but rarely is not never. The roadmap's side asserts
+    // equality and is immune, since nothing writes that column at all, so the wait is against the
+    // phase's stamp and not the roadmap's.
+    awaitClockStrictlyPast(phaseBefore);
 
     // Adding a task makes the status calculator recompute the phase's status, which is exactly the
     // kind of descendant change that must not be reported as a change to the plan's shape.
