@@ -42,3 +42,31 @@ management:
 info:
   app:
     name: VibeCode API
+
+vibecode:
+  security:
+    auth-rate-limit:
+      enabled: true
+      # Peers whose X-Forwarded-For may be believed. EMPTY BY DEFAULT, and that matters: the
+      # Next.js rewrite passes a client-supplied X-Forwarded-For straight through, so listing it
+      # here would let any browser mint unlimited origin buckets. Only list a proxy that
+      # OVERWRITES the header with the address it accepted the connection from.
+      trusted-proxies: []
+      # Upper bound on buckets held in memory, so inventing identifiers cannot exhaust the heap.
+      max-tracked-keys: 50000
+      login:
+        # Per account being targeted, from anywhere.
+        identifier:
+          capacity: 10
+          window: 15m
+        # Per client address, whatever accounts it names.
+        origin:
+          capacity: 30
+          window: 15m
+      register:
+        identifier:
+          capacity: 5
+          window: 1h
+        origin:
+          capacity: 10
+          window: 1h

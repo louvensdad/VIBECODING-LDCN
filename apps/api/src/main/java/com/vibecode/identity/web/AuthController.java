@@ -5,6 +5,8 @@ import com.vibecode.identity.application.SecurityEventLogger;
 import com.vibecode.identity.domain.CurrentUserProvider;
 import com.vibecode.identity.domain.User;
 import com.vibecode.identity.infrastructure.AuthenticatedUser;
+import com.vibecode.identity.ratelimit.application.AuthenticationRateLimiter;
+import com.vibecode.identity.ratelimit.domain.RateLimitScope;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
@@ -41,6 +43,7 @@ public class AuthController {
   private final SessionAuthenticationStrategy sessionStrategy;
   private final CurrentUserProvider currentUser;
   private final SecurityEventLogger securityEvents;
+  private final AuthenticationRateLimiter rateLimiter;
 
   public AuthController(
       IdentityService identity,
@@ -48,17 +51,22 @@ public class AuthController {
       SecurityContextRepository contextRepository,
       SessionAuthenticationStrategy sessionStrategy,
       CurrentUserProvider currentUser,
-      SecurityEventLogger securityEvents) {
+      SecurityEventLogger securityEvents,
+      AuthenticationRateLimiter rateLimiter) {
     this.identity = identity;
     this.authenticationManager = authenticationManager;
     this.contextRepository = contextRepository;
     this.sessionStrategy = sessionStrategy;
     this.currentUser = currentUser;
     this.securityEvents = securityEvents;
+    this.rateLimiter = rateLimiter;
   }
 
   @PostMapping("/register")
   public ResponseEntity<UserResponse> register(@Valid @RequestBody RegisterRequest request) {
+    // The origin limit already ran in the filter; this bounds repeated attempts against one
+    // address, which is what account-spam and enumeration probing look like.
+    rateLimiter.checkIdentifier(RateLimitScope.REGISTER_IDENTIFIER, request.email());
     User user =
         identity.register(request.email(), request.password(), request.displayName());
     return ResponseEntity.status(HttpStatus.CREATED).body(UserResponse.from(user));
@@ -76,6 +84,11 @@ public class AuthController {
       @Valid @RequestBody LoginRequest request,
       HttpServletRequest httpRequest,
       HttpServletResponse httpResponse) {
+
+    // Before the password is checked, and therefore before any database lookup or bcrypt work.
+    // The key is derived from what was typed, so an address with no account consumes an attempt
+    // exactly like one that exists.
+    rateLimiter.checkIdentifier(RateLimitScope.LOGIN_ACCOUNT, request.email());
 
     Authentication authentication;
     try {
@@ -100,6 +113,9 @@ public class AuthController {
     AuthenticatedUser principal = (AuthenticatedUser) authentication.getPrincipal();
     principal.eraseCredentials();
     identity.recordLogin(principal.getId());
+    // Clears this account's bucket only. The origin bucket is deliberately left alone: otherwise a
+    // valid account could be used to keep resetting the volume allowance between guesses.
+    rateLimiter.recordSuccessfulLogin(request.email());
     securityEvents.loginSucceeded(principal.getId(), principal.getUsername());
 
     return ResponseEntity.ok(UserResponse.from(identity.require(principal.getId())));

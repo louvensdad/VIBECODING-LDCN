@@ -158,6 +158,25 @@ Duas decisões sustentam isso:
   procurar a palavra "failures" transformaria todo build limpo em falso negativo.
 - `shouldContinue` só é verdadeiro em `SUCCESS`. Nenhuma outra classificação avança o roadmap.
 
+## Limitador de autenticação
+
+```
+POST /api/auth/{login,register}
+        ↓
+CSRF                       (inalterado)
+        ↓
+ORIGIN BUCKET   ← filtro: recusa antes de qualquer consulta ou bcrypt
+        ↓
+IDENTIFIER BUCKET ← controller: antes de authenticate(), portanto antes do bcrypt
+        ↓
+AUTENTICAÇÃO
+        ↓
+AUDIT + METRICS
+```
+
+Ambos precisam permitir. Estado em memória, limitado, com relógio injetado. Ver
+[ADR-016](../adr/ADR-016-authentication-abuse-protection.md).
+
 ## Pipeline de segurança
 
 ```

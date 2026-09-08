@@ -12,3 +12,27 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+
+vibecode:
+  security:
+    auth-rate-limit:
+      # Generous on purpose. Every test in this suite arrives from the same MockMvc address, so a
+      # realistic origin limit would make unrelated tests throttle each other. The tests that are
+      # actually about throttling set their own tiny limits with @TestPropertySource.
+      enabled: true
+      trusted-proxies: []
+      max-tracked-keys: 50000
+      login:
+        identifier:
+          capacity: 10000
+          window: 15m
+        origin:
+          capacity: 10000
+          window: 15m
+      register:
+        identifier:
+          capacity: 10000
+          window: 1h
+        origin:
+          capacity: 10000
+          window: 1h

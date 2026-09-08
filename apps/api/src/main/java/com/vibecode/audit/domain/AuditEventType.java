@@ -11,6 +11,9 @@ public enum AuditEventType {
   CROSS_USER_ACCESS_DENIED,
   LOGIN_SUCCESS,
   LOGIN_FAILURE,
-  LOGOUT
+  LOGOUT,
+  /** An authentication attempt refused by the rate limiter, before any credential was checked. */
+  AUTH_RATE_LIMITED,
+  REGISTRATION_RATE_LIMITED
 }
 

@@ -45,6 +45,19 @@ Valem desde a fundação, não a partir de uma fase futura de endurecimento.
 - Memória proposta por modelo exige validação antes de virar contexto oficial.
 - Integrações recebem credencial de menor privilégio possível.
 
+## Abuso de autenticação
+
+- **Dois limites independentes** em login e registro: por origem e por identificador. Ambos
+  precisam permitir. Uma chave única `IP + email` daria ao atacante um bucket novo por email
+  inventado.
+- **Nunca lockout permanente por tentativa errada.** Isso permitiria bloquear a conta de uma
+  vítima de propósito. O estado do limitador é temporário e não toca em `UserStatus`.
+- **A chave do bucket é um digest com salt**, nunca o email; o salt vive só em memória.
+- **A resposta 429 não revela nada**: nem qual limite disparou, nem quantas tentativas restam, nem
+  se a conta existe.
+- **Headers encaminhados não são confiáveis por padrão.** Só um proxy explicitamente listado é
+  honrado, e apenas se ele sobrescrever `X-Forwarded-For` — o rewrite do Next.js não sobrescreve.
+
 ## Guardian e auditoria
 
 - **Redação antes da persistência.** Segredo detectado é removido antes de qualquer escrita, nunca
@@ -61,9 +74,11 @@ Valem desde a fundação, não a partir de uma fase futura de endurecimento.
 
 ## Ainda não existe
 
-- **Rate limiting** em login e registro. Nada no código limita tentativas hoje; um atacante pode
-  testar senhas na velocidade da rede. É o primeiro item da fase de endurecimento, e nenhuma parte
-  desta documentação deve ser lida como se já existisse proteção contra força bruta.
+- **Limitador distribuído.** O rate limiting de login e registro existe, mas o estado vive no
+  processo: com mais de uma instância, cada uma concede a cota inteira. Ver
+  `MULTI_INSTANCE_RATE_LIMIT_STORE_REQUIRED`.
+- **CAPTCHA** e proteção contra credential stuffing distribuído (muitas origens, uma tentativa
+  cada). Fica abaixo dos dois limites por construção.
 - **Multi-tenancy** — organizações, times e associação de projeto. Existe apenas dono único.
 - **MFA** e **recuperação de senha**: quem perde a senha perde a conta.
 - **Revogação distribuída de sessão**: a sessão vive em memória do processo; reiniciar a API

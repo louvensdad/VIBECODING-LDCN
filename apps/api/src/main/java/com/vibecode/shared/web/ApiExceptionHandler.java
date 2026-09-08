@@ -3,6 +3,7 @@ package com.vibecode.shared.web;
 import com.vibecode.identity.application.EmailAlreadyRegisteredException;
 import com.vibecode.identity.domain.CurrentUserProvider;
 import com.vibecode.identity.domain.PasswordPolicy;
+import com.vibecode.identity.ratelimit.domain.RateLimitExceededException;
 import com.vibecode.identity.web.AuthController;
 import com.vibecode.shared.domain.DomainRuleException;
 import com.vibecode.shared.domain.ResourceNotFoundException;
@@ -43,6 +44,20 @@ public class ApiExceptionHandler {
   })
   ResponseEntity<ApiError> unauthenticated(RuntimeException exception) {
     return build(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Credenciais inválidas.");
+  }
+
+  /**
+   * Too many attempts.
+   *
+   * <p>The body says nothing about which limit was reached, how many attempts remain, or whether
+   * the account exists — all of which would help an automated attempt pace itself.
+   */
+  @ExceptionHandler(RateLimitExceededException.class)
+  ResponseEntity<ApiError> rateLimited(RateLimitExceededException exception) {
+    return build(
+        HttpStatus.TOO_MANY_REQUESTS,
+        "TOO_MANY_REQUESTS",
+        "Muitas tentativas. Tente novamente mais tarde.");
   }
 
   /** Registration against an address that already has an account. */

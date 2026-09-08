@@ -15,6 +15,19 @@
 
 ## Explicit future rules
 
+## Abuso de autenticação (fase 4.5)
+
+| Threat | Impact | Current mitigation | Remaining gap |
+|---|---|---|---|
+| Brute force contra uma conta | Tomada de conta | Bucket por identificador, atingido venha de onde vier; a chave é um digest com salt, não o email | Um atacante muito lento continua abaixo do limite; sem MFA, a senha é o único fator |
+| Volume a partir de uma origem | Enumeração e credential stuffing | Bucket por origem, independente dos identificadores usados | **Credential stuffing distribuído continua parcialmente mitigado**: muitas origens, uma tentativa cada, ficam abaixo dos dois limites |
+| Lockout da vítima como ataque | Negação de serviço contra uma pessoa | O limitador tem estado próprio e temporário; `UserStatus.LOCKED` nunca é atribuído automaticamente | Enquanto o bucket está vazio, a senha correta também é recusada — temporário e deliberado |
+| Falsificação de origem | Limitador contornado | Headers encaminhados são ignorados por padrão; só um proxy explicitamente confiável é honrado | **Medido**: o rewrite do Next.js repassa `X-Forwarded-For` do cliente, então nunca deve ser listado como confiável |
+| Exaustão de memória pelo limitador | A defesa derruba o serviço | Store com teto configurável, descarte LRU e por ociosidade | Um bucket despejado volta cheio; o teto precisa ser grande o suficiente para o tráfego real |
+| `MULTI_INSTANCE_RATE_LIMIT_STORE_REQUIRED` | Limite multiplicado pelo número de instâncias | Nenhuma — o store é por processo | **Não implementado.** Requisito bloqueante para escalar horizontalmente |
+
+MFA: não implementado. CAPTCHA: não implementado. Limitador global distribuído: não implementado.
+
 ## Security Guardian (fase 4)
 
 | Threat | Impact | Current mitigation | Remaining gap |

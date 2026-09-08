@@ -9,6 +9,23 @@ import { useSession } from "./session";
 type Mode = "login" | "register";
 
 /**
+ * What to tell the user about a failure.
+ *
+ * <p>A 429 gets a plain "wait a moment". No countdown and no remaining-attempts figure: the server
+ * deliberately does not send either, because a client that knows exactly when to retry is a client
+ * that can pace an attack.
+ */
+function messageFor(caught: unknown): string {
+  if (caught instanceof ApiRequestError) {
+    if (caught.status === 429) {
+      return "Muitas tentativas. Aguarde um pouco e tente novamente.";
+    }
+    return caught.message;
+  }
+  return "Não foi possível falar com a API. Ela está rodando?";
+}
+
+/**
  * The sign-in and sign-up form.
  *
  * The password never leaves this component except in the request body, and the error shown is
@@ -43,11 +60,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       router.push("/projects");
       router.refresh();
     } catch (caught) {
-      setError(
-        caught instanceof ApiRequestError
-          ? caught.message
-          : "Não foi possível falar com a API. Ela está rodando?",
-      );
+      setError(messageFor(caught));
     } finally {
       setBusy(false);
     }

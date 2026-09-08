@@ -1,5 +1,8 @@
 package com.vibecode.identity.infrastructure;
 
+import com.vibecode.identity.ratelimit.application.AuthenticationRateLimiter;
+import com.vibecode.identity.ratelimit.infrastructure.ClientOriginResolver;
+import com.vibecode.identity.ratelimit.web.OriginRateLimitFilter;
 import com.vibecode.shared.web.ApiError;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
@@ -68,7 +71,11 @@ public class SecurityConfiguration {
 
   @Bean
   public SecurityFilterChain filterChain(
-      HttpSecurity http, ObjectMapper objectMapper, SecurityContextRepository contextRepository)
+      HttpSecurity http,
+      ObjectMapper objectMapper,
+      SecurityContextRepository contextRepository,
+      AuthenticationRateLimiter rateLimiter,
+      ClientOriginResolver originResolver)
       throws Exception {
 
     http.csrf(
@@ -80,6 +87,12 @@ public class SecurityConfiguration {
                     // resolve eagerly so the cookie is written on every response.
                     .csrfTokenRequestHandler(rawTokenHandler()))
         .addFilterAfter(new CsrfCookieFilter(), org.springframework.security.web.csrf.CsrfFilter.class)
+        // After CSRF, so a request without a token is still rejected as CSRF rather than being
+        // counted; before anything that touches the database, so a client already over its limit
+        // costs nothing to refuse.
+        .addFilterAfter(
+            new OriginRateLimitFilter(rateLimiter, originResolver, objectMapper),
+            org.springframework.security.web.csrf.CsrfFilter.class)
         .sessionManagement(
             session ->
                 session

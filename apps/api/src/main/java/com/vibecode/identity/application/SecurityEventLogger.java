@@ -2,6 +2,8 @@ package com.vibecode.identity.application;
 
 import com.vibecode.audit.application.AuditService;
 import com.vibecode.audit.domain.AuditEventType;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,9 +29,21 @@ public class SecurityEventLogger {
   private static final Logger log = LoggerFactory.getLogger("com.vibecode.security");
 
   private final AuditService audit;
+  private final MeterRegistry meters;
 
-  public SecurityEventLogger(@Lazy AuditService audit) {
+  public SecurityEventLogger(@Lazy AuditService audit, MeterRegistry meters) {
     this.audit = audit;
+    this.meters = meters;
+  }
+
+  /**
+   * Operational counters.
+   *
+   * <p>Untagged on purpose. An email, a user id or an address as a tag would give the metrics
+   * backend unbounded cardinality and turn a dashboard into a store of personal data.
+   */
+  private void count(String name) {
+    Counter.builder(name).register(meters).increment();
   }
 
   public enum SecurityEvent {
@@ -41,6 +55,8 @@ public class SecurityEventLogger {
   }
 
   public void loginSucceeded(UUID userId, String email) {
+    count("auth.login.attempts");
+    count("auth.login.successes");
     log.info("event={} userId={} email={}", SecurityEvent.LOGIN_SUCCESS, userId, email);
     try {
       audit.recordWithActor(null, userId, AuditEventType.LOGIN_SUCCESS, "USER", userId.toString(), "SUCCESS", "Email: " + email);
@@ -51,6 +67,8 @@ public class SecurityEventLogger {
 
   /** No distinction between "no such account" and "wrong password" is recorded in the reason. */
   public void loginFailed(String email, String reason) {
+    count("auth.login.attempts");
+    count("auth.login.failures");
     log.warn("event={} email={} reason={}", SecurityEvent.LOGIN_FAILURE, email, reason);
     try {
       audit.recordWithActor(null, null, AuditEventType.LOGIN_FAILURE, "USER", email, "FAILURE", "Motivo: " + reason);
@@ -60,6 +78,7 @@ public class SecurityEventLogger {
   }
 
   public void registered(UUID userId, String email) {
+    count("auth.registration.attempts");
     log.info("event={} userId={} email={}", SecurityEvent.REGISTERED, userId, email);
   }
 
