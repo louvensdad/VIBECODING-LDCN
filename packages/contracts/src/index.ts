@@ -442,7 +442,15 @@ export type AuditEventType =
   | "CROSS_USER_ACCESS_DENIED"
   | "LOGIN_SUCCESS"
   | "LOGIN_FAILURE"
-  | "LOGOUT";
+  | "LOGOUT"
+  | "AUTH_RATE_LIMITED"
+  | "REGISTRATION_RATE_LIMITED"
+  | "PROVIDER_ACCOUNT_CREATED"
+  | "PROVIDER_ACCOUNT_DISABLED"
+  | "PROVIDER_CREDENTIAL_STORED"
+  | "PROVIDER_CREDENTIAL_ROTATED"
+  | "PROVIDER_CREDENTIAL_REMOVED"
+  | "VAULT_DECRYPTION_FAILED";
 
 /** Append-only. Never carries a credential, cookie, token or session id. */
 export interface AuditEventResponse {
@@ -458,3 +466,67 @@ export interface AuditEventResponse {
 }
 
 export type PromptSecurityStatus = "SAFE" | "WARNING" | "BLOCKED";
+
+// --- provider accounts --------------------------------------------------------------------
+
+export type ProviderId = "OPENAI" | "ANTHROPIC" | "GOOGLE_GEMINI" | "DEEPSEEK" | "CUSTOM";
+
+/** Only `API_KEY` is implemented. The rest name shapes the model already anticipates. */
+export type ProviderAuthenticationType =
+  | "API_KEY"
+  | "OAUTH"
+  | "SERVICE_ACCOUNT"
+  | "CUSTOM_TOKEN";
+
+/**
+ * There is no CONNECTED and no VALID.
+ *
+ * Storing a credential proves only that it was stored. Nothing has been sent to the provider, so
+ * the platform does not know whether the key works — and a status that implied otherwise would be
+ * the interface asserting something nobody checked.
+ */
+export type ProviderAccountStatus =
+  | "PENDING_CREDENTIAL"
+  | "CREDENTIAL_STORED_UNVERIFIED"
+  | "DISABLED";
+
+export interface CreateProviderAccountRequest {
+  provider: ProviderId;
+  displayName: string;
+  authenticationType: ProviderAuthenticationType;
+}
+
+/**
+ * Write-only, and deliberately not part of any response type.
+ *
+ * A credential travels in exactly one direction. If this interface ever appears in a response
+ * position, that is the bug.
+ */
+export interface StoreCredentialRequest {
+  credential: string;
+}
+
+/**
+ * What the client is told about a connection.
+ *
+ * `hasCredential` is a boolean and there is nothing next to it: no masked value, no prefix, no
+ * last four characters, no fingerprint. Each of those is a piece of a secret, and the pieces are
+ * what let someone confirm which key they are looking at.
+ */
+export interface ProviderAccountResponse {
+  id: string;
+  provider: ProviderId;
+  displayName: string;
+  authenticationType: ProviderAuthenticationType;
+  status: ProviderAccountStatus;
+  hasCredential: boolean;
+  credentialUpdatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProviderCatalogEntry {
+  id: ProviderId;
+  displayName: string;
+  supportedAuthenticationTypes: ProviderAuthenticationType[];
+}

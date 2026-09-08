@@ -28,7 +28,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const projectId = pathname.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
   const signedIn = session.status === "authenticated";
-  const protectedWorkspace = pathname === "/settings" || pathname.startsWith("/projects");
+  const protectedWorkspace =
+    pathname === "/settings" ||
+    pathname.startsWith("/connections") ||
+    pathname.startsWith("/projects");
 
   return (
     <div className="shell md:flex">
@@ -95,6 +98,7 @@ function Sidebar({
           <nav className="mt-3 grid grid-cols-2 gap-1 md:grid-cols-1">
             {[
               { label: "All projects", href: "/projects" },
+              { label: "AI Connections", href: "/connections" },
               { label: "Settings", href: "/settings" },
             ].map((item) => (
               <Link

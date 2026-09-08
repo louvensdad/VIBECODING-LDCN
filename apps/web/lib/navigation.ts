@@ -31,7 +31,9 @@ export const moduleDescriptions: Record<string, string> = {
   guide: "Where the project stands, what is missing, and what to do next — with the reasoning.",
   prompts: "Prompts built from official context, ready to paste into any model.",
   outputs: "Results you bring back, analyzed for evidence before anything advances.",
-  models: "Connected providers and models. Every provider is replaceable.",
+  models:
+    "Which model this project uses. The provider accounts themselves belong to you, not to a " +
+    "project, and live under AI Connections.",
   usage: "Tokens, cost and runway — with facts and estimates kept apart.",
   security: "Guardian findings and the risks worth acting on.",
   terminal: "Sandboxed commands. Nothing executes on the platform itself.",

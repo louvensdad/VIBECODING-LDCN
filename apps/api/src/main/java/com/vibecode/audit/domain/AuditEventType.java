@@ -14,6 +14,22 @@ public enum AuditEventType {
   LOGOUT,
   /** An authentication attempt refused by the rate limiter, before any credential was checked. */
   AUTH_RATE_LIMITED,
-  REGISTRATION_RATE_LIMITED
+  REGISTRATION_RATE_LIMITED,
+
+  /* Provider connections and their credentials. None of these events carries secret material:
+   * they record that something happened to a credential, never anything about its value. */
+  PROVIDER_ACCOUNT_CREATED,
+  PROVIDER_ACCOUNT_DISABLED,
+  PROVIDER_CREDENTIAL_STORED,
+  PROVIDER_CREDENTIAL_ROTATED,
+  PROVIDER_CREDENTIAL_REMOVED,
+
+  /**
+   * The vault could not decrypt something it was asked for.
+   *
+   * <p>Worth an audit row on its own: it means a wrong key, a tampered row or a corrupted backup,
+   * and any of the three is a security event rather than an ordinary error.
+   */
+  VAULT_DECRYPTION_FAILED
 }
 

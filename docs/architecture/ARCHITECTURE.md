@@ -51,8 +51,20 @@ Cada módulo só conhece os anteriores. `state` monta a leitura consolidada sobr
 output; `guide` decide o próximo passo a partir de `state`; `prompt` monta o texto a partir de
 ambos. `brain` é transversal: `output` propõe memória, `guide` e `prompt` leem regras e decisões.
 
-`guardian`, `terminal`, `integration`, `usage` e `wellness` continuam contratos de domínio, sem
-implementação, sem bean e sem tabela. Nada depende deles.
+`terminal`, `integration`, `usage` e `wellness` continuam contratos de domínio, sem implementação,
+sem bean e sem tabela. Nada depende deles.
+
+`vault` e `provider` entram fora dessa cadeia, e de propósito:
+
+```
+provider → vault → (audit)
+```
+
+`provider` é o único módulo que depende de `vault`. Nada mais na aplicação recebe `VaultService` —
+em particular `prompt` não recebe, porque prompts são texto que sai da plataforma e um cofre
+alcançável a partir de um construtor de texto é um cofre que uma refatoração distraída abre. A
+dependência aponta numa direção só: `vault` não conhece provider accounts, e o que ele devolve é
+uma referência, nunca material.
 
 ## Fluxo guiado
 
@@ -209,8 +221,33 @@ Nenhum modelo participa. Ver [ADR-012](../adr/ADR-012-deterministic-security-gua
 A inspeção é automática: acontece ao criar evidência e ao gerar prompt, não por botão — um segredo
 já teria sido gravado quando alguém lembrasse de clicar.
 
+## Vault e provider accounts
+
+O caminho de uma credencial é curto e tem uma direção:
+
+```
+USER → PROVIDER ACCOUNT → INGESTÃO → SecretMaterial → CIFRAGEM → VAULT → SecretReference
+```
+
+O plaintext existe entre o corpo da requisição e a fronteira de cifragem, e não depois. O que volta
+para a aplicação é uma referência — um id e um propósito. `ProviderAccount` guarda esse id e nada
+mais, por isso pode ser lido, listado, serializado em DTO e escrito em audit sem que nenhum desses
+caminhos toque em segredo.
+
+Duas tabelas guardam material: `vault_secrets` (identidade, dono, propósito, ciclo de vida, e a
+coluna que aponta para a versão em vigor) e `vault_secret_versions` (ciphertext, nonce, data key
+embrulhada, e como cada linha foi cifrada). `provider_accounts` guarda a conexão e um ponteiro.
+
+Não há leitura de material por HTTP. A única leitura em Java é `withSecret`, que entrega o material
+a um callback e o limpa em seguida; não existe `getSecret` e não deve passar a existir.
+
+Ver [ADR-017](../adr/ADR-017-envelope-encryption-for-stored-secrets.md) a
+[ADR-021](../adr/ADR-021-honest-credential-status-and-no-partial-disclosure.md).
+
 ## O que não existe nesta fase
 
-Sem chamada real a Claude, ChatGPT ou Gemini. Sem terminal remoto funcional, execução de código do
+Sem chamada real a Claude, ChatGPT ou Gemini — inclusive para validar uma credencial guardada, o
+que é o motivo de o estado ser `CREDENTIAL_STORED_UNVERIFIED` e não `CONNECTED`. Sem KMS externo:
+a master key vem do ambiente e o provedor local é de desenvolvimento. Sem terminal remoto funcional, execução de código do
 usuário, deploy, Redis, Kafka, Kubernetes, pgvector, microservices, autopilot ou scanners de
 guardian. Cada um entra com seu próprio ADR.

@@ -7,6 +7,7 @@ import com.vibecode.identity.ratelimit.domain.RateLimitExceededException;
 import com.vibecode.identity.web.AuthController;
 import com.vibecode.shared.domain.DomainRuleException;
 import com.vibecode.shared.domain.ResourceNotFoundException;
+import com.vibecode.vault.domain.VaultCryptographyException;
 import java.util.List;
 import java.util.NoSuchElementException;
 import org.slf4j.Logger;
@@ -82,6 +83,26 @@ public class ApiExceptionHandler {
   @ExceptionHandler({IllegalStateException.class, IllegalArgumentException.class})
   ResponseEntity<ApiError> illegalState(RuntimeException exception) {
     return build(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATE", exception.getMessage());
+  }
+
+  /**
+   * Anything the vault could not encrypt, decrypt, wrap or unwrap.
+   *
+   * <p>One status and one message for every cause. Whether the key is wrong, the ciphertext was
+   * altered, the AAD does not match or the row is gone, the caller learns the same thing: it did
+   * not work. Distinguishing them over HTTP would turn this endpoint into an oracle that tells an
+   * attacker which of their guesses is closer.
+   *
+   * <p>The exception is logged without its message resolved into the response, and the vault has
+   * already written the failure to the audit trail.
+   */
+  @ExceptionHandler(VaultCryptographyException.class)
+  ResponseEntity<ApiError> vaultFailure(VaultCryptographyException exception) {
+    log.error("Vault cryptographic operation failed", exception);
+    return build(
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        "INTERNAL_ERROR",
+        "Não foi possível processar a credencial.");
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)

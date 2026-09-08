@@ -36,3 +36,13 @@ vibecode:
         origin:
           capacity: 10000
           window: 1h
+
+  vault:
+    enabled: true
+    key-provider: LOCAL
+    local:
+      # Base64 of the ASCII bytes "vibecode-test-vault-key-32-bytes" — a fixed, obviously synthetic
+      # key so the suite is deterministic. It is a test fixture, not a secret: it decrypts nothing
+      # that exists outside an in-memory database created and dropped by the test run.
+      master-key: dmliZWNvZGUtdGVzdC12YXVsdC1rZXktMzItYnl0ZXM=
+      key-version: test-v1

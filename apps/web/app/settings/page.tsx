@@ -1,9 +1,18 @@
+import Link from "next/link";
 import { PlaceholderNote } from "@/components/card";
 
-const SETTINGS_GROUPS = [
+interface SettingsGroup {
+  title: string;
+  body: string;
+  /** Present when the section is real and lives somewhere. */
+  href?: string;
+}
+
+const SETTINGS_GROUPS: SettingsGroup[] = [
   {
     title: "Model providers",
-    body: "Connect accounts and choose default models. Credentials are read from the environment and never stored in the database.",
+    body: "Connections live in AI Connections. Each credential belongs to the user who added it, is encrypted before storage, and cannot be read back by anything — including this page.",
+    href: "/connections",
   },
   {
     title: "Budgets",
@@ -21,7 +30,7 @@ export default function SettingsPage() {
       <p className="eyebrow">workspace</p>
       <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">Settings</h1>
       <p className="mt-2 max-w-2xl text-ink-muted">
-        Nothing here is configurable yet. The sections show what this page will hold.
+        Most of this is not configurable yet. Sections without a link show what the page will hold.
       </p>
 
       <div className="mt-8 grid gap-4 md:grid-cols-3">
@@ -29,7 +38,16 @@ export default function SettingsPage() {
           <article key={group.title} className="card p-6">
             <h2 className="font-semibold text-white">{group.title}</h2>
             <p className="mt-2 text-sm leading-6 text-ink-muted">{group.body}</p>
-            <PlaceholderNote>Not implemented in this phase.</PlaceholderNote>
+            {group.href ? (
+              <Link
+                href={group.href}
+                className="mt-3 inline-block text-sm font-semibold text-accent-soft"
+              >
+                Abrir →
+              </Link>
+            ) : (
+              <PlaceholderNote>Not implemented in this phase.</PlaceholderNote>
+            )}
           </article>
         ))}
       </div>

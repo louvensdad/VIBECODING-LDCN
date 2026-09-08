@@ -13,6 +13,10 @@ import type {
   ProjectBrainResponse,
   ProjectResponse,
   ProjectStateResponse,
+  ProviderAccountResponse,
+  ProviderCatalogEntry,
+  CreateProviderAccountRequest,
+  StoreCredentialRequest,
   RecentEvidenceResponse,
   FindingDecisionRequest,
   InspectSecurityRequest,
@@ -54,6 +58,14 @@ export function createApi(request: Transport) {
       method: "POST",
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+
+  const put = <T>(path: string, body?: unknown) =>
+    request<T>(path, {
+      method: "PUT",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
   return {
     // --- identity ---------------------------------------------------------------------------
@@ -130,6 +142,25 @@ export function createApi(request: Transport) {
         `/api/projects/${projectId}/security/findings/${findingId}/false-positive`,
         body,
       ),
+
+    // --- provider accounts ----------------------------------------------------------------
+    // Note what is absent: there is no getCredential, and there is no endpoint to write one
+    // against. The API offers no way to read stored material, so the client cannot ask.
+    listProviderAccounts: () => request<ProviderAccountResponse[]>("/api/provider-accounts"),
+    getProviderCatalog: () =>
+      request<ProviderCatalogEntry[]>("/api/provider-accounts/catalog"),
+    getProviderAccount: (id: string) =>
+      request<ProviderAccountResponse>(`/api/provider-accounts/${id}`),
+    createProviderAccount: (body: CreateProviderAccountRequest) =>
+      post<ProviderAccountResponse>("/api/provider-accounts", body),
+    storeProviderCredential: (id: string, body: StoreCredentialRequest) =>
+      put<ProviderAccountResponse>(`/api/provider-accounts/${id}/credential`, body),
+    rotateProviderCredential: (id: string, body: StoreCredentialRequest) =>
+      post<ProviderAccountResponse>(`/api/provider-accounts/${id}/credential/rotate`, body),
+    removeProviderCredential: (id: string) =>
+      del<ProviderAccountResponse>(`/api/provider-accounts/${id}/credential`),
+    disableProviderAccount: (id: string) =>
+      post<ProviderAccountResponse>(`/api/provider-accounts/${id}/disable`),
 
     // --- audit --------------------------------------------------------------------------------
     listAuditEvents: (projectId: string) =>

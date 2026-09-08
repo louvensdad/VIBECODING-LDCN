@@ -72,6 +72,42 @@ Valem desde a fundação, não a partir de uma fase futura de endurecimento.
   sessão. Eventos de falha são gravados em transação própria, para que a exceção que os origina não
   os apague.
 
+## Secrets são referências, nunca contexto
+
+- **Um secret entra uma vez e não volta.** Não existe `GET /credential`, `GET /api-key` nem
+  `GET /secrets/{id}/plaintext`, e não deve passar a existir. Um teste verifica que essas rotas
+  continuam ausentes.
+- **O que circula pela plataforma é uma referência** — um id e um propósito. `ProviderAccount`
+  guarda o id; nunca a chave. Por isso a entidade pode ser lida, listada, serializada e auditada
+  sem que nenhum desses caminhos toque em segredo.
+- **Credencial nunca vira contexto.** Não vira `BrainEntry`, não entra em prompt, não entra em
+  task, evidência ou finding. O Prompt Builder não tem acesso ao Vault, e não é por disciplina: a
+  dependência não existe.
+- **Plaintext só existe entre a requisição e a fronteira de cifragem.** Nunca em entidade, DTO de
+  resposta, evento de auditoria, log, mensagem de exceção ou métrica.
+- **Criptografia é padrão, nunca própria.** AES-256-GCM com nonce aleatório de 96 bits por
+  operação e envelope encryption (DEK por versão, KEK por ambiente). Sem XOR, sem ECB, sem CBC não
+  autenticado, sem Base64 chamado de criptografia.
+- **O ciphertext é amarrado à sua identidade** por dados autenticados adicionais (secret, dono,
+  propósito, versão). Uma linha copiada para outro usuário deixa de decifrar em vez de funcionar.
+- **Falha de decifragem tem sempre a mesma mensagem.** Distinguir chave errada de ciphertext
+  adulterado seria um oráculo.
+- **Master key ausente ou inválida derruba a aplicação.** Nunca gerar uma: a aplicação subiria
+  saudável e todo secret anterior ficaria ilegível para sempre. Nenhuma mensagem de erro ecoa a
+  chave.
+- **Rotação nunca deixa a conta sem credencial.** A nova versão é gravada e durável antes de a
+  versão em vigor mudar, e a troca é uma atualização de uma coluna só.
+- **Remoção destrói a data key embrulhada**, o que torna o ciphertext irrecuperável mesmo para quem
+  tenha a master key. Backups anteriores continuam contendo o que capturaram.
+- **Nenhum pedaço da chave volta ao cliente.** Sem prefixo, sem últimos quatro caracteres, sem
+  fingerprint — é justamente o pedaço que confirma qual chave está ali, e o que sobrevive num print
+  de tela.
+- **O estado é honesto.** `CREDENTIAL_STORED_UNVERIFIED`, nunca `CONNECTED`: nada foi enviado ao
+  provider, então nada se sabe sobre a chave funcionar.
+- **A credencial não é persistida no navegador.** Fica em estado do componente enquanto o
+  formulário está aberto e é limpa quando a requisição resolve, com sucesso ou com erro. Nunca em
+  `localStorage`, `sessionStorage` ou `IndexedDB`.
+
 ## Ainda não existe
 
 - **Limitador distribuído.** O rate limiting de login e registro existe, mas o estado vive no
@@ -83,6 +119,13 @@ Valem desde a fundação, não a partir de uma fase futura de endurecimento.
 - **MFA** e **recuperação de senha**: quem perde a senha perde a conta.
 - **Revogação distribuída de sessão**: a sessão vive em memória do processo; reiniciar a API
   desconecta todo mundo, e não há como encerrar a sessão de um dispositivo específico.
+- **KMS externo.** A master key vem do ambiente e é tão protegida quanto o ambiente. O provedor
+  local é de desenvolvimento; usá-lo em produção exige uma opção escrita à mão.
+- **Rotação da master key.** O envelope torna isso barato — bastaria re-embrulhar as data keys —
+  mas a rotina não existe. `key_version` já é gravado em cada linha para quando existir.
+- **Validação de credencial.** Guardar uma chave não prova que ela funciona; um erro de digitação
+  só aparecerá quando um provider for efetivamente chamado.
+- **Chamada real a provider.** Nenhum modelo externo é contatado nesta fase.
 
 ## Identity and access
 

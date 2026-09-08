@@ -70,3 +70,16 @@ vibecode:
         origin:
           capacity: 10
           window: 1h
+
+  vault:
+    enabled: true
+    key-provider: LOCAL
+    local:
+      # Base64 of exactly 32 random bytes, supplied by the environment. There is deliberately no
+      # fallback value: an application that invents a key when the variable is missing would
+      # start happily and leave every previously stored credential undecryptable. Missing means
+      # the application does not start.
+      master-key: ${VIBECODE_VAULT_MASTER_KEY:}
+      # Recorded next to every ciphertext, so a future key rotation can tell which rows were
+      # wrapped with which key.
+      key-version: ${VIBECODE_VAULT_KEY_VERSION:local-v1}

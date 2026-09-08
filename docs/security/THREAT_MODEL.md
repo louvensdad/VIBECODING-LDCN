@@ -39,3 +39,20 @@ MFA: não implementado. CAPTCHA: não implementado. Limitador global distribuíd
 | Risk acceptance abuse | A critical problem is waved through | CRITICAL cannot be accepted as risk, in the backend and in the UI | Lower severities can be accepted by a single person with no review |
 
 Provider accounts will belong to an authenticated user or organization. API keys, OAuth tokens, and refresh tokens must never be stored as plaintext. Login and registration need rate limiting in the hardening phase; no rate limiter is claimed in the current implementation.
+
+## Secrets vault e provider accounts (fase 5)
+
+| Threat | Impact | Current mitigation | Remaining gap |
+|---|---|---|---|
+| Dump do banco | Todas as credenciais de todos os usuários | Nenhuma coluna guarda plaintext; AES-256-GCM com data key por versão, embrulhada por uma KEK que vive fora do banco; um teste lê os bytes brutos de cada coluna procurando o valor | **Dump mais master key revela tudo.** O envelope reduz o custo de rotação, não essa exposição |
+| Vazamento da master key | Equivale ao item acima | A chave nunca está no repositório, no `.env.example`, em log ou em mensagem de erro; o provedor local exige opção explícita fora de desenvolvimento | Sem KMS, sem HSM, sem rotação implementada |
+| Perda da master key | Toda credencial guardada fica ilegível | A aplicação recusa subir sem ela, em vez de gerar uma nova e transformar a perda em surpresa posterior | **Consequência aceita**: não há custódia nem recuperação da chave |
+| Adulteração de linha por quem tem escrita no banco | Credencial substituída, ou ciphertext movido para outro usuário | GCM autenticado rejeita ciphertext alterado; os dados autenticados adicionais amarram cada linha a secret, dono, propósito e versão | Quem tem escrita ainda pode apagar linhas e negar serviço |
+| Vazamento por resposta HTTP | Credencial exposta a quem tiver sessão | Nenhum endpoint devolve material; a resposta tem só `hasCredential`; sem prefixo, últimos quatro ou fingerprint; testes varrem toda resposta atrás do valor e de fragmentos | Quem tem a sessão pode substituir a chave, ainda que não possa lê-la |
+| Vazamento por log | Credencial indexada num agregador e retida por um ano | `SecretMaterial` tem `toString()` redigido; um teste captura tudo em DEBUG durante o ciclo completo e procura o valor e fragmentos | Log de infraestrutura fora do processo (proxy, banco) não é coberto por esse teste |
+| Vazamento por auditoria | O registro projetado para ser lido por humanos carrega o segredo | O evento grava conta, provider e ação; nunca credencial, ciphertext, nonce, chave embrulhada ou fingerprint; um teste varre as colunas | — |
+| Vazamento por prompt ou Project Brain | Credencial entregue a um modelo externo | O Prompt Builder não recebe `VaultService`; a dependência não existe | O usuário ainda pode digitar a chave à mão num prompt — o Guardian é a defesa aí |
+| Rotação que deixa a conta sem credencial | Usuário perde acesso e não recupera a chave antiga | A nova versão é gravada e durável antes de o ponteiro mudar; a troca é uma coluna só; teste força falha de cifragem no meio | — |
+| Credencial de outro usuário | Exposição entre contas | Consultas escopadas por dono, checagem na aplicação, 404 em vez de 403; AAD amarra o ciphertext ao dono | — |
+| Estado enganoso | Usuário confia numa chave que não funciona | `CREDENTIAL_STORED_UNVERIFIED`, nunca `CONNECTED` | Um erro de digitação só aparece quando o provider for chamado |
+| Backup antigo | Credencial removida continua num backup | A remoção sobrescreve a data key embrulhada, tornando o ciphertext irrecuperável no banco vivo | **Backups tomados antes disso continuam contendo o que capturaram**, até expirarem por sua própria política |
