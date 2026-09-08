@@ -1,8 +1,12 @@
 package com.vibecode.shared.logging;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import com.vibecode.identity.domain.User;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.roadmap.application.RoadmapService;
 import com.vibecode.support.TestIdentity;
@@ -15,7 +19,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 
@@ -28,11 +35,15 @@ import org.springframework.test.context.TestPropertySource;
  * the pinned categories, and on a profile that does not exist yet. They do, because each leaking
  * category carries a level of its own and an inherited level cannot override one that is set.
  *
- * <p>The parent levels below are not uniform, and that is deliberate. Two of the four categories
- * only emit at TRACE — JdbcBindingLogging guards its calls with {@code isTraceEnabled()} — so
- * setting their parents to DEBUG would assert nothing: DEBUG could not have re-enabled them even
- * with no pins at all. Each parent is therefore raised to the level that would actually reopen its
- * child, which is TRACE for the two jdbc categories and DEBUG for the entity printer.
+ * <p>The parent levels below are not uniform, and that is deliberate. Some categories only emit at
+ * TRACE — JdbcBindingLogging guards its calls with {@code isTraceEnabled()} — so setting their
+ * parents to DEBUG would assert nothing: DEBUG could not have re-enabled them even with no pins at
+ * all. Each parent is therefore raised to the level that would actually reopen its child.
+ *
+ * <p>All nine pins are exercised, not just the ORM's four. The work goes through MockMvc rather
+ * than straight to the service, because four of the nine only ever run on a real request, and one
+ * of those only on a request that fails validation. A test that calls the service directly cannot
+ * observe them however high it sets the levels.
  *
  * <p>What this does not claim: naming a leaking category directly, as
  * {@code logging.level.org.hibernate.orm.jdbc.bind=TRACE}, does re-enable it. That is the
@@ -40,6 +51,7 @@ import org.springframework.test.context.TestPropertySource;
  * choice about one category, not a side effect of debugging.
  */
 @SpringBootTest
+@AutoConfigureMockMvc
 @ActiveProfiles("prod")
 @TestPropertySource(
     properties = {
@@ -53,6 +65,14 @@ import org.springframework.test.context.TestPropertySource;
       "logging.level.org.hibernate=DEBUG",
       "logging.level.org.hibernate.orm=DEBUG",
       "logging.level.org.hibernate.SQL=DEBUG",
+      // The web-layer parents, at the levels that would reopen their children. The message
+      // converters, HandlerMethod and the exception resolver all live under org.springframework
+      // .web; the validator under org.hibernate.validator. Without these the class name would be
+      // claiming coverage of nine pins while exercising four.
+      "logging.level.org.springframework.web=TRACE",
+      "logging.level.org.springframework.web.servlet.mvc.method.annotation=TRACE",
+      "logging.level.org.springframework.web.method=TRACE",
+      "logging.level.org.hibernate.validator=TRACE",
       "spring.jpa.show-sql=true",
       // The prod profile makes the vault refuse the local key provider, which is correct and not
       // what this test is about. Accepting it here keeps the profile real: everything else about
@@ -67,6 +87,7 @@ class HibernateValueLoggingUnderDebugTest {
   @Autowired RoadmapService roadmaps;
   @Autowired TaskService tasks;
   @Autowired TestIdentity identity;
+  @Autowired MockMvc mvc;
 
   @BeforeEach
   void authenticate() {
@@ -80,17 +101,43 @@ class HibernateValueLoggingUnderDebugTest {
 
   @Test
   @DisplayName("Every parent raised to the level that would reopen its child still prints no values")
-  void debugEverywhereStillPrintsNoValues() {
+  void debugEverywhereStillPrintsNoValues() throws Exception {
+    User owner = identity.createAndAuthenticate("debug-http-owner");
     UUID projectId = projects.create("Debug logging", "", "Idea").getId();
     roadmaps.createOrGet(projectId);
     UUID phaseId = roadmaps.addPhase(projectId, 1, "Phase", null).getId();
 
     List<ILoggingEvent> events =
         LogCapture.capturing(
-            () ->
-                tasks.addTask(
-                    projectId, phaseId, 1, "Rotate the key", "OPENAI_API_KEY=" + FIXTURE,
-                    RiskLevel.LOW));
+            () -> {
+              try {
+                mvc.perform(
+                        post("/api/projects/{p}/roadmap/phases/{ph}/tasks", projectId, phaseId)
+                            .with(TestIdentity.as(owner))
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(
+                                "{\"position\":1,\"title\":\"Rotate the key\",\"objective\":"
+                                    + "\"OPENAI_API_KEY="
+                                    + FIXTURE
+                                    + "\",\"riskLevel\":\"LOW\"}"))
+                    .andExpect(status().isCreated());
+                // The rejected path in the same window: it is the one that reaches the exception
+                // resolver, and it was the gap that made the ninth pin necessary.
+                mvc.perform(
+                        post("/api/auth/register")
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(
+                                "{\"email\":\"debug-rejected@example.com\",\"password\":\""
+                                    + FIXTURE
+                                    + "z".repeat(300)
+                                    + "\",\"displayName\":\"D\"}"))
+                    .andExpect(status().isBadRequest());
+              } catch (Exception e) {
+                throw new RuntimeException(e);
+              }
+            });
 
     assertThat(events).isNotEmpty();
     assertThat(LogCapture.occurrences(events, FIXTURE)).isEmpty();

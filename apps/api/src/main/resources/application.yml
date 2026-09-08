@@ -13,14 +13,19 @@ spring:
     enabled: true
 
 # Nothing a user typed reaches a log line through the categories that print values as a matter of
-# course.
+# course, whether the request succeeds or is rejected.
+#
+# The second half of that sentence was missing for three rounds of this work, and the gap was real:
+# every probe exercised requests that worked, so the route a value takes out of a *failed* one went
+# unexamined until someone sent a bad request on purpose. If you extend this list, send one.
 #
 # That is the boundary these levels draw, and it is narrower than "nothing leaks". What they cover
 # is one value's whole journey through three layers on one request: Spring MVC deserializing the
-# request body and writing the response, Bean Validation walking the object, and Hibernate binding
-# parameters, extracting them, dumping the entity at flush and releasing the statement. What they
-# do not cover is a driver building a value into an exception message, which is a different
-# mechanism at a different level and is described under "Known residual" below.
+# request body, writing the response, and reporting a validation failure; Bean Validation walking
+# the object; and Hibernate binding parameters, extracting them, dumping the entity at flush and
+# releasing the statement. What they do not cover is a driver building a value into an exception
+# message, which is a different mechanism at a different level and is described under "Known
+# residual" below.
 #
 # All of that happens below the application: a task objective, a Brain entry or a piece of evidence
 # is printed by the framework itself, and no redaction inside any module of this codebase can reach
@@ -30,9 +35,9 @@ spring:
 # user-supplied object as a matter of course — routinely, on the ordinary path, without anyone
 # asking it to. Not every category that could print one; that is the blind switch-off this list
 # exists to avoid. A category that prints an object only under some unusual condition is a decision
-# to be taken and recorded, not a ninth line nobody can justify later.
+# to be taken and recorded, not a tenth line nobody can justify later.
 #
-# All eight were found by capturing every event at TRACE during a real persist and a real HTTP
+# All nine were found by capturing every event at TRACE during a real persist and a real HTTP
 # request, then grouping by logger name — not by copying a list from another version or another
 # codebase. That is why `org.hibernate.type.descriptor.sql.BasicBinder`, the Hibernate 5 name most
 # advice still repeats, is absent: it does not exist in 6.6.8.Final. It is also why the list
@@ -60,6 +65,21 @@ spring:
 # Closing it properly needs a Logback TurboFilter or MessageConverter in src/main/java, or
 # `logServerErrorDetail=false` on the JDBC URL, which costs real diagnostic value and does nothing
 # for H2. That is a deliberate trade and it has not been made.
+#
+# This note is not an inventory, and should not be read as one. Once the driver has built the value
+# into an exception message, that message travels wherever the exception does:
+# `org.springframework.transaction.interceptor.TransactionInterceptor` carries it too, at TRACE,
+# and unlike SqlExceptionHelper that one is pin-reachable. It is deliberately not pinned. Silencing
+# the second vehicle while the first still emits at ERROR would lengthen this list without changing
+# what ends up in the log file, which is the security theatre the rule at the top exists to
+# prevent. The thing that would actually matter is closing the ERROR-level path; until then, assume
+# any category that logs an exception can carry the value, and treat the list above as covering the
+# categories that print values deliberately, not every route an exception can take.
+#
+# One boundary deliberately left alone: request URIs. Spring logs the query string at DEBUG, so a
+# free-text value in a @RequestParam or a path variable would appear there. Nothing in this API
+# does that today — the only request parameters are a boolean and an int, and no path variable
+# carries free text — so the exposure is a design constraint to keep, not a category to pin.
 #
 # Known residual, not reachable today: `org.hibernate.SQL_SLOW` logs `statement.toString()`, which
 # the H2 and pgjdbc drivers render with the bound values substituted. It logs at INFO, so a level
@@ -110,6 +130,14 @@ logging:
     # coordinates and no comfort to the person whose objective leaked; it prints the body on the
     # ordinary path, so the rule at the top of this block puts it here.
     org.hibernate.validator.internal.engine.resolver.JPATraversableResolver: INFO
+    # The rejected request, which every probe on this task missed until someone thought to send
+    # one. "Resolved [MethodArgumentNotValidException: ... Field error in object 'registerRequest'
+    # on field 'password': rejected value [<the whole value>]" — Spring's FieldError.toString
+    # carries the offending argument, and this resolver prints the exception at DEBUG before
+    # ApiExceptionHandler, which never echoes it, gets to run. For a public API a validation
+    # failure is not an unusual condition; it is Tuesday, and it is the one path where the value
+    # in the log line is disproportionately likely to be a password.
+    org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver: INFO
 
 server:
   port: ${SERVER_PORT:9000}

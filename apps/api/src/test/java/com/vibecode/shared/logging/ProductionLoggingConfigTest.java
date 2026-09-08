@@ -49,7 +49,9 @@ class ProductionLoggingConfigTest {
           "org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor",
           "org.springframework.web.method.HandlerMethod",
           // Bean Validation, on the same request as the two above.
-          "org.hibernate.validator.internal.engine.resolver.JPATraversableResolver");
+          "org.hibernate.validator.internal.engine.resolver.JPATraversableResolver",
+          // The rejected request: the value leaves through the exception, not the body.
+          "org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver");
 
   @Test
   @DisplayName("The shipped application.yml pins every value-printing Hibernate category")

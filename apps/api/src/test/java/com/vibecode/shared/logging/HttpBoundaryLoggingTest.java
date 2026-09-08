@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.vibecode.identity.domain.User;
@@ -76,16 +77,21 @@ class HttpBoundaryLoggingTest {
                                 "{\"position\":1,\"title\":\"T\",\"objective\":\"OPENAI_API_KEY="
                                     + FIXTURE
                                     + "\",\"riskLevel\":\"LOW\"}"))
-                    .andReturn();
+                    // Without this the test passes on a 404: the anti-vacuity check below is
+                    // satisfied by DispatcherServlet alone, and a request that never reaches a
+                    // controller never deserializes a body for anything to print.
+                    .andExpect(status().isCreated());
               } catch (Exception e) {
                 throw new RuntimeException(e);
               }
             });
 
-    // A request really was handled inside the window: without this the assertion below could pass
-    // on an empty or unrelated capture.
+    // The status assertion above is what makes this window meaningful; this only adds that the
+    // web layer was logging at all. On its own it proves very little: DispatcherServlet and the
+    // handler mappings log on any dispatch, including a 404 that never deserializes a body — this
+    // whole test was green against a non-existent route until the status check went in.
     assertThat(events)
-        .as("no request was dispatched, so this capture proves nothing about the web layer")
+        .as("the web layer logged nothing at all, which should be impossible for a real dispatch")
         .anyMatch(event -> event.getLoggerName().startsWith("org.springframework.web"));
 
     // No category at all, and the failure names whichever one broke that rather than only saying
@@ -95,14 +101,17 @@ class HttpBoundaryLoggingTest {
     assertThat(leakingLoggers(events)).isEmpty();
   }
 
-  /** The distinct logger names that printed the fixture, sorted, for an exact-set assertion. */
+  /**
+   * The distinct logger names that printed the fixture, sorted, so a failure names the category.
+   *
+   * <p>Delegates to {@link LogCapture#occurrences} rather than reading the formatted message
+   * directly, because that helper also inspects the throwable: an exception carrying the value in
+   * its message reaches the log file exactly as effectively as a formatted argument does, and the
+   * validation path proved that is not hypothetical.
+   */
   private List<String> leakingLoggers(List<ILoggingEvent> events) {
-    return events.stream()
-        .filter(event -> String.valueOf(event.getFormattedMessage()).contains("847291"))
-        .map(ILoggingEvent::getLoggerName)
-        .distinct()
-        .sorted()
-        .toList();
+    List<String> hits = LogCapture.occurrences(events, "847291");
+    return hits.stream().map(hit -> hit.substring(0, hit.indexOf(" @"))).distinct().sorted().toList();
   }
 
   @Test
@@ -133,7 +142,7 @@ class HttpBoundaryLoggingTest {
                             .with(csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"credential\":\"" + FIXTURE + "\"}"))
-                    .andReturn();
+                    .andExpect(status().isOk());
               } catch (Exception e) {
                 throw new RuntimeException(e);
               }
@@ -143,6 +152,45 @@ class HttpBoundaryLoggingTest {
         .as("no request was dispatched, so this capture proves nothing about the web layer")
         .anyMatch(event -> event.getLoggerName().startsWith("org.springframework.web"));
     assertThat(LogCapture.occurrences(events, FIXTURE)).isEmpty();
+  }
+
+  @Test
+  @DisplayName("A password rejected by validation is not printed by the exception resolver")
+  void rejectedRequestBodyIsNotLogged() throws Exception {
+    // Every probe on this task until now sent a request that succeeded, and that is why this was
+    // missed: the value in a *rejected* request travels a different route out. Spring builds a
+    // FieldError whose toString carries `rejected value [<the whole value>]`, wraps it in a
+    // MethodArgumentNotValidException, and the exception resolver prints the exception at DEBUG
+    // before ApiExceptionHandler — which is careful, and never echoes the value — runs at all.
+    //
+    // A password, because it is the worst thing this endpoint can be handed and the field is the
+    // only one carrying the fixture: nothing else in the request could account for a hit.
+    String tooLong = FIXTURE + "z".repeat(300);
+
+    List<ILoggingEvent> events =
+        LogCapture.capturing(
+            () -> {
+              try {
+                mvc.perform(
+                        post("/api/auth/register")
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(
+                                "{\"email\":\"rejected@example.com\",\"password\":\""
+                                    + tooLong
+                                    + "\",\"displayName\":\"D\"}"))
+                    // The rejection is the point. A 201 here would mean the constraint moved and
+                    // the test is no longer exercising the validation-failure path at all.
+                    .andExpect(status().isBadRequest());
+              } catch (Exception e) {
+                throw new RuntimeException(e);
+              }
+            });
+
+    assertThat(events)
+        .as("no request was dispatched, so this capture proves nothing")
+        .anyMatch(event -> event.getLoggerName().startsWith("org.springframework.web"));
+    assertThat(leakingLoggers(events)).isEmpty();
   }
 
   @Test

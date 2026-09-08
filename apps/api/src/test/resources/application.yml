@@ -29,6 +29,7 @@ logging:
     org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor: INFO
     org.springframework.web.method.HandlerMethod: INFO
     org.hibernate.validator.internal.engine.resolver.JPATraversableResolver: INFO
+    org.springframework.web.servlet.mvc.method.annotation.ExceptionHandlerExceptionResolver: INFO
 
 # Declared debt, and it lives here because it is a property of the test run rather than of any one
 # test. Logback's LoggerContext is JVM-wide, and Spring Boot never unsets what a
