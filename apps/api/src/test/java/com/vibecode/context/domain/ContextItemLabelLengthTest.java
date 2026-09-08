@@ -43,12 +43,14 @@ class ContextItemLabelLengthTest {
   }
 
   @Test
-  @DisplayName("The cap is the column width, so the domain and V9 cannot drift apart silently")
+  @DisplayName("The cap is the number V9 was written with, checked against the schema elsewhere")
   void theCapMatchesTheColumn() {
-    // If V9's label column is ever widened by a migration, this is the line that says the domain
-    // has to move with it. It cannot be asserted against the schema from here — the domain does
-    // not know the schema, and must not — so it is asserted against the number V9 was written
-    // with. A reader who changes one and not the other fails here rather than at an INSERT.
+    // A retyped literal, and it is worth being clear about what that is worth: on its own it only
+    // says the constant has not been changed by accident. The check that actually compares the
+    // constant with the schema Flyway applied is theCapsMatchTheAppliedSchema in
+    // ContextPackTextWidthBoundaryTest, which reads the width out of INFORMATION_SCHEMA. Neither
+    // catches a migration and a constant edited together in one commit; that pair agrees, which is
+    // the correct outcome, so no test here can distinguish an intended widening from a careless one.
     assertThat(ContextItem.MAX_LABEL_LENGTH).isEqualTo(500);
   }
 
@@ -114,10 +116,18 @@ class ContextItemLabelLengthTest {
 
     ContextItem item = itemLabelled(underTheCapBeforeRedaction);
 
+    // The message names both lengths. Without that, a reader sees a 498-character label rejected
+    // for exceeding 500 and concludes the check is broken; with it, the growth is the first thing
+    // on the line. The domain's own prose is still underneath, as the cause.
     assertThatThrownBy(() -> ContextRedaction.redact(item))
         .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Redaction lengthened item i-label-boundary")
+        .hasMessageContaining("label 498 -> 507")
         .hasMessageContaining("may not exceed 500")
-        .hasMessageContaining("has 507");
+        .hasMessageContaining("has 507")
+        // Kept as the cause rather than swallowed: the domain's exception is what actually decided,
+        // and a stack trace that starts at the redactor with nothing under it hides that.
+        .hasCauseInstanceOf(IllegalArgumentException.class);
 
     // The same label one character shorter still redacts to 506 — the point is not that 498 is a
     // magic number but that the gain is the marker's length minus the value's, so any label within

@@ -51,6 +51,30 @@ public record ContextPack(
     List<ContextItem> items) {
 
   /**
+   * The longest a task reference may be, in the same <b>UTF-16 code units</b> {@link
+   * ContextItem#MAX_LABEL_LENGTH} uses. 500 because that is the width of
+   * {@code context_packs.task_reference} in V9, and this constant exists so an over-long reference
+   * is refused here rather than by an INSERT.
+   *
+   * <p><b>It is capped for the same reason a label is, and by the same mechanism.</b> A task
+   * reference is user-influenced — V9 sizes the column for a caller composing {@code "TASK-42: "}
+   * in front of a task title — and it goes through {@code ContextRedaction.redactTaskReference},
+   * which can <em>lengthen</em> it: a one-character value replaced by {@code [REDACTED]} nets nine.
+   * A 498-character reference ending in a secret-shaped assignment measured 507 after redaction and
+   * failed at the INSERT, exactly as the label did.
+   *
+   * <p><b>{@code context_pack_items.explanation} is deliberately not capped, and that asymmetry is
+   * the point.</b> An explanation is fixed prose authored in {@code DefaultContextPolicyRules}, not
+   * user text, and redaction never touches it — so nothing can lengthen it and no caller can widen
+   * it. A guard there would defend against a route that does not exist, which costs the next reader
+   * more than it saves: they would go looking for the mechanism and find none.
+   *
+   * <p>Nothing truncates. A shortened task reference is a pack claiming to be for a task nobody
+   * asked about, and it is inside the fingerprint, so the trimmed form is what would be digested.
+   */
+  public static final int MAX_TASK_REFERENCE_LENGTH = 500;
+
+  /**
    * Separates fields inside the fingerprint's canonical form. It is a readability aid only — the
    * length prefix in front of every field is what actually makes the encoding unambiguous, because
    * no separator character can be reserved from text this domain does not control.
@@ -66,6 +90,15 @@ public record ContextPack(
     }
     if (taskReference == null || taskReference.isBlank()) {
       throw new IllegalArgumentException("A pack must name the task it was assembled for");
+    }
+    if (taskReference.length() > MAX_TASK_REFERENCE_LENGTH) {
+      throw new IllegalArgumentException(
+          "A pack's task reference may not exceed "
+              + MAX_TASK_REFERENCE_LENGTH
+              + " characters (UTF-16 code units); this one has "
+              + taskReference.length()
+              + ". A reference arriving over the cap after redaction is the expected cause:"
+              + " replacing a short secret with a marker lengthens the string.");
     }
     if (assembledAt == null) {
       throw new IllegalArgumentException("A pack must record when it was assembled");

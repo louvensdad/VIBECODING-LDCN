@@ -128,8 +128,35 @@ public final class ContextRedaction {
               + ": the redactor now removes text rather than replacing it with a marker, which"
               + " would shorten packs silently if this item were dropped instead");
     }
-    return RedactedContextItem.producedByRedaction(
-        new ContextItem(
-            item.id(), item.kind(), redactedLabel, redactedContent, item.provenance()));
+    try {
+      return RedactedContextItem.producedByRedaction(
+          new ContextItem(
+              item.id(), item.kind(), redactedLabel, redactedContent, item.provenance()));
+    } catch (IllegalArgumentException rejected) {
+      // Redaction can make a string LONGER: [REDACTED] is ten characters and the value it replaces
+      // may be one. So an item whose label was comfortably inside ContextItem.MAX_LABEL_LENGTH on
+      // the way in can be over it on the way out, and the domain's message then reads as a
+      // contradiction — a 498-character label rejected for exceeding 500. The domain cannot resolve
+      // that: it does not know a redactor exists, and must not. This layer does, so it says both
+      // lengths and lets the reader see the growth instead of doubting the arithmetic.
+      //
+      // Rethrown rather than handled. Nothing is truncated and nothing is dropped: a shortened
+      // label is a handle that no longer matches the record it names, and dropping the item is how
+      // a redactor change would start silently shrinking packs.
+      throw new IllegalArgumentException(
+          "Redaction lengthened item "
+              + item.id()
+              + " past what the domain accepts — label "
+              + item.label().length()
+              + " -> "
+              + redactedLabel.length()
+              + " characters, content "
+              + item.content().length()
+              + " -> "
+              + redactedContent.length()
+              + ". Redaction replaces a matched value with a marker, so text can grow: "
+              + rejected.getMessage(),
+          rejected);
+    }
   }
 }
