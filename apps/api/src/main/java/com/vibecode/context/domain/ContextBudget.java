@@ -19,6 +19,21 @@ import java.util.Optional;
  * already owns {@code ProjectBudget}, which is about money. These two must not be confused: this one
  * cannot be spent.
  *
+ * <p><b>Labels are not budgeted, and that is a decision rather than an oversight.</b> All three
+ * dimensions are measured over {@link ContextItem#content()} only. An item's label is metadata for
+ * the Context Inspector: it is redacted, it is length-limited by its column, and it goes into the
+ * canonical snapshot and the digest — but it is not part of the payload a provider would be sent in
+ * this version, so charging it against a ceiling that exists to bound what leaves the platform
+ * would bill the pack for text that never leaves it. A review flagged labels as "unbudgeted"; this
+ * paragraph is the answer, and {@code labelIsInspectorMetadataNotProviderPayload} in {@code
+ * ContextPackTest} is the answer in executable form.
+ *
+ * <p><b>If labels are ever sent to a provider, this type must change.</b> Not the assembly step,
+ * this type: the moment a renderer emits labels, the ceiling is being enforced against less than
+ * what is transmitted, and a budget that undercounts is the failure mode this class was written to
+ * avoid. {@link ContextUsage#plus(ContextItem)} and {@link ContextItem#characterCount()} are the
+ * two places that would have to move with it.
+ *
  * <p>The two size dimensions are independent on purpose, and neither implies the other. A character
  * ceiling as a rough size guide alongside a much smaller byte ceiling as a transport limit is a
  * legitimate configuration and is accepted.

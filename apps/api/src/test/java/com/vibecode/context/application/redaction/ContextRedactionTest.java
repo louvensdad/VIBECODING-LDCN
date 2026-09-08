@@ -33,7 +33,8 @@ class ContextRedactionTest {
   void contentIsRedacted() {
     ContextItem redacted =
         ContextRedaction.redact(
-            item("Deployment note", "Set TOKEN=" + FIXTURE + " before running the migration."));
+                item("Deployment note", "Set TOKEN=" + FIXTURE + " before running the migration."))
+            .item();
 
     assertThat(redacted.content()).doesNotContain(FIXTURE);
     assertThat(redacted.content()).contains("[REDACTED]");
@@ -49,7 +50,7 @@ class ContextRedactionTest {
     // It leaks just as effectively as a body, and more quietly, because it is short enough that
     // nobody reads it as payload.
     ContextItem redacted =
-        ContextRedaction.redact(item("API_KEY=" + FIXTURE, "Ordinary synthetic content."));
+        ContextRedaction.redact(item("API_KEY=" + FIXTURE, "Ordinary synthetic content.")).item();
 
     assertThat(redacted.label()).doesNotContain(FIXTURE);
     assertThat(redacted.label()).contains("[REDACTED]");
@@ -59,7 +60,7 @@ class ContextRedactionTest {
   @DisplayName("Identity and provenance pass through untouched")
   void handlesAreNotRedacted() {
     ContextItem original = item("Ordinary label", "PASSWORD=" + FIXTURE);
-    ContextItem redacted = ContextRedaction.redact(original);
+    ContextItem redacted = ContextRedaction.redact(original).item();
 
     assertThat(redacted.id()).isEqualTo(original.id());
     assertThat(redacted.kind()).isEqualTo(original.kind());
@@ -72,14 +73,16 @@ class ContextRedactionTest {
   void cleanItemsAreNotCopied() {
     ContextItem clean = item("Ordinary label", "Ordinary synthetic content with nothing in it.");
 
-    assertThat(ContextRedaction.redact(clean)).isSameAs(clean);
+    // Unwrapped, because the wrapper is new on every call by design: a caller must not be able to
+    // tell a clean item from a scrubbed one by identity or by type. What is unchanged is the item.
+    assertThat(ContextRedaction.redact(clean).item()).isSameAs(clean);
   }
 
   @Test
   @DisplayName("Redaction changes the measured size, which is why it runs before the budget does")
   void redactionChangesWhatThereIsToMeasure() {
     ContextItem original = item("Ordinary label", "TOKEN=" + FIXTURE);
-    ContextItem redacted = ContextRedaction.redact(original);
+    ContextItem redacted = ContextRedaction.redact(original).item();
 
     // The budget must measure this second number, because it is the text that would leave. Sizing
     // a pack by the first would be sizing it by something nobody will ever see.

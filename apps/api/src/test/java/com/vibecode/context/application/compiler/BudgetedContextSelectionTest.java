@@ -3,6 +3,7 @@ package com.vibecode.context.application.compiler;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.vibecode.context.domain.AdmittedContextItem;
+import com.vibecode.context.application.redaction.ContextRedaction;
 import com.vibecode.context.domain.ContextAdmission;
 import com.vibecode.context.domain.ContextBudget;
 import com.vibecode.context.domain.ContextItem;
@@ -193,6 +194,9 @@ class BudgetedContextSelectionTest {
             "Label for " + id,
             content,
             new ContextProvenance(ContextSource.of(sourceType, sourceId), PROJECT, OBSERVED_AT));
-    return new AdmittedContextItem(item, ADMISSION);
+    // Through the real redaction step rather than around it: an AdmittedContextItem no longer
+    // accepts a bare ContextItem, and a test helper that minted the wrapper itself would be
+    // demonstrating a route that production code does not have.
+    return new AdmittedContextItem(ContextRedaction.redact(item), ADMISSION);
   }
 }

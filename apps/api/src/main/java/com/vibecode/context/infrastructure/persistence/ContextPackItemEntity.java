@@ -7,6 +7,7 @@ import com.vibecode.context.domain.ContextKind;
 import com.vibecode.context.domain.ContextProvenance;
 import com.vibecode.context.domain.ContextSource;
 import com.vibecode.context.domain.ContextSourceType;
+import com.vibecode.context.domain.RedactedContextItem;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -31,7 +32,10 @@ import java.util.UUID;
  *
  * <p>{@code content} holds redacted text and there is no second copy of it here. Redaction runs
  * before anything is persisted, so this class has no field — and the table no column — that could
- * hold the value that was redacted away.
+ * hold the value that was redacted away. That ordering is now carried by the types as well as by
+ * the pipeline: the constructor below takes an {@link AdmittedContextItem}, which cannot be built
+ * from anything but a {@link RedactedContextItem}, so no caller can hand this class a raw string to
+ * store.
  *
  * <p>The row also carries the admission that let the item in: the id of the policy rule and that
  * rule's explanation, both mandatory. They are stored rather than re-derived because a pack is a
@@ -141,13 +145,24 @@ public class ContextPackItemEntity {
   /**
    * Rebuilds the item together with the decision that admitted it.
    *
+   * <p>Rehydration is a different boundary from creation, and {@link
+   * RedactedContextItem#rehydratedFromStorage(ContextItem)} is named so nobody has to guess which
+   * one this is. Nothing re-redacts here. The content in this row was redacted before it was
+   * written — there is no column that could have held the raw value and no write path that could
+   * have filled one — so what comes back is trusted because we wrote it, not because it was
+   * checked. Re-running the redactor on read would be worse: the stored digest was taken over the
+   * text as written, and a redactor whose patterns had widened since would hand back a pack that no
+   * longer matched its own digest.
+   *
    * <p>The admission comes back as an allow because that is what a stored row is: a denied item was
    * never written. {@link ContextAdmission} re-checks that the rule id and the explanation are both
    * present, so a row edited to drop either of them fails to load rather than coming back as an item
    * nobody can account for.
    */
   public AdmittedContextItem toAdmitted() {
-    return new AdmittedContextItem(toDomain(), ContextAdmission.allow(policyRuleId, explanation));
+    return new AdmittedContextItem(
+        RedactedContextItem.rehydratedFromStorage(toDomain()),
+        ContextAdmission.allow(policyRuleId, explanation));
   }
 
   public UUID getId() {

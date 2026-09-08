@@ -6,6 +6,7 @@ import com.vibecode.context.domain.AdmittedContextItem;
 import com.vibecode.context.domain.CompiledContextPack;
 import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextPack;
+import com.vibecode.context.domain.RedactedContextItem;
 import com.vibecode.context.infrastructure.persistence.ContextPackEntity;
 import com.vibecode.context.infrastructure.persistence.ContextPackItemEntity;
 import java.lang.reflect.Constructor;
@@ -29,6 +30,12 @@ import org.junit.jupiter.api.Test;
  *
  * <p>So these tests read the type signatures. They are blunt, and that is the point: if a new
  * shortcut is added, the failure names it.
+ *
+ * <p>Since CTX-SAFE-01 the same tests cover a second invariant of the same shape: nothing reaches a
+ * pack, or a row, without having been through redaction. That was previously a property of the
+ * order in which the compiler ran its steps, which is exactly the kind of guarantee this file
+ * exists to replace — {@code ContextSafeContentBypassTest} runs the attempts, and these assert the
+ * shapes that make them fail to compile.
  */
 class ContextMaterialisationBoundaryTest {
 
@@ -94,6 +101,74 @@ class ContextMaterialisationBoundaryTest {
 
     assertThat(listArguments).contains(AdmittedContextItem.class);
     assertThat(listArguments).doesNotContain(ContextItem.class);
+  }
+
+  @Test
+  @DisplayName("An admitted item cannot be built from a bare item, only from a redacted one")
+  void anAdmittedItemRequiresRedactedContent() {
+    Constructor<?>[] constructors = AdmittedContextItem.class.getDeclaredConstructors();
+    assertThat(constructors).hasSize(1);
+
+    assertThat(constructors[0].getParameterTypes())
+        .as("the redaction step is not skippable: a raw item does not fit the constructor")
+        .contains(RedactedContextItem.class)
+        .doesNotContain(ContextItem.class, String.class);
+  }
+
+  @Test
+  @DisplayName("Redacted content has no public constructor and exactly two named mints")
+  void thereAreTwoWaysToDeclareContentRedactedAndBothSayWhichBoundaryTheyAre() {
+    for (Constructor<?> constructor : RedactedContextItem.class.getDeclaredConstructors()) {
+      assertThat(Modifier.isPrivate(constructor.getModifiers()))
+          .as("a public constructor would be the bypass this type exists to remove")
+          .isTrue();
+    }
+
+    List<Method> factories =
+        Arrays.stream(RedactedContextItem.class.getDeclaredMethods())
+            .filter(method -> Modifier.isStatic(method.getModifiers()))
+            .filter(method -> method.getReturnType().equals(RedactedContextItem.class))
+            .filter(method -> !method.isSynthetic())
+            .toList();
+
+    // Two, because creation and rehydration are different boundaries and a reader must be able to
+    // tell from the call site which one they are looking at. A third would mean a third answer to
+    // "what makes this content safe", and no rule anywhere would say what it was.
+    assertThat(factories)
+        .extracting(Method::getName)
+        .containsExactlyInAnyOrder("producedByRedaction", "rehydratedFromStorage");
+
+    for (Method factory : factories) {
+      assertThat(factory.getParameterTypes())
+          .as("%s must take an item, never raw text: a factory taking a String would hand the"
+                  + " boundary back to whoever remembered to call the redactor", factory.getName())
+          .containsExactly(ContextItem.class);
+    }
+  }
+
+  @Test
+  @DisplayName("Nothing anywhere in the module takes raw text and returns redacted content")
+  void noProductionTypeLaundersAStringIntoRedactedContent() {
+    // The shape of the shortcut somebody would actually add: a helper that accepts the text and
+    // returns the safe wrapper, so the caller never has to think about the redactor at all. The
+    // architecture test fences the return type across the whole application; this one names the
+    // specific signature, so a reviewer reading either knows what is being defended.
+    for (Class<?> type :
+        List.of(
+            RedactedContextItem.class,
+            AdmittedContextItem.class,
+            CompiledContextPack.class,
+            ContextPackEntity.class,
+            ContextPackItemEntity.class)) {
+      for (Method method : type.getDeclaredMethods()) {
+        if (method.isSynthetic() || !method.getReturnType().equals(RedactedContextItem.class)) {
+          continue;
+        }
+        assertThat(method.getParameterTypes())
+            .as("%s.%s must not turn a String into redacted content", type.getSimpleName(), method.getName())
+            .doesNotContain(String.class);
+      }
+    }
   }
 
   @Test

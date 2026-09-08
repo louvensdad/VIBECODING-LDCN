@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.vibecode.context.domain.AdmittedContextItem;
+import com.vibecode.context.application.redaction.ContextRedaction;
 import com.vibecode.context.domain.CompiledContextPack;
 import com.vibecode.context.domain.ContextAdmission;
 import com.vibecode.context.domain.ContextBudget;
@@ -117,7 +118,7 @@ class ContextPackPersistenceTest {
         pack.budget(),
         ContextPolicyVersion.CURRENT,
         pack.items().stream()
-            .map(item -> new AdmittedContextItem(item, FIXTURE_ADMISSION))
+            .map(item -> new AdmittedContextItem(ContextRedaction.redact(item), FIXTURE_ADMISSION))
             .toList());
   }
 

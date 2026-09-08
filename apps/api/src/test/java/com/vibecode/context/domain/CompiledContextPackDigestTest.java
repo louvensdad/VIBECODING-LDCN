@@ -1,5 +1,6 @@
 package com.vibecode.context.domain;
 
+import com.vibecode.context.application.redaction.ContextRedaction;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Instant;
@@ -95,7 +96,7 @@ class CompiledContextPackDigestTest {
             ASSEMBLED_AT,
             version("1"),
             BUDGET,
-            List.of(new AdmittedContextItem(changed, TASK_RULE)));
+            List.of(new AdmittedContextItem(ContextRedaction.redact(changed), TASK_RULE)));
 
     assertThat(edited.packDigest()).isNotEqualTo(original.packDigest());
   }
@@ -256,7 +257,7 @@ class CompiledContextPackDigestTest {
         ASSEMBLED_AT,
         version("1"),
         BUDGET,
-        List.of(new AdmittedContextItem(item, TASK_RULE)));
+        List.of(new AdmittedContextItem(ContextRedaction.redact(item), TASK_RULE)));
   }
 
   @Test
@@ -301,7 +302,7 @@ class CompiledContextPackDigestTest {
             "Synthetic content for " + id,
             new ContextProvenance(
                 ContextSource.of(ContextSourceType.CURRENT_TASK, "task-1"), projectId, OBSERVED_AT));
-    return new AdmittedContextItem(item, admission);
+    return new AdmittedContextItem(ContextRedaction.redact(item), admission);
   }
 
   private static AdmittedContextItem admitted(String id, ContextAdmission admission) {
@@ -322,7 +323,7 @@ class CompiledContextPackDigestTest {
             "Synthetic content for " + id,
             new ContextProvenance(
                 ContextSource.of(sourceType, sourceId), PROJECT, OBSERVED_AT));
-    return new AdmittedContextItem(item, admission);
+    return new AdmittedContextItem(ContextRedaction.redact(item), admission);
   }
 
   private static ContextProvenance provenance(String sourceId) {

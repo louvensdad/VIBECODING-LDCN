@@ -252,4 +252,67 @@ class ContextPackTest {
     assertThat(GENEROUS.firstBreach(new ContextUsage(1, 10L, 10L))).isEmpty();
     assertThat(GENEROUS.firstBreach(new ContextUsage(500, 10L, 10L))).contains("items: 500 > 50");
   }
+
+  /**
+   * A label is metadata for the Context Inspector, and in this version it is not provider payload.
+   *
+   * <p>So it is deliberately outside {@link ContextBudget} in all three dimensions: characters,
+   * bytes and the token estimate derived from them. A review flagged labels as "unbudgeted" and
+   * this test is the answer rather than the fix — a ceiling that exists to bound what leaves the
+   * platform must not be charged for text that does not leave it.
+   *
+   * <p>It is not outside everything else. A label is redacted by {@code ContextRedaction}, it is
+   * capped at 500 characters by its column, and it goes into the canonical payload and therefore
+   * into the digest — which this test pins too, because "not budgeted" is otherwise one careless
+   * step from "not covered".
+   *
+   * <p><b>If labels are ever sent to a provider, {@link ContextBudget} must change with them</b> —
+   * {@link ContextUsage#plus(ContextItem)} and {@link ContextItem#characterCount()} are the two
+   * places that would move — and this test must be rewritten rather than deleted. A budget that
+   * silently undercounts what is transmitted is the one failure this whole type exists to prevent.
+   */
+  @Test
+  void labelIsInspectorMetadataNotProviderPayload() {
+    String shortLabel = "s";
+    String longLabel = "L".repeat(400);
+    String content = "identical content in both packs";
+
+    ContextItem withShortLabel =
+        new ContextItem(
+            "i-label",
+            ContextKind.DECISION,
+            shortLabel,
+            content,
+            new ContextProvenance(
+                ContextSource.of(ContextSourceType.BRAIN_ENTRY, "dec-1"), PROJECT, OBSERVED));
+    ContextItem withLongLabel =
+        new ContextItem(
+            "i-label",
+            ContextKind.DECISION,
+            longLabel,
+            content,
+            new ContextProvenance(
+                ContextSource.of(ContextSourceType.BRAIN_ENTRY, "dec-1"), PROJECT, OBSERVED));
+
+    // A label 399 characters longer costs the budget nothing, in any of the three dimensions.
+    assertThat(withLongLabel.characterCount()).isEqualTo(withShortLabel.characterCount());
+    assertThat(withLongLabel.byteCount()).isEqualTo(withShortLabel.byteCount());
+    assertThat(withLongLabel.characterCount()).isEqualTo(content.length());
+
+    ContextPack shortLabelled = pack(GENEROUS, List.of(withShortLabel));
+    ContextPack longLabelled = pack(GENEROUS, List.of(withLongLabel));
+
+    assertThat(longLabelled.usage()).isEqualTo(shortLabelled.usage());
+    assertThat(longLabelled.usage().estimatedTokens().estimatedTokens())
+        .isEqualTo(shortLabelled.usage().estimatedTokens().estimatedTokens());
+
+    // A budget that would not fit the labels but fits the content admits both packs, which is the
+    // decision stated as arithmetic rather than as prose.
+    ContextBudget tighterThanTheLabel = new ContextBudget(5, content.length(), 4L * content.length());
+    assertThat(tighterThanTheLabel.admits(longLabelled.usage())).isTrue();
+
+    // And yet the label is not invisible: it is part of what a pack says it holds, so two packs
+    // differing only in a label are different packs.
+    assertThat(longLabelled.contentFingerprint()).isNotEqualTo(shortLabelled.contentFingerprint());
+  }
 }

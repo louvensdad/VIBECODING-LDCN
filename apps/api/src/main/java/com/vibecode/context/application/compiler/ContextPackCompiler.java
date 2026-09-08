@@ -31,7 +31,9 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><b>Measurement and selection</b> — {@link BudgetedContextSelection} fits the redacted items
  *       under the budget, at item boundaries.
  *   <li><b>Materialisation</b> — a {@link CompiledContextPack}, which cannot be built from anything
- *       but admitted items.
+ *       but admitted items, and an admitted item cannot be built from anything but a {@link
+ *       com.vibecode.context.domain.RedactedContextItem}. Step 3 is therefore not a step a caller
+ *       can leave out: a hand-assembled pack of raw items does not compile.
  * </ol>
  *
  * <p><b>Why redaction comes before measurement and not after.</b> The redacted text is what would
@@ -118,6 +120,9 @@ public class ContextPackCompiler {
         // item is the leak this pipeline exists to prevent.
         continue;
       }
+      // ContextRedaction returns a RedactedContextItem, which is the only thing an
+      // AdmittedContextItem accepts. Removing this call no longer produces a pack of raw items; it
+      // produces a compile error.
       admitted.add(new AdmittedContextItem(ContextRedaction.redact(candidate), admission));
     }
 

@@ -14,16 +14,21 @@ import java.util.Comparator;
  * bare {@link ContextItem}s — so "an unadmitted item in a pack" is not a bug that could slip
  * through, it is a state with no way to be expressed.
  *
- * <p>{@code item} holds the <b>redacted</b> content by the time it reaches here. Redaction runs
- * before admission is paired with anything, before measurement and before persistence; this type
- * does not perform it and cannot check that it happened, so it makes no claim that it did. What it
- * does guarantee is that whatever content it carries is the content the digest covers and the
- * content the database stores — there is no second copy anywhere for a raw value to survive in.
+ * <p><b>The item arrives as a {@link RedactedContextItem}, not as a bare {@link ContextItem}.</b>
+ * That is the second convention this type makes structural, and for the same reason as the first:
+ * redaction used to be a stage the compiler happened to run, so a caller assembling a pack by hand
+ * skipped it and nothing objected. Now the parameter type objects, at compile time, everywhere.
+ * This type still does not perform redaction and still cannot verify that it happened — see {@link
+ * RedactedContextItem}, which is honest about the same limit — but a raw {@code ContextItem} no
+ * longer has a route in.
  *
- * @param item the item as it would be rendered, already redacted
+ * <p>Whatever content it carries is the content the digest covers and the content the database
+ * stores. There is no second copy anywhere for a raw value to survive in.
+ *
+ * @param redactedItem the item as it would be rendered, marked by the boundary that produced it
  * @param admission the decision that admitted it; mandatory, and must be an allow
  */
-public record AdmittedContextItem(ContextItem item, ContextAdmission admission) {
+public record AdmittedContextItem(RedactedContextItem redactedItem, ContextAdmission admission) {
 
   /**
    * The canonical order, delegating entirely to {@link ContextItem#CANONICAL_ORDER}.
@@ -37,7 +42,7 @@ public record AdmittedContextItem(ContextItem item, ContextAdmission admission) 
       Comparator.comparing(AdmittedContextItem::item, ContextItem.CANONICAL_ORDER);
 
   public AdmittedContextItem {
-    if (item == null) {
+    if (redactedItem == null) {
       throw new IllegalArgumentException("An admitted item must have an item");
     }
     if (admission == null) {
@@ -48,7 +53,7 @@ public record AdmittedContextItem(ContextItem item, ContextAdmission admission) 
     if (!admission.isAllowed()) {
       throw new IllegalArgumentException(
           "Item "
-              + item.id()
+              + redactedItem.item().id()
               + " was denied by rule "
               + admission.policyRuleId()
               + " and must not be materialised — a denied item does not enter a pack, and its"
@@ -56,7 +61,19 @@ public record AdmittedContextItem(ContextItem item, ContextAdmission admission) 
     }
   }
 
+  /**
+   * The redacted item itself.
+   *
+   * <p>Kept as a method beside the {@code redactedItem} component so that every reader of a pack —
+   * the canonical payload, the entity, the usage count — goes on saying {@code admitted.item()}.
+   * The wrapper exists to constrain what may be <em>constructed</em>; making every consumer unwrap
+   * it by hand would have added noise without adding a guarantee.
+   */
+  public ContextItem item() {
+    return redactedItem.item();
+  }
+
   public String id() {
-    return item.id();
+    return item().id();
   }
 }

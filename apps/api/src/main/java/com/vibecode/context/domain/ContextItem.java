@@ -11,7 +11,10 @@ import java.util.Comparator;
  * would allow "construct now, justify later".
  *
  * <p><b>Size is measured over {@link #content()} only.</b> That is the text a renderer would emit;
- * {@link #id()} and {@link #label()} are handles for the Context Inspector, not payload. Whatever
+ * {@link #id()} and {@link #label()} are handles for the Context Inspector, not payload. The label
+ * is therefore uncounted by {@link ContextBudget} on purpose — while still being redacted, still
+ * length-limited, and still part of the canonical payload and the digest. See {@link ContextBudget}
+ * for what would have to change if a label ever became something a provider is sent. Whatever
  * separators or headings a later assembly step puts <em>between</em> items is that step's cost to
  * account for — this class does not know about them and does not pretend to.
  *

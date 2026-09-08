@@ -1,5 +1,6 @@
 package com.vibecode.context.domain;
 
+import com.vibecode.context.application.redaction.ContextRedaction;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -58,7 +59,7 @@ class ContextAdmissionTest {
   @Test
   @DisplayName("An item cannot be materialised without an admission")
   void materialisationRequiresAnAdmission() {
-    assertThatThrownBy(() -> new AdmittedContextItem(item("solo"), null))
+    assertThatThrownBy(() -> new AdmittedContextItem(ContextRedaction.redact(item("solo")), null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("cannot be materialised without an admission");
   }
@@ -69,7 +70,7 @@ class ContextAdmissionTest {
     ContextAdmission denial =
         ContextAdmission.deny("context.policy.deny-model-output", "Not project state.");
 
-    assertThatThrownBy(() -> new AdmittedContextItem(item("denied"), denial))
+    assertThatThrownBy(() -> new AdmittedContextItem(ContextRedaction.redact(item("denied")), denial))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("was denied by rule")
         .hasMessageContaining("content is not stored so it can be shown later");
@@ -79,7 +80,7 @@ class ContextAdmissionTest {
   @DisplayName("An allow carries both halves through to the item that holds it")
   void anAllowSurvivesOntoTheItem() {
     ContextAdmission allow = ContextAdmission.allow("context.policy.current-task", "The task.");
-    AdmittedContextItem admitted = new AdmittedContextItem(item("kept"), allow);
+    AdmittedContextItem admitted = new AdmittedContextItem(ContextRedaction.redact(item("kept")), allow);
 
     assertThat(admitted.admission().isAllowed()).isTrue();
     assertThat(admitted.admission().policyRuleId()).isEqualTo("context.policy.current-task");

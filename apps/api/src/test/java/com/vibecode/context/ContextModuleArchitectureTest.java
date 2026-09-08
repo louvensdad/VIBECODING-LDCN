@@ -1,9 +1,13 @@
 package com.vibecode.context;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.theClass;
 
 import com.tngtech.archunit.core.domain.JavaClasses;
+import com.vibecode.context.application.redaction.ContextRedaction;
+import com.vibecode.context.domain.ContextItem;
+import com.vibecode.context.domain.RedactedContextItem;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import org.junit.jupiter.api.Test;
@@ -136,6 +140,70 @@ class ContextModuleArchitectureTest {
         .because(
             "ContextRedaction is the single point at which context content is redacted, and a"
                 + " second caller would mean two answers to when redaction happens")
+        .check(PRODUCTION_CLASSES);
+  }
+
+  @Test
+  void onlyTheRedactionStepMintsRedactedContent() {
+    // The other half of the boundary CTX-SAFE-01 built. The type system already stops a raw
+    // ContextItem reaching a pack: AdmittedContextItem takes a RedactedContextItem and nothing
+    // else. What the compiler cannot express, without a JPMS module this project does not have, is
+    // "one package may call this factory and no other" - so it is expressed here instead, and it
+    // fails the build in the same place a broken compile would.
+    //
+    // Widened to the whole application on purpose rather than scoped to ..context..: a mint
+    // reached from outside the module would be worse than one reached from inside it, and a rule
+    // that only looked inward would have missed it.
+    noClasses()
+        .that()
+        .resideOutsideOfPackage("..context.application.redaction..")
+        .should()
+        .callMethod(RedactedContextItem.class, "producedByRedaction", ContextItem.class)
+        .because(
+            "ContextRedaction is the only step that may declare content redacted; a second caller"
+                + " would be a second answer to whether redaction ran")
+        .check(PRODUCTION_CLASSES);
+  }
+
+  @Test
+  void onlyPersistenceRehydratesStoredContent() {
+    // Rehydration is a different boundary from creation and is kept to the one place that has the
+    // standing to use it. What makes it defensible there is not that the text is checked - nothing
+    // re-redacts on read - but that the row was written by this application after redaction ran,
+    // and there is no column that could hold a pre-redaction value. Anywhere else, the same call
+    // would be a way to declare arbitrary text safe by asserting it came from a database.
+    noClasses()
+        .that()
+        .resideOutsideOfPackage("..context.infrastructure.persistence..")
+        .should()
+        .callMethod(RedactedContextItem.class, "rehydratedFromStorage", ContextItem.class)
+        .because(
+            "trusting a row is only honest where the row is one we wrote; everywhere else it is a"
+                + " way to launder raw text into a pack")
+        .check(PRODUCTION_CLASSES);
+  }
+
+  @Test
+  void nobodyOffersAnAlternativeRouteToRedactedContent() {
+    // The failure mode the two rules above cannot see: not a second CALL to a mint, but a second
+    // way to GET one. A convenience method somewhere returning a RedactedContextItem - a cache, a
+    // mapper, a test double promoted into production - would satisfy both rules and hand every
+    // caller the wrapper without the redactor having run. So the return type is fenced too: only
+    // the type itself and the redaction step may produce one.
+    noMethods()
+        .that()
+        .areDeclaredInClassesThat()
+        .doNotBelongToAnyOf(RedactedContextItem.class, ContextRedaction.class)
+        .and()
+        // AdmittedContextItem.redactedItem() is the record's own accessor: it hands back the
+        // wrapper it was constructed with and cannot invent one. Exempted by name rather than by
+        // exempting the whole class, so a genuine factory added there would still be caught.
+        .doNotHaveName("redactedItem")
+        .should()
+        .haveRawReturnType(RedactedContextItem.class)
+        .because(
+            "a redacted item is produced at one boundary or rehydrated at one other; a third"
+                + " supplier would make the type a label rather than a boundary")
         .check(PRODUCTION_CLASSES);
   }
 

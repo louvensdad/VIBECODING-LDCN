@@ -1,6 +1,7 @@
 package com.vibecode.context.application.redaction;
 
 import com.vibecode.context.domain.ContextItem;
+import com.vibecode.context.domain.RedactedContextItem;
 import com.vibecode.guardian.domain.SensitiveDataRedactor;
 
 /**
@@ -18,6 +19,15 @@ import com.vibecode.guardian.domain.SensitiveDataRedactor;
  * measuring the raw content would produce a ceiling enforced against something nobody will ever
  * see. Nothing downstream keeps the pre-redaction value: there is no field for it on the entity and
  * no column for it in the table, so "redact it later" is not a state this pipeline can be in.
+ *
+ * <p><b>It is also the only place a {@link RedactedContextItem} is minted on the materialisation
+ * path.</b> Nothing downstream accepts a bare {@link ContextItem} any more: {@code
+ * AdmittedContextItem} takes the redacted form, so a pack built by hand out of raw items does not
+ * compile. That turns "redaction runs first" from a property of this pipeline's ordering into a
+ * property of the type system — with one honest gap, which is that this class cannot prove to the
+ * domain that the text it hands over really went through the redactor above. It marks the boundary;
+ * it does not certify the bytes. The architecture test is what keeps the boundary single: no other
+ * production class may call {@link RedactedContextItem#producedByRedaction(ContextItem)}.
  *
  * <p><b>What: every piece of free text a pack stores.</b> That is an item's content, an item's
  * label, and the pack's own task reference. Content is the obvious one. The label is redacted
@@ -52,8 +62,9 @@ public final class ContextRedaction {
   /**
    * The item with its content and label redacted.
    *
-   * <p>Returns the same item unchanged when nothing matched, so an unnecessary copy is not made and
-   * an equality check upstream still holds.
+   * <p>Carries the same item through unchanged when nothing matched, so an unnecessary copy is not
+   * made and an equality check upstream still holds — the wrapper is added either way, because a
+   * caller must not be able to tell a clean item from a scrubbed one by its type.
    *
    * @throws IllegalStateException if redaction leaves nothing behind. Not expected: every pattern
    *     in {@link SensitiveDataRedactor} replaces a value with a marker rather than deleting it, so
@@ -92,7 +103,7 @@ public final class ContextRedaction {
     return redacted;
   }
 
-  public static ContextItem redact(ContextItem item) {
+  public static RedactedContextItem redact(ContextItem item) {
     if (item == null) {
       throw new IllegalArgumentException("There is nothing to redact");
     }
@@ -100,7 +111,10 @@ public final class ContextRedaction {
     String redactedLabel = SensitiveDataRedactor.redact(item.label());
 
     if (redactedContent.equals(item.content()) && redactedLabel.equals(item.label())) {
-      return item;
+      // Still wrapped, and deliberately so. "Nothing matched" is a result of redaction, not a
+      // reason to skip the boundary: the caller must be unable to tell the two cases apart, or the
+      // clean path would be the one with no marker on it.
+      return RedactedContextItem.producedByRedaction(item);
     }
     if (redactedContent.isBlank() || redactedLabel.isBlank()) {
       throw new IllegalStateException(
@@ -109,7 +123,8 @@ public final class ContextRedaction {
               + ": the redactor now removes text rather than replacing it with a marker, which"
               + " would shorten packs silently if this item were dropped instead");
     }
-    return new ContextItem(
-        item.id(), item.kind(), redactedLabel, redactedContent, item.provenance());
+    return RedactedContextItem.producedByRedaction(
+        new ContextItem(
+            item.id(), item.kind(), redactedLabel, redactedContent, item.provenance()));
   }
 }

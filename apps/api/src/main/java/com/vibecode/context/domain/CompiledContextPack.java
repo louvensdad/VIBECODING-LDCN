@@ -18,8 +18,17 @@ import java.util.UUID;
  * <p><b>Why it takes admitted items and nothing else.</b> There is no constructor here that accepts
  * a {@link ContextPack}, or a list of bare {@link ContextItem}s, or an admission map alongside a
  * pack that could disagree with it. The only way in is a list of {@link AdmittedContextItem}, each
- * of which already refuses to exist without an allow. So "a pack containing an item with no
- * admission" is not a case to test for; it is a sentence with no way to be written. {@link #pack()}
+ * of which already refuses to exist without an allow — and, since CTX-SAFE-01, without having been
+ * through the redaction boundary: an {@link AdmittedContextItem} takes a {@link
+ * RedactedContextItem} and refuses a bare one. So "a pack containing an item with no admission" and
+ * "a pack containing raw, unredacted text" are both sentences with no way to be written, rather
+ * than cases to test for.
+ *
+ * <p>What this record still does not do is redact. It never did, and pretending otherwise was the
+ * gap CTX-SAFE-01 closed from the other end: the guarantee is that raw content cannot be handed to
+ * it, not that it cleans up content it is handed. The task reference is the one field that is still
+ * a bare {@link String} here, and it is redacted by the compiler before this record is built — see
+ * {@code ContextRedaction.redactTaskReference}. {@link #pack()}
  * is derived from the admitted items rather than supplied, which is what closes the last gap — a
  * separately supplied pack could hold an item the admission list had never heard of.
  *
