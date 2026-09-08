@@ -240,36 +240,70 @@ class ContextPackListBoundsTest {
   }
 
   @Test
-  @DisplayName("Packs sharing an instant still come back in a stable, repeatable order")
-  void tiesAreBrokenDeterministically() throws Exception {
-    // The frozen clock makes this the ordinary case in tests rather than an exotic one: five packs,
-    // one instant. Nothing here claims the order is by age — it cannot be, because the instants are
-    // equal and nothing else records which compile ran first. What it claims is that the answer is
-    // the same every time, so a client rendering a list does not see it reshuffle between reads.
+  @DisplayName("Packs sharing an assembly instant still come back newest first, not merely stably")
+  void tiedInstantsStillComeBackNewestFirst() throws Exception {
+    // THE FROZEN-CLOCK CASE, which is where the original counterexample came from: five packs, one
+    // assembledAt, the ordinary situation for every test in this suite.
+    //
+    // An earlier version of this test asserted only that two reads agreed with each other. That was
+    // a true statement about a property nothing threatens — H2 returns insertion order
+    // deterministically — so it passed with the tiebreaker deleted from the query, i.e. with the
+    // reported defect fully reinstated. Repeatability is not the property at risk; being STABLY
+    // WRONG is exactly what the defect was.
+    //
+    // The stronger property is available and measured. createdAt is the wall-clock moment the row
+    // was written, and it does not tie when assembledAt does: five sequential compiles produced one
+    // distinct assembled_at and five distinct created_at values 100-200ms apart, against a column
+    // that stores microseconds. So under a tied assembly instant there IS a correct age-ordered
+    // answer — the reverse of creation order — and this test asserts that sequence.
+    List<String> inCreationOrder = new ArrayList<>();
     for (int i = 0; i < 5; i++) {
-      compile("TASK-tied-" + i);
+      inCreationOrder.add(compile("TASK-tied-" + i));
     }
 
-    List<String> first =
-        packIds(
-            json.readTree(
-                mvc.perform(
-                        get("/api/projects/" + project + "/context").with(TestIdentity.as(alice)))
-                    .andExpect(status().isOk())
-                    .andReturn()
-                    .getResponse()
-                    .getContentAsString()));
-    List<String> second =
-        packIds(
-            json.readTree(
-                mvc.perform(
-                        get("/api/projects/" + project + "/context").with(TestIdentity.as(alice)))
-                    .andExpect(status().isOk())
-                    .andReturn()
-                    .getResponse()
-                    .getContentAsString()));
+    List<String> firstRead = listedPackIds();
 
-    assertThat(first).hasSize(5).containsExactlyElementsOf(second);
+    // The tie is asserted rather than assumed. If a future change gave each pack its own
+    // assembledAt, the primary key would do all the work and this test would quietly become a
+    // duplicate of packsComeBackNewestFirst while still passing — covering the tiebreaker nowhere.
+    assertThat(distinctAssembledAt(firstRead.size()))
+        .as("the five packs must share one assembledAt, or this test is not about ties at all")
+        .isEqualTo(1);
+
+    List<String> newestFirst = new ArrayList<>(inCreationOrder);
+    java.util.Collections.reverse(newestFirst);
+    assertThat(firstRead).containsExactlyElementsOf(newestFirst);
+    assertThat(firstRead).isNotEqualTo(inCreationOrder);
+
+    // Repeatability is kept as well, because it is a separate promise: a client rendering this list
+    // must not see it reshuffle between two reads of unchanged data.
+    assertThat(listedPackIds()).containsExactlyElementsOf(firstRead);
+  }
+
+  /** The pack ids the list route reports for this project, in the order it reported them. */
+  private List<String> listedPackIds() throws Exception {
+    return packIds(
+        json.readTree(
+            mvc.perform(get("/api/projects/" + project + "/context").with(TestIdentity.as(alice)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString()));
+  }
+
+  /** How many distinct {@code assembledAt} values the newest {@code expected} packs carry. */
+  private long distinctAssembledAt(int expected) throws Exception {
+    JsonNode listed =
+        json.readTree(
+            mvc.perform(get("/api/projects/" + project + "/context").with(TestIdentity.as(alice)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+    List<String> instants = new ArrayList<>();
+    listed.forEach(node -> instants.add(node.get("assembledAt").asText()));
+    assertThat(instants).hasSize(expected);
+    return instants.stream().distinct().count();
   }
 
   @Test
