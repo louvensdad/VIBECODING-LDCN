@@ -12,8 +12,9 @@ package com.vibecode.context.domain;
  *
  * <p>Because the axes are independent, the same word appears on both and means different things.
  * {@code ContextSourceType.CURRENT_STATE} is the computed project state as a place to read from;
- * {@code ContextKind.CURRENT_STATE} is what a brain entry recorded about where things stand. An item
- * can legitimately be {@code sourceType=BRAIN_ENTRY, kind=CURRENT_STATE} — remembered state — or
+ * {@code ContextKind.CURRENT_STATE} is a record asserting where things stand, whatever source it was
+ * read from. An item can legitimately be {@code sourceType=BRAIN_ENTRY, kind=CURRENT_STATE} —
+ * remembered state — or
  * {@code sourceType=CURRENT_STATE, kind=CURRENT_STATE} — computed state. Likewise {@code
  * ContextSourceType.ACTIVE_ERRORS} against {@code ContextKind.ERROR}.
  *
@@ -25,6 +26,19 @@ package com.vibecode.context.domain;
  * <p>There is no {@code UNKNOWN} or {@code OTHER}. A fallback constant is how unmapped content
  * quietly enters a pack wearing the wrong meaning; if something has no kind here, the vocabulary is
  * wrong and must be changed deliberately.
+ *
+ * <p><b>{@link #orderingRank()} is presentation and determinism, not priority.</b> It fixes how a
+ * pack reads and guarantees the same items always come out in the same sequence. It says nothing
+ * about what matters more, and nothing about what to drop when a budget binds — that is a separate
+ * question with different answers, and it belongs to the selection step as an explicit, named
+ * policy. Conflating the two would mean that reordering this enum for tidiness silently changes
+ * which standing rule falls out of a truncated pack.
+ *
+ * <p>The declared order is therefore deliberate and stable rather than meaningful: the thirteen
+ * brain-named constants are grouped in {@code BrainEntryType}'s own declaration order so the two
+ * vocabularies read alike, with the four others placed where they belong among them. Stability is
+ * the property that matters — a reader should be able to rely on the order not moving, not to infer
+ * importance from it.
  *
  * <p>Named {@code ContextKind} rather than {@code ContextType} to avoid reading as a sibling of
  * {@link ContextSourceType}; the two would be easy to confuse at a call site where both appear.
@@ -39,9 +53,16 @@ public enum ContextKind {
   OBJECTIVE(10),
 
   /**
-   * A boundary this particular piece of work must respect. Produced by {@code
-   * ACCEPTANCE_CRITERIA} and by task scope. Distinct from {@link #RULE}: a rule is standing project
-   * policy that outlives the task, a constraint binds only the work it was stated for.
+   * A boundary this particular piece of work must respect. Produced by {@code ACCEPTANCE_CRITERIA}
+   * and by {@code CURRENT_TASK}. Distinct from {@link #RULE}: a rule is standing project policy that
+   * outlives the task, a constraint binds only the work it was stated for.
+   *
+   * <p>{@code CURRENT_TASK} is the one source that yields both this and {@link #OBJECTIVE}, so a
+   * collector has to choose rather than guess. The test is what the text does: an objective states
+   * what the task is for and there is one of them, a constraint limits how it may be achieved and
+   * there are usually several. "Model the context domain" is the objective; "no Spring annotations"
+   * and "no persistence" are constraints. If a sentence would still be true after the task is
+   * finished, it is a constraint or a rule, not the objective.
    */
   CONSTRAINT(20),
 
@@ -112,8 +133,11 @@ public enum ContextKind {
   }
 
   /**
-   * The stable sort weight of this kind. Explicit for the same reason as {@link
+   * The stable sort weight of this kind, used as the second key of {@link
+   * ContextItem#CANONICAL_ORDER}. Explicit for the same reason as {@link
    * ContextSourceType#orderingRank()}: ordinals shift under edits, sort keys must not.
+   *
+   * <p>A lower rank means "printed earlier", never "matters more". Do not read it as a drop order.
    */
   public int orderingRank() {
     return orderingRank;

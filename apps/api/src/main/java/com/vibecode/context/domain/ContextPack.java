@@ -32,7 +32,9 @@ import java.util.UUID;
  *
  * <p>Nothing in a pack may be, contain or point at secret material. See {@link ContextItem}.
  *
- * @param packId identifier of this snapshot
+ * @param packId the persistent identity of this snapshot, and the only one — a pack is found,
+ *     referenced and stored by this UUID. {@link #contentFingerprint()} is a digest of what the pack
+ *     says, not which pack it is, and must never be used as a key
  * @param projectId the project the context describes; every item's provenance must agree
  * @param taskReference the task the pack was assembled for — part of what "same inputs" means
  * @param assembledAt when the snapshot was taken

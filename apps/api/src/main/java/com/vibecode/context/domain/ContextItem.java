@@ -47,6 +47,13 @@ public record ContextItem(
    *
    * <p>Nothing here consults a hash, a clock or insertion order: all three vary between runs that
    * must produce identical packs.
+   *
+   * <p><b>This is not a drop policy, and must not be used as one.</b> It exists to make a pack
+   * reproducible — same inputs, same bytes, every time. Which item to leave out when a budget binds
+   * is a different question with different answers, and the step that selects context owes an
+   * explicit policy under its own name. Reusing this comparator for that would tie the two together:
+   * reordering an enum to make a pack read better would silently change which standing rule falls
+   * out of a truncated one, and nobody would connect the two edits.
    */
   public static final Comparator<ContextItem> CANONICAL_ORDER =
       Comparator.comparingInt((ContextItem item) -> item.provenance().sourceType().orderingRank())

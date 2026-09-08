@@ -28,8 +28,11 @@ package com.vibecode.context.domain;
  * no {@code FREE_TEXT}, {@code SCRATCH} or {@code MODEL_OUTPUT} constant: context that no recorded
  * state can vouch for has no provenance, and an item without provenance cannot be built.
  *
- * <p>The declared order is the canonical priority order, but it is not read from {@link #ordinal()}
- * — see {@link #orderingRank()} for why.
+ * <p>The declared order fixes how a pack reads and nothing else. It is not a priority order and not
+ * a drop order: what to leave out when a budget binds is a separate decision that belongs to the
+ * selection step under its own name, because otherwise reordering this enum for tidiness would
+ * silently change which context survives a truncated pack. The order is meant to be stable rather
+ * than meaningful, and it is not read from {@link #ordinal()} — see {@link #orderingRank()} for why.
  */
 public enum ContextSourceType {
 
@@ -79,7 +82,8 @@ public enum ContextSourceType {
   }
 
   /**
-   * The stable sort weight of this source.
+   * The stable sort weight of this source, used as the first key of {@link
+   * ContextItem#CANONICAL_ORDER}. A lower rank means "printed earlier", never "matters more".
    *
    * <p>It is an explicit number rather than {@link #ordinal()} because ordinals move when a constant
    * is inserted, and a pack whose ordering silently changed with an unrelated edit would break the
