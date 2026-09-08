@@ -5,15 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.classic.spi.IThrowableProxy;
-import ch.qos.logback.classic.spi.StackTraceElementProxy;
 import com.vibecode.identity.application.IdentityService;
 import com.vibecode.identity.domain.EmailAddress;
 import com.vibecode.identity.domain.PlatformRole;
 import com.vibecode.identity.domain.User;
 import com.vibecode.identity.infrastructure.UserRepository;
 import com.vibecode.support.TestIdentity;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
@@ -143,10 +140,17 @@ class SqlErrorLoggingTest {
         .anyMatch(event -> event.getLoggerName().equals("org.hibernate.SQL"));
   }
 
+  /**
+   * Scanned with {@link LogCapture#occurrences}, and the throwable half of what it reads is the
+   * half that matters here. A failed write puts the offending value in the driver's exception
+   * message, and that message travels wherever the exception does: two of the three carriers found
+   * on this task — SqlExceptionHelper's own DEBUG line and JpaTransactionManager's rollback line —
+   * print nothing incriminating themselves and attach the exception that does.
+   */
   private void assertNothingLeaked(List<ILoggingEvent> events) {
-    assertThat(occurrences(events, FIXTURE)).isEmpty();
+    assertThat(LogCapture.occurrences(events, FIXTURE)).isEmpty();
     for (String fragment : FRAGMENTS) {
-      assertThat(occurrences(events, fragment)).as("fragment %s", fragment).isEmpty();
+      assertThat(LogCapture.occurrences(events, fragment)).as("fragment %s", fragment).isEmpty();
     }
   }
 
@@ -173,54 +177,13 @@ class SqlErrorLoggingTest {
     // The driver's exception class survives in the redacted stack trace, with its SQLState beside
     // it. The class name is the driver's own — org.h2.jdbc.JdbcSQLDataException here, a
     // PSQLException on PostgreSQL — so the assertion is on the shape the filter guarantees.
-    assertThat(rendered(events))
+    assertThat(events.stream().map(LogCapture::lineOf).toList())
         .as("the exception type must still be identifiable from the log alone")
         .anyMatch(line -> line.contains("(message withheld, SQLState " + sqlState));
   }
 
   private static List<ILoggingEvent> eventsFrom(List<ILoggingEvent> events, String loggerName) {
     return events.stream().filter(event -> event.getLoggerName().equals(loggerName)).toList();
-  }
-
-  private static List<String> occurrences(List<ILoggingEvent> events, String needle) {
-    List<String> hits = new ArrayList<>();
-    for (ILoggingEvent event : events) {
-      String line = render(event);
-      if (line.contains(needle)) {
-        hits.add(event.getLoggerName() + " @" + event.getLevel() + ": " + line);
-      }
-    }
-    return hits;
-  }
-
-  private static List<String> rendered(List<ILoggingEvent> events) {
-    return events.stream().map(SqlErrorLoggingTest::render).toList();
-  }
-
-  /**
-   * Renders an event the way a stack-trace-printing appender would: the message, then every
-   * throwable in the cause chain with its own message and frames.
-   *
-   * <p>Deliberately not {@code LogCapture.occurrences}, and this is the point of the method. That
-   * helper appends {@code event.getThrowableProxy()}, whose {@code toString} is Logback's default
-   * {@code ThrowableProxy@1f69937a} — an identity hash, never the exception's message. So a value
-   * that reaches the log only inside an attached exception is invisible to it, which is exactly how
-   * the leak this test covers travels. JpaTransactionManager attaches the exception rather than
-   * printing it, and a capture scanned with that helper reports zero hits while the appender writes
-   * the value in full. LogCapture belongs to another change in flight; this renderer stays here
-   * until it can be fixed there.
-   */
-  private static String render(ILoggingEvent event) {
-    StringBuilder out = new StringBuilder(event.getFormattedMessage());
-    for (IThrowableProxy proxy = event.getThrowableProxy();
-        proxy != null;
-        proxy = proxy.getCause()) {
-      out.append('\n').append(proxy.getClassName()).append(": ").append(proxy.getMessage());
-      for (StackTraceElementProxy frame : proxy.getStackTraceElementProxyArray()) {
-        out.append('\n').append(frame.getSTEAsString());
-      }
-    }
-    return out.toString();
   }
 
   private static String freshEmail() {
