@@ -12,6 +12,7 @@ import com.vibecode.provider.application.ProviderAccountService;
 import com.vibecode.provider.domain.AuthenticationType;
 import com.vibecode.provider.domain.ProviderAccount;
 import com.vibecode.provider.domain.ProviderId;
+import com.vibecode.shared.logging.LogCapture;
 import com.vibecode.support.TestIdentity;
 import com.vibecode.support.logging.LoggerLevelIsolation;
 import com.vibecode.vault.domain.SecretMaterial;
@@ -131,7 +132,10 @@ class SecretLoggingTest {
     assertThat(events).isNotEmpty();
 
     for (ILoggingEvent event : events) {
-      String line = event.getFormattedMessage() + " " + String.valueOf(event.getThrowableProxy());
+      // Through LogCapture, not a local concatenation. The test above is deliberately an exception
+      // path, and the local version read the throwable's identity hash rather than its message —
+      // so the one test here that builds a real error route was scanning it blind.
+      String line = LogCapture.lineOf(event);
       assertThat(line).doesNotContain(CREDENTIAL);
       // Not a fragment of it either.
       assertThat(line).doesNotContain(CREDENTIAL.substring(0, 12));

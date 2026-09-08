@@ -59,10 +59,25 @@ public final class LoggerLevels {
    * {@code LoggingScenarios} caught it.
    *
    * <p>So an invented logger is cleared only when its level raises verbosity above what it would
-   * otherwise inherit — which is what a leak looks like and what a pin never does. Two honest
-   * limits follow. A test that makes a category quieter rather than louder is not undone here, and
-   * a configured level that is more verbose than its parent would be cleared, though the next
-   * Spring context refresh re-applies it.
+   * otherwise inherit — which is what a leak looks like and what a pin never does. Three limits
+   * follow, and none of them is harmless.
+   *
+   * <p>A level that is the same as or quieter than what it would inherit is kept. Quieter is the
+   * obvious half; the same is the one that bites. A property route setting org.hibernate=DEBUG
+   * under a DEBUG root is kept here, and then {@code LogCapture} raises the root to TRACE while
+   * org.hibernate sits at DEBUG — a capture that sees less than it set up for, which is the
+   * blindness this whole task exists to remove. It is second-order: it needs an upstream leak to
+   * have got that far in the first place.
+   *
+   * <p>A configured level more verbose than its parent would be cleared. Only a genuine context
+   * refresh puts it back, and a refresh is what a cache hit never is: Spring caches contexts and
+   * {@code LoggingApplicationListener} fires on {@code ApplicationEnvironmentPreparedEvent}, which
+   * a reused context does not raise. So a cleared level stays cleared for every class that reuses
+   * that context, and comes back only when some class builds a context with a different key.
+   *
+   * <p>A pin at INFO under a baseline quieter than INFO would be cleared outright. Nothing in this
+   * suite sets WARN, ERROR or OFF as a baseline, and if that changes it fails loudly rather than
+   * quietly, so it is recorded here rather than guarded against.
    */
   public void restore() {
     List<Logger> invented = new ArrayList<>();
@@ -91,7 +106,8 @@ public final class LoggerLevels {
       }
       logger.setLevel(null);
       if (explicit.toInt() >= logger.getEffectiveLevel().toInt()) {
-        // Same or quieter than the surrounding configuration: a restriction, not a raise.
+        // Same as, or quieter than, the surrounding configuration: a restriction, not a raise.
+        // The "same as" half is the one with a cost, and the class comment above says what it is.
         logger.setLevel(explicit);
       }
     }

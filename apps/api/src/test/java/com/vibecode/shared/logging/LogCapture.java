@@ -22,8 +22,14 @@ import org.slf4j.LoggerFactory;
  * their own — the four Hibernate categories pinned in application.yml — keep it, because an
  * explicit level on a logger is not overridden by the level of its parent. That asymmetry is the
  * whole fix, and this class is what makes it observable.
+ *
+ * <p>Public only so far as it has to be. {@link #lineOf} is what the leak tests in other modules
+ * need, and they need it from here rather than from a copy of their own: the throwable half of a
+ * log line was rendered wrongly in three places at once, which is what happens when three files
+ * each write their own two-line version of the same thing. The capture itself stays
+ * package-private, because raising the root logger is this package's business.
  */
-final class LogCapture {
+public final class LogCapture {
 
   private LogCapture() {}
 
@@ -86,7 +92,7 @@ final class LogCapture {
    * yielded {@code ThrowableProxy@1f69937a} and never the message — a scan that claimed to cover
    * exceptions and covered nothing.
    */
-  static String lineOf(ILoggingEvent event) {
+  public static String lineOf(ILoggingEvent event) {
     StringBuilder line = new StringBuilder(event.getFormattedMessage());
     append(line, event.getThrowableProxy(), Collections.newSetFromMap(new IdentityHashMap<>()));
     return line.toString();

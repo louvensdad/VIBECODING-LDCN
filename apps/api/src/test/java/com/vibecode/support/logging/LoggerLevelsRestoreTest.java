@@ -78,8 +78,36 @@ class LoggerLevelsRestoreTest {
   }
 
   @Test
+  @DisplayName("A logger invented at the level it would inherit is kept, not cleared")
+  void inventedLoggersAtTheInheritedLevelSurvive() {
+    // This is the branch the whole design turns on, and until this test existed it was reached
+    // only when an extension-carrying class happened to hold the first Spring context in the JVM.
+    // The test below it looks like it covers this and does not: it is a @SpringBootTest, so the
+    // pinned category already exists when the snapshot is taken and the restore goes through the
+    // put-back path instead. This one invents the logger after the snapshot, which is what Spring
+    // Boot does with every pin in application.yml the first time it configures Logback.
+    String invented = "com.vibecode.probe.pinlike." + UUID.randomUUID();
+    LoggerLevels before = LoggerLevels.snapshot();
+
+    // INFO under a root at INFO: the same level it would have inherited, which is what a pin that
+    // restricts one noisy category to the surrounding level looks like.
+    set(invented, Level.INFO);
+    assertThat(LoggerLevels.explicitLevelOf(org.slf4j.Logger.ROOT_LOGGER_NAME))
+        .as("the premise of this test: the invented level must equal the inherited one")
+        .isEqualTo(Level.INFO);
+
+    before.restore();
+
+    assertThat(LoggerLevels.explicitLevelOf(invented))
+        .as("clearing this would unpin the logging fix the first time an extended class runs first")
+        .isEqualTo(Level.INFO);
+  }
+
+  @Test
   @DisplayName("Restoring puts back a configured level rather than clearing it")
   void configuredLevelsSurviveARestore() {
+    // Note what this does and does not cover: the pin already exists when the snapshot is taken,
+    // so this exercises the put-back path. The invented-logger rule is covered above.
     LoggerLevels before = LoggerLevels.snapshot();
     set(LoggingScenarios.PINNED, Level.TRACE);
 

@@ -84,10 +84,12 @@ abstract class LoggingScenarios {
    * survives a context being built and is still seen here.
    *
    * <p>The flip side, stated rather than glossed over: a leak on one of the pinned categories
-   * themselves would be re-pinned by the next context refresh and would not be caught here. The
-   * three categories asserted first are chosen because nothing re-applies them; the pinned one is
-   * asserted last, and it is there to catch a restore that over-reaches rather than one that
-   * under-reaches.
+   * would be re-pinned by the next context that is actually built, and would not be caught here.
+   * Actually built, not merely used — a class reusing a cached context raises no environment-
+   * prepared event and re-applies nothing, so between two genuine refreshes a cleared pin stays
+   * cleared. The three categories asserted first are chosen because nothing re-applies them; the
+   * pinned one is asserted last, and it is there to catch a restore that over-reaches rather than
+   * one that under-reaches.
    */
   abstract static class ExpectsTheDefaultConfiguration {
 

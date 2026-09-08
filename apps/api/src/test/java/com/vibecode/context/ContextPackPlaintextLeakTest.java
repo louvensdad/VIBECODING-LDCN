@@ -16,6 +16,7 @@ import com.vibecode.project.application.ProjectService;
 import com.vibecode.project.domain.Project;
 import com.vibecode.roadmap.application.RoadmapService;
 import com.vibecode.roadmap.domain.RoadmapPhase;
+import com.vibecode.shared.logging.LogCapture;
 import com.vibecode.support.TestIdentity;
 import com.vibecode.support.logging.LoggerLevelIsolation;
 import com.vibecode.task.application.TaskService;
@@ -227,7 +228,9 @@ class ContextPackPlaintextLeakTest {
       if (!event.getLoggerName().startsWith("com.vibecode")) {
         continue;
       }
-      String line = lineOf(event);
+      // Through LogCapture, not a local copy: the local one rendered the attached throwable as an
+      // identity hash, so a value that travelled inside an exception was never scanned at all.
+      String line = LogCapture.lineOf(event);
       assertThat(line).doesNotContain(FIXTURE);
       // Not a fragment of it either: a truncated log line is still a starting point.
       assertThat(line).doesNotContain(FIXTURE.substring(0, 20));
@@ -255,7 +258,7 @@ class ContextPackPlaintextLeakTest {
     // line mentioning the pack or its items is checked, at every logger, framework included.
     int packLines = 0;
     for (ILoggingEvent event : events) {
-      String line = lineOf(event);
+      String line = LogCapture.lineOf(event);
       if (line.contains("ContextPack") || line.contains("context_pack")) {
         packLines++;
         assertThat(line).doesNotContain(FIXTURE);
@@ -269,16 +272,12 @@ class ContextPackPlaintextLeakTest {
     // comes from outside this application and is about a source record, never about a pack. If
     // that ever stops being true, this fails and the scoping has to be revisited.
     for (ILoggingEvent event : events) {
-      String line = lineOf(event);
+      String line = LogCapture.lineOf(event);
       if (line.contains(FIXTURE)) {
         assertThat(event.getLoggerName()).doesNotStartWith("com.vibecode");
         assertThat(line).doesNotContain("ContextPack").doesNotContain("context_pack");
       }
     }
-  }
-
-  private static String lineOf(ILoggingEvent event) {
-    return event.getFormattedMessage() + " " + String.valueOf(event.getThrowableProxy());
   }
 
   @Test

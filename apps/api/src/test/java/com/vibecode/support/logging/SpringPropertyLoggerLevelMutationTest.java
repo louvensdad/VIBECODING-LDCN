@@ -14,12 +14,15 @@ import org.springframework.test.context.TestPropertySource;
  *
  * <p>It is the property route. Spring Boot's logging listener applies {@code logging.level.*} to
  * Logback while it builds the application context, and the level it sets is an explicit level on a
- * real logger — indistinguishable, afterwards, from one a test set by hand. That is why the leak
- * exists and why nothing in Spring undoes it: the listener only ever adds, and the context it
- * belongs to is cached for the rest of the run rather than closed.
+ * real logger — indistinguishable, afterwards, from one a test set by hand.
  *
- * <p>This test asserts the mutation from inside, so the leak route is pinned as a fact. The other
- * half of the pair — that the probe is back to inheriting once this class is over — is asserted by
+ * <p>What this class proves is exactly that mutation, and no more. It does not observe the level
+ * outliving the class, because the class carries {@link LoggerLevelIsolation} and so it does not:
+ * the name says mutation rather than leak for that reason. That the mutation would persist is
+ * Spring's doing rather than something asserted here — the listener only ever adds, and a
+ * {@code @SpringBootTest} context is cached for the rest of the run rather than closed, so nothing
+ * fires that could take a level back off. The half that is asserted, that the probe is back to
+ * inheriting once this class is over, belongs to
  * {@link LoggingScenarios.ExpectsTheDefaultConfiguration}, which runs in the same JVM in whichever
  * order Surefire chooses.
  *
@@ -35,7 +38,7 @@ import org.springframework.test.context.TestPropertySource;
 @TestPropertySource(
     properties = "logging.level." + LoggingScenarios.PROBE + "=TRACE")
 @ExtendWith(LoggerLevelIsolation.class)
-class SpringPropertyLoggerLevelLeakTest {
+class SpringPropertyLoggerLevelMutationTest {
 
   @Test
   @DisplayName("A logging.level property really does set an explicit level on the JVM's logger")
