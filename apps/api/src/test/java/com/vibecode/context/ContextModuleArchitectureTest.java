@@ -41,22 +41,34 @@ class ContextModuleArchitectureTest {
 
   @Test
   void onlyTheBrainMappingKnowsAboutTheBrainModule() {
-    // Context sits above brain, so the dependency direction is legitimate — but only in one place.
-    // Confined to a single class, "what does a brain entry mean as context" has one answer that can
-    // be reviewed; spread across the module it becomes several answers that quietly disagree.
+    // Scoped to the domain, and no wider. What this protects is that the context *domain* stays a
+    // leaf: it models context without knowing what the rest of the system is made of, and the one
+    // edge it is allowed — "what does a brain entry mean as context" — lives in a single greppable
+    // class instead of being answered differently in three places.
+    //
+    // The application layer is deliberately outside this rule. Collectors read brain entries;
+    // that is their job, and a rule forbidding it would forbid the feature rather than protect
+    // anything. What must not happen there is a collector deciding for itself what an entry means,
+    // and an import rule was never able to catch that — it cannot tell reading an entry apart from
+    // re-mapping one. The guarantee that replaces it is behavioural and lives in
+    // AllThirteenBrainTypesSurviveCollectionTest: for every BrainEntryType.values(), the collected
+    // item's kind must equal BrainEntryContextMapping.kindOf(type). An invented switch fails that,
+    // and so does a fourteenth type nobody has decided about.
+    //
     // Matched by name rather than by type because javac emits a synthetic switch-map class
     // (BrainEntryContextMapping$1) that holds the enum references and is not assignable to the
     // class that produced it. The pattern covers the class and its own synthetics, nothing else.
     noClasses()
         .that()
-        .resideInAPackage("..context..")
+        .resideInAPackage("..context.domain..")
         .and()
         .haveNameNotMatching("com\\.vibecode\\.context\\.domain\\.BrainEntryContextMapping(\\$.*)?")
         .should()
         .dependOnClassesThat()
         .resideInAPackage("..brain..")
         .because(
-            "BrainEntryContextMapping is the single, greppable place where context depends on brain")
+            "the context domain is a leaf apart from BrainEntryContextMapping, the single,"
+                + " greppable place where the domain depends on brain")
         .check(PRODUCTION_CLASSES);
   }
 
