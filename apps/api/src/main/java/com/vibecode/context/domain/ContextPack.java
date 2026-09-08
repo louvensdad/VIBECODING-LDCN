@@ -64,10 +64,19 @@ public record ContextPack(
    * failed at the INSERT, exactly as the label did.
    *
    * <p><b>{@code context_pack_items.explanation} is deliberately not capped, and that asymmetry is
-   * the point.</b> An explanation is fixed prose authored in {@code DefaultContextPolicyRules}, not
-   * user text, and redaction never touches it — so nothing can lengthen it and no caller can widen
-   * it. A guard there would defend against a route that does not exist, which costs the next reader
-   * more than it saves: they would go looking for the mechanism and find none.
+   * the point.</b> Every explanation in the code today is a fixed literal — the rules in {@code
+   * DefaultContextPolicyRules} and {@code ContextPolicy.DEFAULT_DENY_EXPLANATION}, the longest
+   * around 290 characters — and redaction never touches one, so nothing in today's code can
+   * lengthen an explanation or compose one out of user text. A guard would defend a route that is
+   * not taken, and cost the next reader a search for a mechanism that is not there.
+   *
+   * <p><b>That is a fact about today's callers, not a property of the types, and the difference
+   * matters here.</b> {@code ContextAdmission.allow} is a public factory over arbitrary prose and
+   * {@code ContextPolicyRule} is a public interface, so a 600-character explanation constructs
+   * cleanly and fails at the INSERT — demonstrated, not supposed. If you are writing a rule whose
+   * explanation is built from anything but a literal — an item's label, a source id, a user's
+   * text — you have created the route this paragraph says does not exist, and the cap belongs here
+   * beside the other two rather than left to the column.
    *
    * <p>Nothing truncates. A shortened task reference is a pack claiming to be for a task nobody
    * asked about, and it is inside the fingerprint, so the trimmed form is what would be digested.

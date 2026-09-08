@@ -101,6 +101,10 @@ class ContextPackTextWidthBoundaryTest {
     return packs.findById(packId).orElseThrow().toDomain();
   }
 
+  private long countOf(String table) {
+    return jdbc.queryForObject("SELECT count(*) FROM " + table, Long.class);
+  }
+
   /** The declared width of one column in the schema Flyway actually applied. */
   private int declaredWidthOf(String table, String column) {
     return jdbc.queryForObject(
@@ -125,11 +129,29 @@ class ContextPackTextWidthBoundaryTest {
     ContextPack atCap = storedPack(labelAtCap, referenceAtCap);
     assertThat(atCap.items().get(0).label()).hasSize(500).isEqualTo(labelAtCap);
     assertThat(atCap.taskReference()).hasSize(500).isEqualTo(referenceAtCap);
+
+    // And the case the unit choice was actually decided on, through the same real write: 250
+    // surrogate pairs are 500 UTF-16 code units and 250 code points. Everything else here is BMP
+    // text, where the two readings agree and the write proves nothing about which one was picked.
+    // Asserted for equality rather than length because a driver that mangled a surrogate pair
+    // would most likely hand back something of the same length.
+    String emojiAtCap = "😀".repeat(250);
+    ContextPack supplementaryPlane = storedPack(emojiAtCap, emojiAtCap);
+    assertThat(supplementaryPlane.items().get(0).label()).hasSize(500).isEqualTo(emojiAtCap);
+    assertThat(supplementaryPlane.taskReference()).hasSize(500).isEqualTo(emojiAtCap);
+    assertThat(supplementaryPlane.items().get(0).label().codePointCount(0, 500)).isEqualTo(250);
   }
 
   @Test
   @DisplayName("An over-long value never reaches a write, label and task reference alike")
   void overLongValuesDoNotReachTheDatabase() {
+    // Counted before and after, because "it threw" and "nothing was written" are different claims
+    // and this test is named for the second. They hold together only because every throw here
+    // precedes saveAndFlush; if a check ever moved to after the write, the exception assertions
+    // would still pass and these two counts would not.
+    long itemRowsBefore = countOf("context_pack_items");
+    long packRowsBefore = countOf("context_packs");
+
     assertThatThrownBy(() -> storedPack("L".repeat(501), "TASK-42"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("may not exceed 500");
@@ -150,6 +172,9 @@ class ContextPackTextWidthBoundaryTest {
     assertThatThrownBy(() -> storedPack("A label", lengthenedReference))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("has 507");
+
+    assertThat(countOf("context_pack_items")).isEqualTo(itemRowsBefore);
+    assertThat(countOf("context_packs")).isEqualTo(packRowsBefore);
   }
 
   /**
@@ -168,10 +193,13 @@ class ContextPackTextWidthBoundaryTest {
    * real PostgreSQL does differently with those declarations is outside what this can observe.
    *
    * <p>{@code context_pack_items.explanation} is deliberately absent. It is 500 wide like the other
-   * two, but nothing in the domain caps it and nothing should: it is fixed prose from {@code
-   * DefaultContextPolicyRules}, it is not user text, and redaction never touches it, so the growth
-   * mechanism these caps exist for cannot reach it. Asserting a domain constant against its width
-   * would advertise a guard that is not there.
+   * two, but no domain constant exists to compare it against: every explanation in the code today
+   * is a fixed literal and redaction never touches one, so the growth mechanism these caps exist
+   * for is not reached. That is a fact about today's callers and not a guarantee — {@code
+   * ContextAdmission.allow} takes arbitrary prose, so a 600-character explanation still constructs
+   * cleanly and still fails at the INSERT. See {@code ContextPack.MAX_TASK_REFERENCE_LENGTH} for
+   * what would make it a route worth capping. Asserting a constant here would advertise a guard
+   * that is not there.
    */
   @Test
   @DisplayName("The domain caps equal the column widths in the schema Flyway applied")

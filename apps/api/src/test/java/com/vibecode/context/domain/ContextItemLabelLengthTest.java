@@ -96,12 +96,22 @@ class ContextItemLabelLengthTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("UTF-16 code units");
 
-    // PostgreSQL counts VARCHAR(500) in code points and H2 counts it in code units, so the two
-    // disagree about this string — 250 against 500. The domain cap is the stricter of the two in
-    // every case, which is why a label it accepts fits both. That is stated here rather than left
-    // to be discovered when a test that passes on H2 is run against the real database.
-    assertThat(atTheCap.codePointCount(0, atTheCap.length()))
-        .isLessThanOrEqualTo(atTheCap.length());
+    // The two engines disagree about what VARCHAR(500) counts: PostgreSQL 16 counts code points,
+    // H2 2.3 counts UTF-16 code units. The cap picks the code-unit reading, which is the stricter
+    // of the two — and this is the one string where being stricter is visible, so it is the one
+    // worth asserting. 500 code points of supplementary-plane text is 1000 code units: a
+    // code-point cap would wave it through and H2 would then reject the row.
+    //
+    // An earlier version of this test asserted codePointCount <= length here, which is true of
+    // every Java String and passes with the cap deleted. It proved nothing. This one goes red the
+    // moment the check is removed.
+    String fiveHundredCodePoints = "😀".repeat(500);
+    assertThat(fiveHundredCodePoints.codePointCount(0, fiveHundredCodePoints.length()))
+        .isEqualTo(500);
+    assertThat(fiveHundredCodePoints).hasSize(1000);
+    assertThatThrownBy(() -> itemLabelled(fiveHundredCodePoints))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("has 1000");
   }
 
   @Test

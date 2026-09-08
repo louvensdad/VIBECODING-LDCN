@@ -15,9 +15,8 @@ import java.util.Comparator;
  * is therefore uncounted by {@link ContextBudget} on purpose — while still being redacted, still
  * capped at {@link #MAX_LABEL_LENGTH}, and still part of the canonical payload and the digest. See
  * {@link ContextBudget} for what would have to change if a label ever became something a provider
- * is sent. Whatever
- * separators or headings a later assembly step puts <em>between</em> items is that step's cost to
- * account for — this class does not know about them and does not pretend to.
+ * is sent. Whatever separators or headings a later assembly step puts <em>between</em> items is
+ * that step's cost to account for — this class does not know about them and does not pretend to.
  *
  * <p>Items are ordered by {@link #CANONICAL_ORDER} and by nothing else. This type deliberately does
  * not implement {@link Comparable}: the comparator's last key is the item id, so two items sharing
