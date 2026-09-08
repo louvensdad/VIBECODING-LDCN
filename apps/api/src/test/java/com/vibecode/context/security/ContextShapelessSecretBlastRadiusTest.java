@@ -117,10 +117,16 @@ class ContextShapelessSecretBlastRadiusTest extends ContextProbeFixture {
         "maven");
 
     for (BrainEntryType type : BrainEntryType.values()) {
+      // BOTH secrets go in the title as well as in the body. The shaped one is there for a reason
+      // worth stating: the label assertion in theShapedSecretDivergesAtTheRedactor was vacuous
+      // while only the body carried it -- no label in this fixture could contain SHAPED, so the
+      // assertion held whatever the redactor did to labels, and a label-only redaction bypass left
+      // it green with context_pack_items.label full of unredacted text. Now the label is a surface
+      // the shaped secret genuinely reaches, and the assertion is about redaction again.
       brain.add(
           projectId,
           type,
-          "Entry of type " + type + " with " + PREFIXED_SHAPELESS,
+          "Entry of type " + type + " with " + PREFIXED_SHAPELESS + " and " + PREFIXED_SHAPED,
           "Remembered as " + type + ": " + PREFIXED_SHAPELESS + " and " + PREFIXED_SHAPED,
           "test");
     }
@@ -223,14 +229,39 @@ class ContextShapelessSecretBlastRadiusTest extends ContextProbeFixture {
                 "%" + SHAPED + "%"))
         .isZero();
 
-    // Non-vacuous: the shaped secret was planted in the same rows as the shape-less one, and it is
-    // still sitting in them. Its absence above is redaction, not a fixture that forgot to write it.
+    assertThat(
+            countIn(
+                "SELECT COUNT(*) FROM context_pack_items WHERE pack_id = ? AND label LIKE ?",
+                compiled.packId(),
+                "%" + SHAPED + "%"))
+        .as("nor the label column, which is the surface a label-only redaction gap would fill")
+        .isZero();
+
+    // Non-vacuous, and in both columns. The shaped secret was planted in the same rows as the
+    // shape-less one -- in the body AND in the title -- and it is still sitting in both. Its
+    // absence above is redaction, not a fixture that forgot to write it. The title half of this is
+    // what stops the label assertions from being satisfied by a fixture that never had a shaped
+    // secret in a label to begin with.
     assertThat(
             countIn(
                 "SELECT COUNT(*) FROM brain_entries WHERE project_id = ? AND content LIKE ?",
                 projectId,
                 "%" + SHAPED + "%"))
         .as("the shaped secret is in the source records it was written to")
+        .isPositive();
+    assertThat(
+            countIn(
+                "SELECT COUNT(*) FROM brain_entries WHERE project_id = ? AND title LIKE ?",
+                projectId,
+                "%" + SHAPED + "%"))
+        .as("and in their titles, which is where the labels above were read from")
+        .isPositive();
+    assertThat(
+            countIn(
+                "SELECT COUNT(*) FROM context_pack_items WHERE pack_id = ? AND label LIKE ?",
+                compiled.packId(),
+                "%sk-****REDACTED****%"))
+        .as("so a label really did pass through the redactor and come out carrying the marker")
         .isPositive();
     assertThat(
             countIn(

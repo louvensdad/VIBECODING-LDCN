@@ -41,6 +41,17 @@ import org.springframework.beans.factory.annotation.Autowired;
  * <p>The root logger is raised to TRACE for the duration, which is why the class carries {@link
  * LoggerLevelIsolation} — an ArchUnit rule requires it, and without it the level would outlive this
  * class and change what every later test in the same JVM can see.
+ *
+ * <p><b>What the "something was logged" controls in this file do and do not establish.</b> The
+ * context module declares no logger of its own — there is not one {@code Logger} field or {@code
+ * log.} call anywhere under {@code com.vibecode.context} — so on the success path every captured
+ * event comes from Hibernate and Spring at TRACE. A control asserting the capture is non-empty
+ * therefore proves the instrument is live and nothing more: it cannot distinguish "the engine
+ * chose its words carefully" from "the engine said nothing". Both give the same guarantee today,
+ * and only the first would survive someone adding a debug line, which is why the leak checks are
+ * asserted rather than assumed. On the refusal and failure paths a {@code com.vibecode} logger
+ * does speak, and there the control names the line it expects — {@code ACCESS_DENIED} — rather
+ * than settling for a non-empty list.
  */
 @ExtendWith(LoggerLevelIsolation.class)
 class ContextCompilationLogLeakTest extends ContextProbeFixture {
@@ -78,6 +89,17 @@ class ContextCompilationLogLeakTest extends ContextProbeFixture {
     assertThat(hits(DENIED_MARKER))
         .as("a refused item's content must not reach a log either")
         .isEmpty();
+
+    // The control, and what it is worth. The appender received events, so the two emptiness checks
+    // above ran against a live capture rather than against an appender nothing ever reached. But
+    // be exact about what filled it: the context module declares no logger at all -- `grep -rn
+    // "Logger|log\." src/main/java/com/vibecode/context/` finds nothing -- so on the success path
+    // every event here comes from Hibernate and Spring at TRACE. This assertion therefore proves
+    // the instrument is live; it does not prove the engine chose its words carefully, because on
+    // this path the engine says nothing at all. Today the two give the same guarantee. Only the
+    // second would survive someone adding a debug line, which is exactly why the emptiness above
+    // is asserted rather than assumed. The refusal path below is where a com.vibecode logger
+    // genuinely speaks, and it is checked there against ACCESS_DENIED.
     assertThat(events()).as("the run must have logged something to search").isNotEmpty();
   }
 

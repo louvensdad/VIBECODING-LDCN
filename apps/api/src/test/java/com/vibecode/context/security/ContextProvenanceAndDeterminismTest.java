@@ -2,6 +2,7 @@ package com.vibecode.context.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.vibecode.brain.domain.BrainEntry;
 import com.vibecode.context.application.source.ContextReadWindow;
 import com.vibecode.context.domain.AdmittedContextItem;
 import com.vibecode.context.domain.CompiledContextPack;
@@ -9,9 +10,13 @@ import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextProvenance;
 import com.vibecode.context.domain.ContextSourceType;
 import com.vibecode.context.infrastructure.persistence.ContextPackRepository;
+import com.vibecode.task.domain.RiskLevel;
+import com.vibecode.task.domain.Task;
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -86,6 +91,11 @@ class ContextProvenanceAndDeterminismTest extends ContextProbeFixture {
     assertThat(rows).hasSize(compiled.admittedItems().size());
     for (Map<String, Object> row : rows) {
       assertThat(row.get("source_type")).isNotNull();
+      // Null-checked before it is stringified. String.valueOf(null) is the four characters "null",
+      // which isNotBlank() accepts, so the obvious one-liner would pass on a null column. V9
+      // declares source_id NOT NULL so this cannot happen today; the assertion is written to be
+      // right rather than to be right by accident.
+      assertThat(row.get("source_id")).as("source id column of an item row").isNotNull();
       assertThat(String.valueOf(row.get("source_id"))).isNotBlank();
       assertThat(row.get("recorded_at")).isNotNull();
       assertThat(UUID.fromString(String.valueOf(row.get("provenance_project_id"))))
@@ -119,6 +129,83 @@ class ContextProvenanceAndDeterminismTest extends ContextProbeFixture {
           .as("item %s names brain row %s", admitted.id(),
               admitted.item().provenance().sourceId())
           .isEqualTo(1);
+    }
+  }
+
+  @Test
+  @DisplayName("Every collector's source id resolves to a row of that source's own kind")
+  void everySourceIdResolvesToTheRecordItNames() {
+    // Read at the candidate level rather than off a compiled pack, deliberately. A pack holds only
+    // what policy admitted, and policy admits nine of the eleven source types in this fixture -- a
+    // check driven by admitted items alone would leave ROADMAP unverified forever and would go
+    // quiet on any type a future policy change stopped admitting. Every collector's output is
+    // resolved here; the admitted set is resolved again below, so both surfaces are covered.
+    List<ContextItem> candidateItems =
+        candidates.collect(planted.projectId(), ContextReadWindow.DEFAULT);
+    assertThat(candidateItems).as("nothing was collected, so nothing was resolved").isNotEmpty();
+
+    Set<ContextSourceType> resolvedTypes = EnumSet.noneOf(ContextSourceType.class);
+    for (ContextItem item : candidateItems) {
+      resolveOrFail(item);
+      resolvedTypes.add(item.provenance().sourceType());
+    }
+
+    CompiledContextPack compiled =
+        assembler.assemble(planted.projectId(), "CTX-09 resolution", GENEROUS);
+    assertThat(compiled.admittedItems()).isNotEmpty();
+    for (AdmittedContextItem admitted : compiled.admittedItems()) {
+      resolveOrFail(admitted.item());
+    }
+
+    assertThat(resolvedTypes)
+        .as(
+            "every source type the engine can produce must have been resolved against a real row."
+                + " A type missing here means a collector stopped producing items and this check"
+                + " went quiet about it, which is the failure mode the whole test exists to avoid.")
+        .containsExactlyInAnyOrderElementsOf(EnumSet.allOf(ContextSourceType.class));
+  }
+
+  @Test
+  @DisplayName("A blocked task's active-error item resolves too, which the base fixture cannot show")
+  void theTaskShapedActiveErrorResolvesAsWell() {
+    // The base fixture produces the analysis-shaped ACTIVE_ERRORS item but never the task-shaped
+    // one, because it blocks no task. Both shapes name different tables under the same source
+    // type, so the second one is exercised here rather than left to a reader's assumption.
+    Task blocked =
+        tasks.addTask(
+            planted.projectId(),
+            planted.phase().getId(),
+            2,
+            "A task that gets stuck",
+            "Blocked so that the task-shaped active error exists at all.",
+            RiskLevel.LOW);
+    tasks.start(planted.projectId(), blocked.getId());
+    tasks.markBlocked(planted.projectId(), blocked.getId());
+
+    List<ContextItem> taskShaped =
+        candidates.collect(planted.projectId(), ContextReadWindow.DEFAULT).stream()
+            .filter(item -> item.id().startsWith("active-error:task:"))
+            .toList();
+    assertThat(taskShaped)
+        .as("blocking a task must produce the task-shaped active error, or this test checks nothing")
+        .isNotEmpty();
+    for (ContextItem item : taskShaped) {
+      resolveOrFail(item);
+    }
+  }
+
+  @Test
+  @DisplayName("The resolution queries are counting: an id that names nothing resolves to zero")
+  void theResolutionCheckIsNotBlind() {
+    // Without this, a query with a typo in its WHERE clause -- or one that counted the whole table
+    // -- would report every item as resolvable and the check above would be a formality.
+    for (ContextItem item : candidates.collect(planted.projectId(), ContextReadWindow.DEFAULT)) {
+      Integer matching =
+          jdbc.queryForObject(
+              resolutionQueryFor(item), Integer.class, UUID.randomUUID(), planted.projectId());
+      assertThat(matching)
+          .as("the query behind %s must find nothing for an id that names no row", item.id())
+          .isZero();
     }
   }
 
@@ -172,6 +259,107 @@ class ContextProvenanceAndDeterminismTest extends ContextProbeFixture {
   }
 
   @Test
+  @DisplayName("Rewriting one record's text in place moves the digest, at unchanged size and shape")
+  void theDigestFollowsTheTextAndNotJustTheCount() {
+    // The sibling test above changes the state by ADDING a record, so the item count moves and the
+    // digest moves with it. That is a weaker property than it reads as: a digest taken over item
+    // lengths, or over labels alone, would still move. This one holds the item count, the row
+    // count, the ids, the labels, the versions and the character length all fixed and changes
+    // nothing but the text of one existing brain entry, so the only thing left that can move the
+    // digest is the content itself.
+    String before = "Deterministic body ALPHA_zqxw_610455 recorded exactly as written";
+    String after = "Deterministic body OMEGA_zqxw_610455 recorded exactly as written";
+    assertThat(after.length())
+        .as("the two bodies must be the same length or this test proves nothing about content")
+        .isEqualTo(before.length());
+
+    BrainEntry rewritten =
+        brain.add(
+            planted.projectId(),
+            com.vibecode.brain.domain.BrainEntryType.DECISION,
+            "A decision whose body is about to be rewritten",
+            before,
+            "test");
+    assertThat(rewritten.getId()).isNotNull();
+
+    CompiledContextPack first = assembler.assemble(planted.projectId(), "CTX-09 in-place", GENEROUS);
+    int brainRowsBefore = brainRowCount();
+
+    int rowsChanged =
+        jdbc.update(
+            "UPDATE brain_entries SET content = ? WHERE id = ? AND project_id = ?",
+            after,
+            rewritten.getId(),
+            planted.projectId());
+    assertThat(rowsChanged).as("the rewrite must have hit exactly the row it named").isEqualTo(1);
+
+    CompiledContextPack second =
+        assembler.assemble(planted.projectId(), "CTX-09 in-place", GENEROUS);
+
+    // Everything that is not the text is pinned, so the digest change below cannot be attributed
+    // to anything else.
+    assertThat(second.size()).as("the same items, in the same number").isEqualTo(first.size());
+    assertThat(idsOf(second)).as("the same items, under the same ids").isEqualTo(idsOf(first));
+    assertThat(labelsOf(second)).as("and under the same labels").isEqualTo(labelsOf(first));
+    assertThat(second.canonicalPayload().value().length())
+        .as("and at the same payload length, because the rewrite preserved the character count")
+        .isEqualTo(first.canonicalPayload().value().length());
+    assertThat(brainRowCount()).as("no row was added or removed").isEqualTo(brainRowsBefore);
+
+    // The digest first, on its own, before anything is said about the payload. Stated in this
+    // order so that a digest which stopped covering item text fails HERE, naming the digest,
+    // rather than being pre-empted by a payload assertion that would send the reader to the
+    // serialiser instead.
+    assertThat(second.packDigest())
+        .as(
+            "the digest must follow the text. Everything else about this pack is pinned above --"
+                + " same items, same ids, same labels, same row count, same character length --"
+                + " so an unchanged digest means the digest is covering something other than what"
+                + " the items actually say.")
+        .isNotEqualTo(first.packDigest());
+    assertThat(second.canonicalPayload())
+        .as("and the payload it is taken over must have moved with it")
+        .isNotEqualTo(first.canonicalPayload());
+  }
+
+  @Test
+  @DisplayName("The canonical payload carries a known item's exact content, not a stand-in for it")
+  void thePayloadIsTheTextItself() {
+    // Separate from the digest test on purpose. The digest could move for the right reason while
+    // the payload held something other than the text -- a hash, a length, a label -- and a reader
+    // who was told the payload is "a verbatim copy of every item's content" would be wrong. This
+    // asserts the whole content string, not a fragment of it, and the string is one no label in
+    // this fixture carries, so nothing but the content field can satisfy it.
+    String body = "Payload body VERBATIM_zqxw_884120 written once and read back whole";
+    brain.add(
+        planted.projectId(),
+        com.vibecode.brain.domain.BrainEntryType.DECISION,
+        "A decision whose title says nothing about its body",
+        body,
+        "test");
+
+    CompiledContextPack compiled =
+        assembler.assemble(planted.projectId(), "CTX-09 payload text", GENEROUS);
+
+    assertThat(labelsOf(compiled))
+        .as("no label may contain the body, or the assertion below could be satisfied by a label")
+        .noneMatch(label -> label.contains("VERBATIM_zqxw_884120"));
+    assertThat(compiled.admittedItems())
+        .as("the item carrying the body must have been admitted, or this test checks nothing")
+        .anyMatch(admitted -> admitted.item().content().equals(body));
+
+    assertThat(compiled.canonicalPayload().value())
+        .as("the payload is a verbatim copy of item content, which is what the digest covers")
+        .contains(body);
+
+    // Non-vacuous: a string of the same shape that no item carries is absent, so "contains" is
+    // discriminating rather than being satisfied by any long string at all.
+    assertThat(compiled.canonicalPayload().value())
+        .as("and text no item carries is not in it")
+        .doesNotContain("Payload body ABSENT_zqxw_884121 written once and read back whole");
+  }
+
+  @Test
   @DisplayName("A pack read back out of the database digests to what it digested when written")
   void theRoundTripDoesNotDisturbTheDigest() {
     CompiledContextPack written =
@@ -203,5 +391,92 @@ class ContextProvenanceAndDeterminismTest extends ContextProbeFixture {
 
   private static List<String> idsOf(CompiledContextPack pack) {
     return pack.admittedItems().stream().map(AdmittedContextItem::id).toList();
+  }
+
+  private static List<String> labelsOf(CompiledContextPack pack) {
+    return pack.admittedItems().stream().map(admitted -> admitted.item().label()).toList();
+  }
+
+  private int brainRowCount() {
+    return jdbc.queryForObject(
+        "SELECT COUNT(*) FROM brain_entries WHERE project_id = ?",
+        Integer.class,
+        planted.projectId());
+  }
+
+  /**
+   * Fails unless the item's source id names exactly one live row of the kind its source type
+   * claims, inside the project the pack describes.
+   */
+  private void resolveOrFail(ContextItem item) {
+    // Parsed here rather than inline so a source id that is not a key at all fails as a provenance
+    // problem naming the item, rather than as a bare "Invalid UUID string" out of the JDK.
+    UUID sourceId;
+    try {
+      sourceId = UUID.fromString(item.provenance().sourceId());
+    } catch (IllegalArgumentException notAKey) {
+      throw new AssertionError(
+          "item "
+              + item.id()
+              + " names source "
+              + item.provenance().sourceType()
+              + " "
+              + item.provenance().sourceId()
+              + ", which is not the primary key of any record, so there is nothing to check the"
+              + " item against",
+          notAKey);
+    }
+    Integer matching =
+        jdbc.queryForObject(
+            resolutionQueryFor(item), Integer.class, sourceId, planted.projectId());
+    assertThat(matching)
+        .as(
+            "item %s claims source %s %s; that must name exactly one row of this project",
+            item.id(), item.provenance().sourceType(), item.provenance().sourceId())
+        .isEqualTo(1);
+  }
+
+  /**
+   * The row a source type points at, scoped to the project every time.
+   *
+   * <p>Two source types are ambiguous on the type alone and are split on the item id, which is the
+   * only thing that distinguishes them: {@code ROADMAP} names either the roadmap or one of its
+   * phases, and {@code ACTIVE_ERRORS} names either a blocked task or a failing analysis. Every
+   * query is project-scoped -- through a join where the table carries no {@code project_id} -- so
+   * an id that exists under another owner does not count as resolved.
+   *
+   * <p>The switch is exhaustive over the enum with no default, so a source type added later will
+   * not compile until it is filed here. Silently passing an unrecognised one would be exactly the
+   * hole this method was written to close.
+   */
+  private static String resolutionQueryFor(ContextItem item) {
+    String phaseQuery =
+        "SELECT COUNT(*) FROM roadmap_phases p JOIN roadmaps r ON r.id = p.roadmap_id"
+            + " WHERE p.id = ? AND r.project_id = ?";
+    String analysisQuery =
+        "SELECT COUNT(*) FROM output_analysis_records a JOIN task_evidence e"
+            + " ON e.id = a.evidence_id WHERE a.id = ? AND e.project_id = ?";
+    return switch (item.provenance().sourceType()) {
+      // The computed state and the security summary have no row of their own; each names the
+      // project it was computed for, so the project row is what has to exist.
+      case PROJECT, CURRENT_STATE, SECURITY_SUMMARY ->
+          "SELECT COUNT(*) FROM projects WHERE id = ? AND id = ?";
+      case BRAIN_ENTRY -> "SELECT COUNT(*) FROM brain_entries WHERE id = ? AND project_id = ?";
+      case ROADMAP ->
+          item.id().startsWith("roadmap-phase:")
+              ? phaseQuery
+              : "SELECT COUNT(*) FROM roadmaps WHERE id = ? AND project_id = ?";
+      case CURRENT_PHASE -> phaseQuery;
+      case CURRENT_TASK -> "SELECT COUNT(*) FROM tasks WHERE id = ? AND project_id = ?";
+      case ACCEPTANCE_CRITERIA ->
+          "SELECT COUNT(*) FROM task_acceptance_criteria c JOIN tasks t ON t.id = c.task_id"
+              + " WHERE c.id = ? AND t.project_id = ?";
+      case LATEST_EVIDENCE -> "SELECT COUNT(*) FROM task_evidence WHERE id = ? AND project_id = ?";
+      case LATEST_OUTPUT_ANALYSIS -> analysisQuery;
+      case ACTIVE_ERRORS ->
+          item.id().startsWith("active-error:task:")
+              ? "SELECT COUNT(*) FROM tasks WHERE id = ? AND project_id = ?"
+              : analysisQuery;
+    };
   }
 }

@@ -3,12 +3,17 @@ package com.vibecode.context.security;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.tngtech.archunit.core.domain.Dependency;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,7 +25,18 @@ import org.junit.jupiter.api.Test;
  * does not name {@code VaultService}. That is the door. This is the rest of the building: the secret
  * material type, the reference type, the encryption service, the key provider, the provider-account
  * types that hold a credential id, and the cryptographic vocabulary — nonce, wrapped data key,
- * master key — under any route, transitive dependencies included.
+ * master key.
+ *
+ * <p><b>Direct and transitive are two different rules, and both are here.</b> ArchUnit's {@code
+ * dependOnClassesThat()} reads a class's own constant pool, so it sees the classes a context class
+ * names and nothing further. The rules below that use it are therefore checks on the door itself:
+ * no class in {@code ..context..} may name secret material, a secret reference, the vault services
+ * or a provider account. That is a real rule and it catches the obvious route, but it says nothing
+ * about a class in an allowed package that holds a {@code VaultService} and hands back a decrypted
+ * value — {@code context → someFacade → vault} satisfies every direct rule while being exactly the
+ * route that must not exist. {@link #contextCannotReachTheVaultByAnyRouteAtAll()} closes that: it
+ * walks the dependency graph from {@code ..context..} to fixpoint and asserts the vault is not in
+ * the reachable set at any depth.
  *
  * <p>Two of the rules below deliberately do not go through ArchUnit's dependency graph. {@code
  * SecretReference} is a record of two fields, so a method that took one and used only its {@code
@@ -39,7 +55,7 @@ class ContextSecretMaterialIsolationTest {
           .importPackages("com.vibecode");
 
   @Test
-  @DisplayName("Nothing in context depends on secret material, by name or by any route")
+  @DisplayName("No class in context names secret material directly")
   void contextNeverTouchesSecretMaterial() {
     noClasses()
         .that()
@@ -54,7 +70,7 @@ class ContextSecretMaterialIsolationTest {
   }
 
   @Test
-  @DisplayName("Nothing in context depends on a secret reference, so nothing can resolve one")
+  @DisplayName("No class in context names a secret reference directly")
   void contextNeverHoldsASecretReference() {
     noClasses()
         .that()
@@ -106,6 +122,112 @@ class ContextSecretMaterialIsolationTest {
             "a provider account exists to point at a stored credential; a module that cannot see"
                 + " the account cannot follow the pointer")
         .check(PRODUCTION_CLASSES);
+  }
+
+  @Test
+  @DisplayName("Nothing reachable from context, at any depth, is in the vault or a provider package")
+  void contextCannotReachTheVaultByAnyRouteAtAll() {
+    // The rule the four above cannot state. A direct-dependency check is defeated by one ordinary
+    // class in an allowed package: give it a VaultService field and a method returning a decrypted
+    // value, have a collector call that method, and every rule above stays green while vault
+    // plaintext walks into a context item. This closes the graph instead of checking one edge.
+    //
+    // The walk stays inside com.vibecode because that is what was imported: a class outside the
+    // imported packages arrives as a stub with no dependencies of its own, so the JDK and Spring
+    // are boundaries rather than an explosion. That is a property of the importer above, and if
+    // the import ever widens, this becomes a slow test rather than an unsound one.
+    Map<String, String> reachedVia = new LinkedHashMap<>();
+    Deque<JavaClass> pending = new ArrayDeque<>();
+    for (JavaClass inContext : PRODUCTION_CLASSES) {
+      if (inContext.getPackageName().startsWith("com.vibecode.context")) {
+        reachedVia.put(inContext.getName(), null);
+        pending.add(inContext);
+      }
+    }
+    assertThat(reachedVia)
+        .as("the walk must have started somewhere, or an empty closure would read as clean")
+        .hasSizeGreaterThan(30);
+
+    while (!pending.isEmpty()) {
+      JavaClass current = pending.poll();
+      for (Dependency dependency : current.getDirectDependenciesFromSelf()) {
+        // Base component type, so a String[] field or a List<SecretMaterial>[] is followed to the
+        // element rather than stopping at the array type.
+        JavaClass target = dependency.getTargetClass().getBaseComponentType();
+        String name = target.getName();
+        if (!name.startsWith("com.vibecode") || reachedVia.containsKey(name)) {
+          continue;
+        }
+        reachedVia.put(name, current.getName());
+        pending.add(target);
+      }
+    }
+
+    List<String> forbiddenRoutes = new ArrayList<>();
+    for (String reached : reachedVia.keySet()) {
+      if (reached.startsWith("com.vibecode.vault") || reached.startsWith("com.vibecode.provider")) {
+        forbiddenRoutes.add(routeTo(reached, reachedVia));
+      }
+    }
+    assertThat(forbiddenRoutes)
+        .as(
+            "a secret is a reference and a reference is never context, so no chain of calls of any"
+                + " length may lead from the context engine to the vault or to a provider account."
+                + " Each line below is the route, from the context class that starts it.")
+        .isEmpty();
+  }
+
+  @Test
+  @DisplayName("The closure walk really walks: from the vault, it reaches the classes it should")
+  void theClosureWalkIsNotBlind() {
+    // Without this, a walk that followed no edges at all — a typo in the traversal, an importer
+    // that returned stubs — would report a clean closure for every module in the application.
+    Map<String, String> reachedVia = closureFrom("com.vibecode.vault");
+    assertThat(reachedVia)
+        .as("the same walk, started at the vault, must reach past the vault's own package")
+        .anySatisfy((reached, ignored) -> assertThat(reached).doesNotStartWith("com.vibecode.vault"));
+
+    // And it must reach the vault from a module that legitimately uses it, or "context does not
+    // reach the vault" would be a statement about the walk rather than about context.
+    assertThat(closureFrom("com.vibecode.provider").keySet())
+        .as("the provider module holds credential references, so the walk finds the vault from it")
+        .anyMatch(reached -> reached.startsWith("com.vibecode.vault"));
+  }
+
+  /** Every {@code com.vibecode} class reachable from a package, mapped to the class that reached it. */
+  private static Map<String, String> closureFrom(String rootPackage) {
+    Map<String, String> reachedVia = new LinkedHashMap<>();
+    Deque<JavaClass> pending = new ArrayDeque<>();
+    for (JavaClass root : PRODUCTION_CLASSES) {
+      if (root.getPackageName().startsWith(rootPackage)) {
+        reachedVia.put(root.getName(), null);
+        pending.add(root);
+      }
+    }
+    while (!pending.isEmpty()) {
+      JavaClass current = pending.poll();
+      for (Dependency dependency : current.getDirectDependenciesFromSelf()) {
+        JavaClass target = dependency.getTargetClass().getBaseComponentType();
+        String name = target.getName();
+        if (!name.startsWith("com.vibecode") || reachedVia.containsKey(name)) {
+          continue;
+        }
+        reachedVia.put(name, current.getName());
+        pending.add(target);
+      }
+    }
+    return reachedVia;
+  }
+
+  /** The chain that led to a class, read back out of the breadth-first walk that found it. */
+  private static String routeTo(String reached, Map<String, String> reachedVia) {
+    StringBuilder route = new StringBuilder(reached);
+    String previous = reachedVia.get(reached);
+    while (previous != null) {
+      route.insert(0, previous + " -> ");
+      previous = reachedVia.get(previous);
+    }
+    return route.toString();
   }
 
   @Test
