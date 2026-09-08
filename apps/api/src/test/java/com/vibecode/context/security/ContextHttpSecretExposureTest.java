@@ -146,6 +146,27 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
   private static final String PREFIXED_BCRYPT = "SERVICE_AUTH_TOKEN=" + BCRYPT_SHAPELESS;
 
   /**
+   * The same secret with a single dollar sign on the front — a value that is spelled exactly like a
+   * shell variable read and is not one.
+   *
+   * <p>This was the residue the bcrypt fix left behind and declared irreducible: {@code
+   * isSafePlaceholder} could not tell {@code $Pa55phrase_zqxw_610455} from {@code $DB_PASSWORD}, so
+   * a value that happened to contain no character outside an identifier walked straight back out.
+   * The reasoning was right and the framing was wrong — a recognised secret key now outranks the
+   * placeholder exemption outright, so the value's shape is never consulted inside an assignment
+   * and there is nothing left to tell apart.
+   *
+   * <p>Planted the same way {@link #BCRYPT_SHAPELESS} is, and for the same reason: it ends with
+   * {@link #SHAPELESS}, so every measurement this class already makes covers it without a single
+   * assertion of its own. A bypass that needs its own test is a bypass that can be closed while the
+   * test that would have caught it is deleted.
+   */
+  private static final String DOLLAR_SHAPELESS = "$" + SHAPELESS;
+
+  /** The dollar-prefixed value under a prefixed key: the exact probe from the ruling. */
+  private static final String PREFIXED_DOLLAR = "APP_CLIENT_SECRET=" + DOLLAR_SHAPELESS;
+
+  /**
    * The tables that are the project's own records: the user wrote the secret into these and the
    * engine only reads them. Every other table is in the "must be clean" half by default, so a table
    * added later that starts holding pack content fails the sweep without anyone updating a list.
@@ -232,6 +253,15 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
         BrainEntryType.ARCHITECTURE,
         "Architecture " + PREFIXED_BCRYPT,
         "The service authenticates with " + PREFIXED_BCRYPT,
+        "test");
+    // And the dollar-prefixed value, planted on the same terms. Both of these are values that were
+    // exempted by their own first character at some point in this task's history; both now end with
+    // SHAPELESS, so the class's existing measurements are what catch them.
+    brain.add(
+        projectId,
+        BrainEntryType.DECISION,
+        "Decision " + PREFIXED_DOLLAR,
+        "We settled on " + PREFIXED_DOLLAR + " for the client",
         "test");
 
     outsider = identity.createUser("http-exposure-outsider");

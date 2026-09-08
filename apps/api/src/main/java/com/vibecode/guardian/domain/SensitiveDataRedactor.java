@@ -161,7 +161,26 @@ public final class SensitiveDataRedactor {
                   return "ghp_****REDACTED****";
                 });
 
-    // 5. Redact Key-Value assignments.
+    // 5. Redact Key-Value assignments — and here the placeholder exemption does not apply.
+    //
+    //    SECRET ASSIGNMENT > PLACEHOLDER EXEMPTION.
+    //
+    //    Once the key is recognised as a secret's key, the whole right-hand side goes, whatever it
+    //    looks like. The rule this replaces asked isSafePlaceholder about the value, which meant
+    //    asking whether $ABC is a variable read or a password — a question with no safe answer,
+    //    because $Pa55phrase_zqxw_610455 and $DB_PASSWORD are the same string to any pattern and a
+    //    caller controls which one they write. Every attempt to sharpen that heuristic is another
+    //    bypass with a rule written for it. The sensitive key already supplies the context, so the
+    //    shape of the value never has to be consulted here at all.
+    //
+    //    Outside an assignment nothing changed: isSafePlaceholder still decides for the Bearer,
+    //    sk- and ghp_ passes above and for the SEC-002 finding rule, and text that merely mentions
+    //    ${NAME} or <NAME> is still returned untouched.
+    //
+    //    The cost is real and was accepted rather than argued away: "password: ${DB_PASSWORD}" is
+    //    the correct way to write a Spring application.yml — the idiom that exists so the file
+    //    holds no secret — and it now redacts to "password: [REDACTED]". SecretAssignmentGrammarTest
+    //    pins that alongside the corpus measurement of what else this rewrites.
     //
     // Last on purpose: the value rules above have already replaced what they recognise with a
     // marker that names the kind of credential removed, and those markers are values this pattern
@@ -176,7 +195,7 @@ public final class SensitiveDataRedactor {
       String separator = kvMatcher.group(2);
       String val = kvMatcher.group(3);
 
-      if (isSafePlaceholder(val)) {
+      if (isAlreadyRedacted(val)) {
         kvMatcher.appendReplacement(sb, Matcher.quoteReplacement(kvMatcher.group(0)));
       } else {
         // Only the value is substituted. The key and everything between it and the value are the
@@ -192,6 +211,36 @@ public final class SensitiveDataRedactor {
     return result;
   }
 
+  /**
+   * Whether the value is a marker this redactor itself emitted.
+   *
+   * <p>The only thing that survives on the right-hand side of a secret assignment, and it is not a
+   * placeholder exemption — it is the fixed-point condition. Redacted text is stored and read back,
+   * and a second pass must not overwrite {@code sk-****REDACTED****} with a generic
+   * {@code [REDACTED]}: the shape-named marker is the only surviving evidence of what kind of
+   * credential was removed, and it is the control this project measured the whole finding against.
+   *
+   * <p>Not a bypass. The value has to be the marker itself, character for character, so all a
+   * caller can achieve by writing one is to publish the string {@code [REDACTED]}.
+   */
+  private static boolean isAlreadyRedacted(String value) {
+    if (value == null) {
+      return false;
+    }
+    String trimmed = value.trim();
+    return trimmed.equals("[REDACTED]")
+        || trimmed.equals("sk-****REDACTED****")
+        || trimmed.equals("ghp_****REDACTED****");
+  }
+
+  /**
+   * Whether a value is a reference to a secret rather than one.
+   *
+   * <p>This is the placeholder policy, and it is unchanged. What changed is <em>where</em> it
+   * applies: it decides for the Bearer, {@code sk-} and {@code ghp_} passes, and for the SEC-002
+   * finding rule, but it is no longer consulted on the right-hand side of a recognised secret
+   * assignment — see the note on step 5 of {@link #redact(String)}.
+   */
   public static boolean isSafePlaceholder(String value) {
     if (value == null || value.isBlank()) {
       return true;

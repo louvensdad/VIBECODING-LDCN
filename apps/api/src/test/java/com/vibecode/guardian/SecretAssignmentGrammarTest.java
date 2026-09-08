@@ -38,9 +38,13 @@ import org.junit.jupiter.api.Test;
  *       {@code password: ok} was already redacted, and still is — a colon after a bare secret word
  *       is treated as an assignment. That is over-redaction of a sort, it predates this work, and
  *       it is pinned below so that changing it is a decision rather than an accident.
- *   <li><b>Placeholders are exempt</b> via {@link SensitiveDataRedactor#isSafePlaceholder}, and
- *       that exemption is a policy this work was told not to alter. It is pinned in
- *       {@link Placeholders} against prefixed keys as well as bare ones.
+ *   <li><b>Placeholders were exempt everywhere</b> via {@link
+ *       SensitiveDataRedactor#isSafePlaceholder}, including on the right-hand side of a sensitive
+ *       key. That much has since changed by an explicit ruling — see {@link
+ *       SecretAssignmentPrecedence} — because the exemption required deciding from the shape of a
+ *       string whether {@code $ABC} was a variable read or a password, which is not decidable and
+ *       reopened this task's own finding. The policy itself is unchanged and still governs
+ *       everywhere outside an assignment; {@link Placeholders} pins that half.
  * </ul>
  *
  * <p>And the defect: <b>a prefix ending in an underscore hid the key entirely.</b> {@code \b} sits
@@ -317,14 +321,22 @@ class SecretAssignmentGrammarTest {
    * <em>start</em> of the key. The widened region is a secret word at the <em>end</em> of a longer
    * identifier, followed by a separator, and nothing tested it.
    *
-   * <p>It was then measured, line by line, over this repository's own text: 446 files, 42,006
+   * <p>It was then measured, line by line, over this repository's own text: 446 files, 42,248
    * non-blank lines, each line put through the redactor as it stood at 6d784fb and through the
-   * redactor as it stands now. Counting only files this task did not itself write — the four it
+   * redactor as it stands now. Counting only files this task did not itself write — the five it
    * touched are prose <em>about</em> the redactor and match it by construction, so including them
-   * would inflate the number with its own documentation — <b>24 lines are rewritten that were not
+   * would inflate the number with its own documentation — <b>26 lines are rewritten that were not
    * before, and 0 lines that were rewritten before are left alone now.</b> The widening is strictly
-   * one-directional: nothing stopped being redacted. Five of the 24 are in shipped code rather than
-   * tests, and none of the 24 contains a secret.
+   * one-directional: nothing stopped being redacted. None of the 26 contains a secret.
+   *
+   * <p>The 26 come from two separate decisions and it is worth keeping them apart. <b>23</b> are
+   * the widened key pattern, the subject of this class: source code whose identifier ends in a
+   * secret word. <b>3</b> were added afterwards by the precedence ruling in {@link
+   * SecretAssignmentPrecedence}, and all three are the configuration-template idiom —
+   * {@code application.yml}'s {@code password: ${DATABASE_PASSWORD:…}}, {@code compose.yml}'s
+   * {@code POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-…}}, and an {@code OPENAI_API_KEY=${OPENAI_API_KEY}}
+   * in a test fixture. That was the cost predicted before the change was made, it is the whole of
+   * the cost in this repository, and it is pinned in that class rather than left in a comment.
    *
    * <p>The cases below are the real ones, copied verbatim from that scan. They are pinned as
    * {@code isEqualTo} on the mangled output rather than described in a comment, for the same reason
@@ -463,35 +475,51 @@ class SecretAssignmentGrammarTest {
   class Placeholders {
 
     /**
-     * SEC-RED-02 was told not to change this policy silently. It is not changed: the exemption is
-     * decided by {@link SensitiveDataRedactor#isSafePlaceholder} on the value, and the fix touches
-     * the key half of the pattern only. What is new is that the exemption now applies under a
-     * prefixed key too — before, those lines were exempt for the wrong reason, which was that the
-     * key was never recognised at all.
+     * <b>The placeholder policy, where it still applies: outside an assignment.</b>
+     *
+     * <p>This test is deliberately kept separate from {@link
+     * SecretAssignmentPrecedence#theRightHandSideOfASecretAssignmentIsAlwaysRedacted}, and the
+     * reason matters more now than it did when the two agreed: the rules genuinely diverge. Inside
+     * an assignment the placeholder exemption no longer runs at all. Outside one it is untouched,
+     * and it has to be possible to see that a change to the first did not quietly empty the second.
+     * A single test covering both could pass by having deleted the policy.
+     *
+     * <p>Every enumerated form is asserted against {@link SensitiveDataRedactor#isSafePlaceholder}
+     * directly, because that method is the policy — it is what the Bearer rule, the {@code sk-}
+     * rule, the {@code ghp_} rule and the SEC-002 finding rule all consult. None of those changed.
      */
     @Test
-    @DisplayName("A placeholder value is left alone, under a bare key and under a prefixed one")
+    @DisplayName("Outside an assignment the placeholder policy is exactly what it was")
     void placeholdersSurvive() {
-      assertUntouched("PASSWORD=${DB_PASSWORD}");
-      assertUntouched("DB_PASSWORD=${DB_PASSWORD}");
-      assertUntouched("VIBECODE_DB_PASSWORD=${DB_PASSWORD}");
-      assertUntouched("API_KEY=${OPENAI_API_KEY}");
-      assertUntouched("OPENAI_API_KEY=${OPENAI_API_KEY}");
-      assertUntouched("API_KEY=<YOUR_API_KEY>");
-      assertUntouched("OPENAI_API_KEY=<YOUR_API_KEY>");
-      assertUntouched("PASSWORD=[REDACTED]");
-      assertUntouched("VIBECODE_DB_PASSWORD=[REDACTED]");
-      assertUntouched("ACCESS_TOKEN=REPLACE_ME");
-      assertUntouched("SERVICE_AUTH_TOKEN=CHANGE_ME");
-      assertUntouched("PASSWORD=$DB_PASSWORD");
-      assertUntouched("VIBECODE_DB_PASSWORD=$DB_PASSWORD");
-      assertUntouched("PASSWORD=$db.password");
+      // The forms, against the method that decides. Unchanged, and this is the assertion that says
+      // so — not an absence of redaction somewhere, which could have other causes.
+      for (String form :
+          new String[] {
+            "${DB_PASSWORD}", "$DB_PASSWORD", "$db.password", "<YOUR_API_KEY>", "<YOUR_KEY>",
+            "[REDACTED]", "REPLACE_ME", "CHANGE_ME", "TODO", "null", "undefined", "***",
+            "sk-****REDACTED****", "ghp_****REDACTED****",
+          }) {
+        assertThat(SensitiveDataRedactor.isSafePlaceholder(form))
+            .as("isSafePlaceholder(%s)", form)
+            .isTrue();
+      }
+
+      // And in text, where no sensitive key names them. A document that mentions a placeholder is
+      // not a document that leaks one, and it must not start being rewritten.
+      assertUntouched("Set it to ${DB_PASSWORD} before you start.");
+      assertUntouched("The value $DB_PASSWORD is read from the environment.");
+      assertUntouched("Replace <YOUR_API_KEY> with the key from the dashboard.");
+      assertUntouched("docker run -e DATABASE_URL --env-file .env myimage");
+
+      // The other rules that consult the policy still consult it. A Bearer token spelled as an
+      // interpolation is a reference to a credential, not one, and there is no sensitive key
+      // assigning it — so the precedence rule below never applies here.
       assertUntouched("Authorization: Bearer $ACCESS_TOKEN");
-      assertUntouched("PASSWORD=***");
+      assertUntouched("Authorization: Bearer ${ACCESS_TOKEN}");
     }
 
     /**
-     * The exemption that reopened the finding, and the narrowing that closes it.
+     * The exemption that reopened the finding, and the narrowing that was the first attempt at it.
      *
      * <p>{@code isSafePlaceholder} exempted any value beginning with {@code $}. The key rule now
      * reaches a prefixed assignment, and then handed it straight back: <b>every bcrypt hash begins
@@ -504,29 +532,19 @@ class SecretAssignmentGrammarTest {
      * <p>The narrowing keeps the intent and drops the over-reach: the exemption was always for
      * interpolation syntax, and {@code startsWith("$")} was an over-broad way of writing it. A
      * {@code $} followed by an identifier is a variable read; a {@code $} followed by anything at
-     * all is not.
+     * all is not. That is still the rule the Bearer, {@code sk-} and {@code ghp_} passes and the
+     * SEC-002 finding rule consult, so it is still worth having — a bearer token spelled
+     * {@code $2b$12$…} is not exempt either.
      *
-     * <p>Everything the architect enumerated stays exempt, and that is asserted above rather than
-     * asserted here, so this test cannot pass by having quietly emptied the policy. What stops
-     * being exempt, besides a hash, is shell command substitution — {@code $(cat /run/secrets/db)}
-     * is now redacted. That is an accepted cost in the safe direction: it removes something that
-     * was not a secret, where the old rule published something that was.
+     * <p><b>It was not, on its own, enough.</b> Narrowing left a residue that this class pinned as
+     * irreducible: {@code PASSWORD=$Pa55phrase_zqxw_610455} stayed exempt, because nothing in the
+     * text distinguishes it from {@code $DB_PASSWORD}. The reasoning was sound and the conclusion
+     * was wrong, because the question was asked one level too low — see {@link
+     * SecretAssignmentPrecedence}, which removes the need to ask it at all.
      */
     @Test
-    @DisplayName("A value that merely begins with $ is not a placeholder: bcrypt is redacted")
+    @DisplayName("A value that merely begins with $ is not a placeholder anywhere")
     void aDollarSignAloneIsNotAPlaceholder() {
-      assertRedacted("VIBECODE_DB_PASSWORD=$2b$12$" + VALUE);
-      assertRedacted("PASSWORD=$2b$12$" + VALUE);
-      assertRedacted("\"password\": \"$2y$10$" + VALUE + "\"");
-      assertRedacted("PASSWORD=$1$salt$hash");
-      assertRedacted("PASSWORD=$argon2id$v=19$m=65536");
-      // The residue, pinned rather than pretended away: a value that is a dollar sign followed by
-      // something spelled exactly like a shell variable is still exempt, because nothing in the
-      // text distinguishes $Pa55phrase_zqxw_610455 from $DB_PASSWORD. That is the irreducible cost
-      // of exempting interpolation at all, and it is far smaller than "anything after a $": it now
-      // requires the secret to contain no character outside an identifier, where before it required
-      // only that the secret start with one.
-      assertUntouched("PASSWORD=$" + VALUE);
       assertThat(SensitiveDataRedactor.isSafePlaceholder("$2b$12$KIXQ8fQzqxw610455mnopABCDEF"))
           .as("a bcrypt hash is not a placeholder")
           .isFalse();
@@ -539,16 +557,129 @@ class SecretAssignmentGrammarTest {
           .as("command substitution is no longer exempt; it is over-redacted, which is the safe way"
               + " to be wrong")
           .isFalse();
+      // Where it still bites: the value rules, outside any assignment. A bearer token that is an
+      // interpolation is passed through; one that is not is removed.
+      assertUntouched("Authorization: Bearer $ACCESS_TOKEN");
+      assertThat(redact("Authorization: Bearer myauthtoken1234567890"))
+          .isEqualTo("Authorization: Bearer [REDACTED]");
+      // Measured, not assumed: a bcrypt hash never reaches the Bearer rule at all, because that
+      // pattern's character class has no "$" in it. So the narrowing above is load-bearing for the
+      // sk-/ghp- passes and for the SEC-002 finding rule, and not for this one.
+      assertUntouched("Authorization: Bearer $2b$12$KIXQ8fQzqxw610455mnopABCDEF");
     }
 
+  }
+
+  // ---------------------------------------------------------------------------------- precedence
+
+  /**
+   * <b>{@code SECRET ASSIGNMENT > PLACEHOLDER EXEMPTION}.</b>
+   *
+   * <p>Once the key is recognised as a secret's key, the entire right-hand side is removed,
+   * whatever it looks like. The placeholder exemption does not run inside an assignment at all.
+   *
+   * <p><b>Why this is not simply a wider redaction.</b> The version before it tried to decide, from
+   * the shape of the value, whether {@code $ABC} was a variable read or a password. That question
+   * has no safe answer: {@code $Pa55phrase_zqxw_610455} and {@code $DB_PASSWORD} are the same
+   * string as far as any pattern can tell, and this class pinned that as an irreducible limitation.
+   * It is not irreducible; it was asked at the wrong level. <b>The sensitive key already supplies
+   * the context, so the shape of the value never needs to be consulted.</b> A heuristic that tried
+   * to tell the two apart would be a bypass with a rule written for it, and there is no version of
+   * that heuristic that a caller who controls the value cannot walk through.
+   *
+   * <p><b>What this costs, measured and accepted.</b> {@code password: ${DB_PASSWORD}} is the
+   * correct way to write a Spring {@code application.yml} — the idiom the framework recommends
+   * precisely so that the file contains no secret — and it now redacts to
+   * {@code password: [REDACTED]}. The corpus differential is in {@link WidenedRegion}, updated for
+   * this change, and the configuration-template cases are pinned below in
+   * {@link #theConfigurationTemplateIdiomIsMangledAndThatIsTheTrade}. It is a real cost, it was
+   * accepted deliberately in exchange for closing the bypass, and it is written down here rather
+   * than left to arrive as a surprise in a diff.
+   *
+   * <p><b>What it does not touch:</b> anything outside an assignment. See {@link
+   * Placeholders#placeholdersSurvive}, which is kept as a separate test for exactly this reason —
+   * the two rules now genuinely diverge, and it must remain possible to see that changing one did
+   * not empty the other.
+   */
+  @Nested
+  @DisplayName("Precedence: a secret assignment outranks the placeholder exemption")
+  class SecretAssignmentPrecedence {
+
     @Test
-    @DisplayName("Redaction is idempotent: its own output is a fixed point")
-    void redactionIsIdempotent() {
-      // The property that makes the placeholder policy safe under a widened key pattern. Without
-      // it, a second pass over already-redacted text would replace the shape-named markers with
-      // generic ones, or grow the text again against the length caps.
+    @DisplayName("The right-hand side of a secret assignment is redacted whatever it looks like")
+    void theRightHandSideOfASecretAssignmentIsAlwaysRedacted() {
+      // The probe from the ruling first: the case the previous version declared irreducible.
+      assertThat(redact("PASSWORD=$" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+
+      // Asserted as a map so a failure names every spelling that routed around the rule rather
+      // than stopping at the first, and so the list reads as the closed set it is meant to be.
+      Map<String, String> redacted = new LinkedHashMap<>();
+      String[] inputs = {
+        "PASSWORD=$DB_PASSWORD",
+        "PASSWORD=${DB_PASSWORD}",
+        "PASSWORD=$" + VALUE,
+        "DB_PASSWORD=$VALUE",
+        "VIBECODE_DB_PASSWORD=$VALUE",
+        "API_KEY=$KEY",
+        "OPENAI_API_KEY=$KEY",
+        "CLIENT_SECRET=$SECRET_VALUE",
+      };
+      for (String input : inputs) {
+        redacted.put(input, redact(input));
+      }
+      assertThat(redacted)
+          .allSatisfy(
+              (input, output) ->
+                  assertThat(output)
+                      .as("[%s] must lose its right-hand side", input)
+                      .endsWith("=[REDACTED]"));
+      assertThat(redacted).hasSize(inputs.length);
+
+      // The rest of the enumerated placeholder vocabulary, which is exempt outside an assignment
+      // and is not exempt inside one. Every one of these was returned untouched before the ruling.
+      assertThat(redact("API_KEY=<YOUR_API_KEY>")).isEqualTo("API_KEY=[REDACTED]");
+      assertThat(redact("ACCESS_TOKEN=REPLACE_ME")).isEqualTo("ACCESS_TOKEN=[REDACTED]");
+      assertThat(redact("SERVICE_AUTH_TOKEN=CHANGE_ME")).isEqualTo("SERVICE_AUTH_TOKEN=[REDACTED]");
+      assertThat(redact("PASSWORD=***")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=TODO")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("\"clientSecret\": \"${CLIENT_SECRET}\""))
+          .isEqualTo("\"clientSecret\": \"[REDACTED]\"");
+
+      // And the bcrypt family, which is now closed twice over — by the narrowed placeholder rule
+      // and by precedence, either of which would be enough on its own.
+      assertRedacted("VIBECODE_DB_PASSWORD=$2b$12$" + VALUE);
+      assertRedacted("PASSWORD=$2b$12$" + VALUE);
+      assertRedacted("\"password\": \"$2y$10$" + VALUE + "\"");
+      assertRedacted("PASSWORD=$1$salt$hash");
+      assertRedacted("PASSWORD=$argon2id$v=19$m=65536");
+    }
+
+    /**
+     * The one exemption that survives inside an assignment, and why it is not a placeholder rule.
+     *
+     * <p>{@code [REDACTED]}, {@code sk-****REDACTED****} and {@code ghp_****REDACTED****} are this
+     * redactor's own output, not values a caller wrote. Passing them through is the fixed-point
+     * condition: without it a second pass over stored text would overwrite the shape-named markers
+     * with the generic one and destroy the only remaining evidence of what kind of credential was
+     * removed — which is the control the whole finding was measured against.
+     *
+     * <p>It is not a bypass. The value has to be the marker <em>itself</em>, character for
+     * character, so the most a caller can achieve by writing it is to publish the string
+     * {@code [REDACTED]}.
+     */
+    @Test
+    @DisplayName("The redactor's own markers pass through, which is idempotence and not exemption")
+    void theRedactorsOwnMarkersAreNotOverwritten() {
+      assertUntouched("PASSWORD=[REDACTED]");
+      assertUntouched("VIBECODE_DB_PASSWORD=[REDACTED]");
+      assertUntouched("OPENAI_API_KEY=sk-****REDACTED****");
+      assertUntouched("GITHUB_TOKEN=ghp_****REDACTED****");
+
+      // The fixed point, over the inputs the finding actually travelled on.
       String[] inputs = {
         "VIBECODE_DB_PASSWORD=" + VALUE,
+        "PASSWORD=$" + VALUE,
+        "PASSWORD=${DB_PASSWORD}",
         "OPENAI_API_KEY=sk-proj-Kd8fQzqxw610456mnop",
         "GITHUB_TOKEN=ghp_testingsynthetictokenvalue1234567890",
         "Authorization: Bearer myauthtoken1234567890",
@@ -559,6 +690,37 @@ class SecretAssignmentGrammarTest {
         String once = redact(input);
         assertThat(redact(once)).as("redact is not a fixed point for [%s]", input).isEqualTo(once);
       }
+    }
+
+    /**
+     * The cost, pinned where a reader will meet it.
+     *
+     * <p>These are the correct, documented ways to keep a secret out of a configuration file. Under
+     * the ruling they are rewritten anyway, because the alternative is a value-shape heuristic and
+     * a caller controls the value. Recorded so that whoever proposes to exempt them again sees
+     * first what the exemption used to let through.
+     */
+    @Test
+    @DisplayName("COST: the configuration-template idiom is mangled, and that is the trade")
+    void theConfigurationTemplateIdiomIsMangledAndThatIsTheTrade() {
+      // The two lines in this repository, copied verbatim. They are the entire measured cost of the
+      // precedence ruling here: three lines, of which these are the two in shipped configuration.
+      assertThat(redact("    password: ${DATABASE_PASSWORD:vibecode_local_only}"))
+          .as("apps/api/src/main/resources/application.yml, line 7")
+          .isEqualTo("    password: [REDACTED]");
+      assertThat(redact("      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vibecode_local_only}"))
+          .as("compose.yml, line 8")
+          .isEqualTo("      POSTGRES_PASSWORD: [REDACTED]");
+
+      assertThat(redact("    password: ${DB_PASSWORD}")).isEqualTo("    password: [REDACTED]");
+      assertThat(redact("    password: ${VIBECODE_DB_PASSWORD:changeme}"))
+          .isEqualTo("    password: [REDACTED]");
+      assertThat(redact("OPENAI_API_KEY=${OPENAI_API_KEY}")).isEqualTo("OPENAI_API_KEY=[REDACTED]");
+      assertThat(redact("      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"))
+          .isEqualTo("      - POSTGRES_PASSWORD=[REDACTED]");
+      // A line that names a placeholder without assigning it to a sensitive key is untouched, which
+      // is what keeps this a precedence rule rather than a hunt for dollar signs.
+      assertUntouched("    url: jdbc:postgresql://${DB_HOST}:5432/vibecode");
     }
   }
 
