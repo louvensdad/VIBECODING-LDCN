@@ -19,3 +19,6 @@ apps/web/out/
 *.iml
 Thumbs.db
 .DS_Store
+
+# Worktrees de workers. Cada um é um checkout próprio; nada aqui pertence ao repositório.
+worktrees/
