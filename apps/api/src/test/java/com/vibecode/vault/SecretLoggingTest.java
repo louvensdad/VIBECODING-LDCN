@@ -35,7 +35,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 @SpringBootTest
 class SecretLoggingTest {
 
-  private static final String CREDENTIAL = "vc_anthropic_test_secret_928475";
+  // Shared with ProviderAccountApiTest and VaultStorageTest on purpose: that class forbids this
+  // credential's last four characters in every audit row, which is the only thing standing between
+  // a masked-suffix leak of this fixture and nobody noticing. Non-hex for the same reason it is
+  // there — the corpus these fragments are hunted in is made of identifiers.
+  private static final String CREDENTIAL = "vc_anthropic_test_secret_92zqxw";
 
   @Autowired ProviderAccountService accounts;
   @Autowired TestIdentity testIdentity;
@@ -80,7 +84,7 @@ class SecretLoggingTest {
     accounts.storeCredential(account.getId(), material());
     accounts.rotateCredential(
         account.getId(),
-        SecretMaterial.of("vc_anthropic_test_secret_928476".getBytes(StandardCharsets.UTF_8)));
+        SecretMaterial.of("vc_anthropic_test_secret_92zqxy".getBytes(StandardCharsets.UTF_8)));
     accounts.removeCredential(account.getId());
 
     assertNothingLeaked();
@@ -125,7 +129,7 @@ class SecretLoggingTest {
       assertThat(line).doesNotContain(CREDENTIAL);
       // Not a fragment of it either.
       assertThat(line).doesNotContain(CREDENTIAL.substring(0, 12));
-      assertThat(line).doesNotContain("928475").doesNotContain("928476");
+      assertThat(line).doesNotContain("92zqxw").doesNotContain("92zqxy");
     }
   }
 }

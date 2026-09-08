@@ -217,9 +217,15 @@ class ProviderAccountApiTest {
 
     // Every row in the table, not only the ones this test wrote: the class commits, so the sweep
     // covers whatever else the suite recorded, and a credential fragment surfacing in someone
-    // else's audit row is exactly as bad as it surfacing here. That breadth is only affordable
-    // while the forbidden suffix cannot appear by accident, so the fixture's shape is pinned here
-    // rather than left to a comment.
+    // else's audit row is exactly as bad as it surfacing here. It is also the only thing covering
+    // the vault tests' credential, which shares this literal for that reason — moving it here
+    // without moving it there would quietly retire that cover.
+    //
+    // The breadth is affordable only while the forbidden suffix cannot turn up by coincidence, so
+    // the fixture's shape is pinned rather than left to a comment. This rules out one specific
+    // hazard and not collisions in general: a fully hex-legal suffix, which the UUIDs filling every
+    // target_id in this table would eventually contain. A suffix like "tion" or "wner" would pass
+    // this guard and still collide happily with the event and target names alongside them.
     assertThat(CREDENTIAL.substring(CREDENTIAL.length() - 4))
         .as("a hex-legal suffix would collide with the UUIDs in this table")
         .doesNotMatch("[0-9a-fA-F]{4}");

@@ -41,8 +41,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @SpringBootTest
 class VaultStorageTest {
 
-  private static final String CREDENTIAL = "vc_anthropic_test_secret_928475";
-  private static final String ROTATED = "vc_anthropic_test_secret_928476";
+  // Deliberately the same literals ProviderAccountApiTest uses. That test sweeps every audit row
+  // for this credential's last four characters, so sharing the value is what makes a masked-suffix
+  // leak of *this* fixture caught by anything at all. The suffix is outside the hexadecimal
+  // alphabet because the rows it is swept against are full of UUIDs.
+  private static final String CREDENTIAL = "vc_anthropic_test_secret_92zqxw";
+  private static final String ROTATED = "vc_anthropic_test_secret_92zqxy";
 
   /** The same synthetic key the test configuration uses. */
   private static final String TEST_KEY =
