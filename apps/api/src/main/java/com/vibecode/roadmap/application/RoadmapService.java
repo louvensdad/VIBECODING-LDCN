@@ -84,10 +84,25 @@ public class RoadmapService {
    *
    * <p>Positions are rewritten as a contiguous 1..n sequence rather than patched in place, so no
    * reorder can leave a gap or a duplicate behind.
+   *
+   * <p>Asking for the position a phase already holds is a successful no-op, not a client error: the
+   * caller wanted an order and got it, and refusing would be hostile to someone doing nothing wrong.
+   * It returns before any mutation, so neither the roadmap's instant nor the phase's moves — see the
+   * guard below for why that matters more than it looks.
    */
   public List<RoadmapPhase> movePhase(UUID projectId, UUID phaseId, int newPosition) {
     projects.requireWritable(projectId);
     RoadmapPhase phase = requirePhase(projectId, phaseId);
+    if (phase.getPosition() == newPosition) {
+      // Nothing changed, so nothing may be recorded as having changed. Without this the renumbering
+      // below would rewrite every position to the value it already had and then stamp the roadmap,
+      // making the plan look freshly observed to every later context pack — the false freshness
+      // ContextProvenance exists to prevent. Before any mutation rather than after, because
+      // RoadmapPhase.moveTo stamps unconditionally: returning later would close the roadmap's side
+      // and leave the same lie leaking through the phase rows. The position needs no range check
+      // here — it is one a phase currently holds, so it is in range by construction.
+      return phases.findByRoadmapIdOrderByPosition(phase.getRoadmapId());
+    }
     Roadmap roadmap = require(projectId);
     List<RoadmapPhase> ordered =
         new java.util.ArrayList<>(phases.findByRoadmapIdOrderByPosition(phase.getRoadmapId()));

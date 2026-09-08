@@ -6,6 +6,7 @@ import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextKind;
 import com.vibecode.context.domain.ContextSourceType;
 import com.vibecode.roadmap.domain.RoadmapPhase;
+import com.vibecode.task.domain.RiskLevel;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -66,11 +67,11 @@ class RoadmapContextCollectorTest extends CollectorTestSupport {
     assertThat(after.content()).isNotEqualTo(before.content());
     assertThat(after.content()).contains("4. Launch");
 
-    // Therefore the instant it claims to have been observed at has to move too. Dating the outline
-    // at Roadmap.updatedAt does not: that column is written once in the constructor and never
-    // again, so the item would report the moment an empty roadmap row was inserted and go on
-    // reporting it however much the plan changed underneath. An item that can never be seen as
-    // stale is worse than one that is missing.
+    // Therefore the instant it claims to have been observed at has to move too. Adding a phase is a
+    // structural change, so Roadmap.updatedAt moves for this one on its own — that column used to
+    // be written once in the constructor and never again, and no longer is. It still cannot carry
+    // the outline by itself: it moves for structural changes only, and the outline also prints each
+    // phase's title and status. The case where that distinction bites has its own test below.
     assertThat(after.provenance().recordedAt()).isAfter(before.provenance().recordedAt());
   }
 
@@ -95,6 +96,35 @@ class RoadmapContextCollectorTest extends CollectorTestSupport {
     // Observed at T2 and not at T1: the rule is the maximum over roadmap.updatedAt and every phase
     // that contributed a line, not the roadmap's own instant and not the newest phase alone.
     assertThat(outline.provenance().recordedAt()).isEqualTo(t2).isNotEqualTo(t1).isAfter(t1);
+  }
+
+  @Test
+  @DisplayName("A phase changing under an unchanged roadmap still moves the outline's instant")
+  void outlineIsObservedAtAPhaseThatChangedWithoutTheRoadmap() {
+    identity.createAndAuthenticate("RoadmapPhaseFreshness");
+    var project = projects.create("PhaseFreshness", "", "An idea and a plan");
+    RoadmapPhase phase = roadmaps.addPhase(project.getId(), 1, "Foundations", null);
+    Instant roadmapAt = roadmaps.require(project.getId()).getUpdatedAt();
+    Instant before = outlineOf(project.getId()).provenance().recordedAt();
+
+    // Adding a task makes the status calculator recompute the phase's status. The phase row moves;
+    // the shape of the plan does not, so Roadmap.updatedAt deliberately stays where it is.
+    tasks.addTask(
+        project.getId(), phase.getId(), 1, "Do the work", "Inside the phase", RiskLevel.LOW);
+
+    Instant phaseAt = roadmaps.requirePhase(project.getId(), phase.getId()).getUpdatedAt();
+    assertThat(roadmaps.require(project.getId()).getUpdatedAt())
+        .as("the roadmap's own instant must not have moved, or this case proves nothing")
+        .isEqualTo(roadmapAt);
+    assertThat(phaseAt).as("the phase must actually have changed").isAfter(roadmapAt);
+
+    ContextItem outline = outlineOf(project.getId());
+    // The outline prints each phase's status, so its text changed; its instant has to follow. This
+    // is the half of the maximum that roadmap.updatedAt alone cannot cover: every case built by
+    // adding a phase has the roadmap's own instant dominating, because addPhase stamps it after the
+    // phase row is written. Only a phase changing on its own separates the rule from that shortcut.
+    assertThat(outline.content()).contains(phase.getTitle());
+    assertThat(outline.provenance().recordedAt()).isEqualTo(phaseAt).isAfter(before);
   }
 
   private ContextItem outlineOf(Fixture fixture) {

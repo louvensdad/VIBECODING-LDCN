@@ -9,6 +9,7 @@ import com.vibecode.support.TestIdentity;
 import com.vibecode.task.application.TaskService;
 import com.vibecode.task.domain.RiskLevel;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,6 +72,29 @@ class RoadmapFreshnessTest {
     roadmaps.movePhase(projectId, second.getId(), 1);
 
     assertThat(roadmaps.require(projectId).getUpdatedAt()).isAfter(beforeMove);
+  }
+
+  @Test
+  @DisplayName("moving a phase to the position it already holds changes nothing, and says nothing")
+  void aNoOpMoveMovesNeitherInstant() {
+    UUID projectId = newPlannedProject("Sem movimento");
+    RoadmapPhase first = roadmaps.addPhase(projectId, 1, "Foundations", null);
+    roadmaps.addPhase(projectId, 2, "Delivery", null);
+    Instant roadmapBefore = roadmaps.require(projectId).getUpdatedAt();
+    Instant phaseBefore = roadmaps.requirePhase(projectId, first.getId()).getUpdatedAt();
+
+    // A caller asking for the position a phase already holds is not making a mistake, so this
+    // succeeds. It just does not do anything, and nothing that did not happen may be recorded:
+    // an instant that moves for a no-op is exactly the false freshness ContextProvenance exists to
+    // prevent, and it would make the roadmap outline read as newly observed in every later pack.
+    List<RoadmapPhase> after = roadmaps.movePhase(projectId, first.getId(), 1);
+
+    assertThat(after).extracting(RoadmapPhase::getTitle).containsExactly("Foundations", "Delivery");
+    assertThat(roadmaps.require(projectId).getUpdatedAt()).isEqualTo(roadmapBefore);
+    // The phase too: RoadmapPhase.moveTo stamps unconditionally, so the guard has to sit before
+    // any mutation or the false freshness merely leaks through the phase row instead.
+    assertThat(roadmaps.requirePhase(projectId, first.getId()).getUpdatedAt())
+        .isEqualTo(phaseBefore);
   }
 
   @Test
