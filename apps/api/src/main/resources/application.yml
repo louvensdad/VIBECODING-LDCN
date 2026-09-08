@@ -12,22 +12,33 @@ spring:
   flyway:
     enabled: true
 
-# Nothing a user typed reaches a log line through the ORM's value-printing categories.
+# Nothing a user typed reaches a log line through the categories that print values as a matter of
+# course.
 #
 # That is the boundary these levels draw, and it is narrower than "nothing leaks". What they cover
-# is the machinery that prints values as a matter of course: bind parameters, extracted values, the
-# entity dump at flush, and the statement object on release. What they do not cover is a driver
-# building a value into an exception message, which is a different mechanism at a different level
-# and is described under "Known residual" below.
+# is one value's whole journey through three layers on one request: Spring MVC deserializing the
+# request body and writing the response, Bean Validation walking the object, and Hibernate binding
+# parameters, extracting them, dumping the entity at flush and releasing the statement. What they
+# do not cover is a driver building a value into an exception message, which is a different
+# mechanism at a different level and is described under "Known residual" below.
 #
-# The ORM emits values from below the application: a task objective, a Brain entry or a piece of
-# evidence is printed by Hibernate itself when a session flushes, and no redaction inside any
-# module of this codebase can reach that call site. The only defence is not emitting.
+# All of that happens below the application: a task objective, a Brain entry or a piece of evidence
+# is printed by the framework itself, and no redaction inside any module of this codebase can reach
+# those call sites. The only defence is not emitting.
 #
-# These four categories were found by capturing every event at TRACE during a real persist on the
-# Hibernate actually on the classpath — 6.6.8.Final, via Spring Boot 3.4.3 — not by copying a list
-# from another version. `org.hibernate.type.descriptor.sql.BasicBinder`, the Hibernate 5 name that
-# most advice still repeats, does not exist in this version and is deliberately absent below.
+# THE RULE, so this list can be checked rather than trusted: pin every category that prints a
+# user-supplied object as a matter of course — routinely, on the ordinary path, without anyone
+# asking it to. Not every category that could print one; that is the blind switch-off this list
+# exists to avoid. A category that prints an object only under some unusual condition is a decision
+# to be taken and recorded, not a ninth line nobody can justify later.
+#
+# All eight were found by capturing every event at TRACE during a real persist and a real HTTP
+# request, then grouping by logger name — not by copying a list from another version or another
+# codebase. That is why `org.hibernate.type.descriptor.sql.BasicBinder`, the Hibernate 5 name most
+# advice still repeats, is absent: it does not exist in 6.6.8.Final. It is also why the list
+# contains `HttpEntityMethodProcessor` and `ResourceRegistryStandardImpl`, which no list of usual
+# suspects would have offered. Re-run that probe rather than reasoning about it when the versions
+# move: the categories have changed name across releases before.
 #
 # These levels sit in the profile-independent document on purpose. A profile-specific block would
 # only protect the profiles that happen to exist today; here, every profile inherits them, and an
@@ -93,10 +104,12 @@ logging:
     org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor: INFO
     # "Arguments: [...]" — the controller's resolved parameters, the deserialized body among them.
     org.springframework.web.method.HandlerMethod: INFO
-    # Not pinned, and reported rather than silently added: org.hibernate.validator.internal.engine
-    # .resolver.JPATraversableResolver prints the object under validation at TRACE, which is the
-    # same body again from Bean Validation — a third layer, and a decision for whoever owns that
-    # boundary rather than one to fold into this block.
+    # Bean Validation, not Spring MVC — a different library on the same request. It prints the
+    # object it is walking once per constrained field, so a four-field DTO produces four copies of
+    # the body. Being in a different package than the processors above is a fact about Maven
+    # coordinates and no comfort to the person whose objective leaked; it prints the body on the
+    # ordinary path, so the rule at the top of this block puts it here.
+    org.hibernate.validator.internal.engine.resolver.JPATraversableResolver: INFO
 
 server:
   port: ${SERVER_PORT:9000}

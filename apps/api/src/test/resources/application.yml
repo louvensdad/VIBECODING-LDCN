@@ -28,7 +28,20 @@ logging:
     org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor: INFO
     org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor: INFO
     org.springframework.web.method.HandlerMethod: INFO
+    org.hibernate.validator.internal.engine.resolver.JPATraversableResolver: INFO
 
+# Declared debt, and it lives here because it is a property of the test run rather than of any one
+# test. Logback's LoggerContext is JVM-wide, and Spring Boot never unsets what a
+# @TestPropertySource applied to it: once a test class raises `logging.level.org.hibernate` to
+# DEBUG, that explicit level outlives its application context and every later capture in the same
+# JVM sees org.hibernate's descendants at DEBUG rather than at whatever the root was set to. A
+# capture can therefore observe less than it appears to, depending on class ordering, which is a
+# trap for anyone writing the next test in this package — assert on what must not be present, not
+# on what must.
+#
+# It does not weaken any pin. Each category above carries an explicit level of its own, and an
+# explicit level is not overridden by an inherited one, so the guarantee holds however the
+# surrounding levels drift. What it weakens is a test's ability to see a leak that is there.
 vibecode:
   security:
     auth-rate-limit:

@@ -31,9 +31,10 @@ import org.springframework.core.io.UrlResource;
 class ProductionLoggingConfigTest {
 
   /**
-   * Every category that was observed printing user-written text, at the two layers it travels
-   * through: Spring MVC deserializing the request body, and Hibernate flushing the entity. Each was
-   * found by capturing at TRACE and grouping by logger name, not from a list of likely names.
+   * Every category observed printing a user-supplied object as a matter of course — routinely, on
+   * the ordinary path, without anyone asking it to. That rule, stated at the top of the yml block,
+   * is what makes the list checkable: three layers handle the same value on one request, and each
+   * of them was caught by capturing at TRACE and grouping by logger name rather than by guessing.
    * Adding one here without adding it to both yml files fails; removing one from either yml fails.
    */
   private static final List<String> PINNED =
@@ -46,7 +47,9 @@ class ProductionLoggingConfigTest {
           // Spring MVC, before the ORM ever sees the value.
           "org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor",
           "org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor",
-          "org.springframework.web.method.HandlerMethod");
+          "org.springframework.web.method.HandlerMethod",
+          // Bean Validation, on the same request as the two above.
+          "org.hibernate.validator.internal.engine.resolver.JPATraversableResolver");
 
   @Test
   @DisplayName("The shipped application.yml pins every value-printing Hibernate category")

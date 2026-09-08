@@ -88,22 +88,11 @@ class HttpBoundaryLoggingTest {
         .as("no request was dispatched, so this capture proves nothing about the web layer")
         .anyMatch(event -> event.getLoggerName().startsWith("org.springframework.web"));
 
-    // Every Spring MVC category is silent. One category still prints the body — Hibernate
-    // Validator's traversable resolver, at TRACE — and it belongs to Bean Validation rather than
-    // to the web layer this task was authorised to pin, so it is named here rather than quietly
-    // silenced. Any leaking category that is not that one fails this.
-    //
-    // A subset rather than an exact set, for a reason worth knowing: Logback's LoggerContext is
-    // JVM-wide and Spring Boot never unsets what a @TestPropertySource put on it, so once
-    // HibernateValueLoggingUnderDebugTest has run, org.hibernate carries an explicit DEBUG that
-    // its descendants inherit instead of the TRACE this capture sets on the root. The validator
-    // line then does not appear at all. Asserting equality would make this test pass or fail on
-    // class ordering; asserting a subset holds either way and still catches anything new.
-    assertThat(leakingLoggers(events))
-        .isSubsetOf("org.hibernate.validator.internal.engine.resolver.JPATraversableResolver");
-    assertThat(leakingLoggers(events))
-        .as("no Spring MVC category may print the request body")
-        .noneMatch(name -> name.startsWith("org.springframework"));
+    // No category at all, and the failure names whichever one broke that rather than only saying
+    // something leaked. Everything on the ordinary path of a validated request body is pinned:
+    // the two message-converter processors, the resolved argument list, and Bean Validation's
+    // traversable resolver, which prints the object it is walking on every validated DTO.
+    assertThat(leakingLoggers(events)).isEmpty();
   }
 
   /** The distinct logger names that printed the fixture, sorted, for an exact-set assertion. */
