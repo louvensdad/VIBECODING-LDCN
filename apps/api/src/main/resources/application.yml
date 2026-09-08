@@ -78,6 +78,26 @@ logging:
     # queries parameterized and this stays true; the statement log with its `?` placeholders is
     # what a developer actually needs when diagnosing a query, which is why it is left on.
 
+    # The same defect one layer up. Before Hibernate ever sees a task objective, Spring MVC has
+    # deserialized it into a DTO and printed that DTO — full at TRACE, truncated at DEBUG, which
+    # `--debug` reaches. Found the same way as the Hibernate list: an HTTP POST carrying the
+    # fixture, captured at TRACE and grouped by logger, rather than from a list of likely names.
+    # Spring routes the body through LogFormatUtils.traceDebug with no category of its own for it,
+    # so the category is the only lever there is; pinning it also costs the content-negotiation
+    # DEBUG line from the same class, which is a real if small loss.
+    # "Read "application/json" to [CreateTaskRequest[... objective=<the value> ...]]", and
+    # "Writing [...]" for the response DTO on the way back out.
+    org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor: INFO
+    # The ResponseEntity sibling of the above. Controllers here return both shapes, so pinning one
+    # without the other would leave whichever half happened to be used unguarded.
+    org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor: INFO
+    # "Arguments: [...]" — the controller's resolved parameters, the deserialized body among them.
+    org.springframework.web.method.HandlerMethod: INFO
+    # Not pinned, and reported rather than silently added: org.hibernate.validator.internal.engine
+    # .resolver.JPATraversableResolver prints the object under validation at TRACE, which is the
+    # same body again from Bean Validation — a third layer, and a decision for whoever owns that
+    # boundary rather than one to fold into this block.
+
 server:
   port: ${SERVER_PORT:9000}
   servlet:

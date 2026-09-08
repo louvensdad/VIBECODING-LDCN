@@ -25,6 +25,9 @@ logging:
     org.hibernate.orm.jdbc.extract: INFO
     org.hibernate.internal.util.EntityPrinter: INFO
     org.hibernate.resource.jdbc.internal.ResourceRegistryStandardImpl: INFO
+    org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor: INFO
+    org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor: INFO
+    org.springframework.web.method.HandlerMethod: INFO
 
 vibecode:
   security:

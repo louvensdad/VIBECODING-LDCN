@@ -31,15 +31,22 @@ import org.springframework.core.io.UrlResource;
 class ProductionLoggingConfigTest {
 
   /**
-   * Every Hibernate category that was observed emitting a persisted field value on 6.6.8.Final.
+   * Every category that was observed printing user-written text, at the two layers it travels
+   * through: Spring MVC deserializing the request body, and Hibernate flushing the entity. Each was
+   * found by capturing at TRACE and grouping by logger name, not from a list of likely names.
    * Adding one here without adding it to both yml files fails; removing one from either yml fails.
    */
   private static final List<String> PINNED =
       List.of(
+          // Hibernate 6.6.8.Final, on the way to the database.
           "org.hibernate.orm.jdbc.bind",
           "org.hibernate.orm.jdbc.extract",
           "org.hibernate.internal.util.EntityPrinter",
-          "org.hibernate.resource.jdbc.internal.ResourceRegistryStandardImpl");
+          "org.hibernate.resource.jdbc.internal.ResourceRegistryStandardImpl",
+          // Spring MVC, before the ORM ever sees the value.
+          "org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor",
+          "org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor",
+          "org.springframework.web.method.HandlerMethod");
 
   @Test
   @DisplayName("The shipped application.yml pins every value-printing Hibernate category")
