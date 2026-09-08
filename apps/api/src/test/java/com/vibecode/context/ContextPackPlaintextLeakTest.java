@@ -17,6 +17,7 @@ import com.vibecode.project.domain.Project;
 import com.vibecode.roadmap.application.RoadmapService;
 import com.vibecode.roadmap.domain.RoadmapPhase;
 import com.vibecode.support.TestIdentity;
+import com.vibecode.support.logging.LoggerLevelIsolation;
 import com.vibecode.task.application.TaskService;
 import com.vibecode.task.domain.RiskLevel;
 import com.vibecode.task.domain.Task;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -50,7 +52,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <p>The fixture is synthetic and is not a credential for anything. The source records themselves
  * keep the raw text - that is the user's data in the user's own tables, and this test makes no
  * claim about them. The claim is that it does not travel.
+ *
+ * <p>The root logger raised below belongs to the JVM, not to this class, so
+ * {@link LoggerLevelIsolation} puts it back rather than an {@code @AfterEach} that only this file
+ * would know about.
  */
+@ExtendWith(LoggerLevelIsolation.class)
 @SpringBootTest
 class ContextPackPlaintextLeakTest {
 
@@ -84,7 +91,6 @@ class ContextPackPlaintextLeakTest {
   private UUID projectId;
   private Logger root;
   private ListAppender<ILoggingEvent> captured;
-  private Level originalLevel;
 
   @BeforeEach
   void createProjectAndStartCapturing() {
@@ -132,8 +138,8 @@ class ContextPackPlaintextLeakTest {
         "test");
 
     root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
-    originalLevel = root.getLevel();
-    // Deliberately noisy: a DEBUG line is still a line in a file somewhere.
+    // Deliberately noisy: a DEBUG line is still a line in a file somewhere. The level is not
+    // remembered here; the extension on the class took a snapshot of every logger before this ran.
     root.setLevel(Level.DEBUG);
     captured = new ListAppender<>();
     captured.start();
@@ -144,7 +150,6 @@ class ContextPackPlaintextLeakTest {
   void stopCapturing() {
     root.detachAppender(captured);
     captured.stop();
-    root.setLevel(originalLevel);
     identity.clear();
   }
 

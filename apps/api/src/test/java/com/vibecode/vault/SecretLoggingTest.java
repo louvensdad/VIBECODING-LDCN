@@ -13,6 +13,7 @@ import com.vibecode.provider.domain.AuthenticationType;
 import com.vibecode.provider.domain.ProviderAccount;
 import com.vibecode.provider.domain.ProviderId;
 import com.vibecode.support.TestIdentity;
+import com.vibecode.support.logging.LoggerLevelIsolation;
 import com.vibecode.vault.domain.SecretMaterial;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,7 +33,13 @@ import org.springframework.boot.test.context.SpringBootTest;
  * log aggregator, indexed, retained for a year and read by people who never touched this code.
  * This captures everything logged at DEBUG and above during a real credential ingestion and checks
  * it.
+ *
+ * <p>Raising the root logger is a change to a JVM-wide object, so it is put back by
+ * {@link LoggerLevelIsolation} rather than by an {@code @AfterEach} here. One extension is one
+ * place to get it right; a line of cleanup in every class that touches a level is a line that will
+ * be missing from the next one.
  */
+@ExtendWith(LoggerLevelIsolation.class)
 @SpringBootTest
 class SecretLoggingTest {
 
@@ -46,7 +54,6 @@ class SecretLoggingTest {
 
   private Logger root;
   private ListAppender<ILoggingEvent> captured;
-  private Level originalLevel;
   private User owner;
 
   @BeforeEach
@@ -54,8 +61,8 @@ class SecretLoggingTest {
     owner = testIdentity.createAndAuthenticate("logging-owner");
 
     root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
-    originalLevel = root.getLevel();
-    // Deliberately noisy: a DEBUG line is still a line in a file somewhere.
+    // Deliberately noisy: a DEBUG line is still a line in a file somewhere. The level is not
+    // remembered here; the extension on the class took a snapshot of every logger before this ran.
     root.setLevel(Level.DEBUG);
 
     captured = new ListAppender<>();
@@ -67,7 +74,6 @@ class SecretLoggingTest {
   void stopCapturing() {
     root.detachAppender(captured);
     captured.stop();
-    root.setLevel(originalLevel);
     testIdentity.clear();
   }
 

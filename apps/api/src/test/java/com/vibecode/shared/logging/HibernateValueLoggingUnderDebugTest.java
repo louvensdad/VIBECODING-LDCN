@@ -10,6 +10,7 @@ import com.vibecode.identity.domain.User;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.roadmap.application.RoadmapService;
 import com.vibecode.support.TestIdentity;
+import com.vibecode.support.logging.LoggerLevelIsolation;
 import com.vibecode.task.application.TaskService;
 import com.vibecode.task.domain.RiskLevel;
 import java.util.List;
@@ -18,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -49,7 +51,16 @@ import org.springframework.test.context.TestPropertySource;
  * {@code logging.level.org.hibernate.orm.jdbc.bind=TRACE}, does re-enable it. That is the
  * documented escape hatch and it is meant to work — the fix makes value logging a deliberate
  * choice about one category, not a side effect of debugging.
+ *
+ * <p>The levels below are set on the JVM-wide Logback context by Spring Boot's logging listener
+ * while this class's application context is built, and nothing in Spring puts them back: the
+ * context is cached rather than closed, and the listener only ever adds. Left alone, this class
+ * would hand every class that runs after it in the same JVM an org.hibernate at DEBUG and a root
+ * at DEBUG — which weakens no pin, but does stop a later capture from seeing a leak that is there.
+ * {@link LoggerLevelIsolation} is what puts them back, at the end of this class rather than at the
+ * end of each method, because the property route applies once and both methods below need it.
  */
+@ExtendWith(LoggerLevelIsolation.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("prod")

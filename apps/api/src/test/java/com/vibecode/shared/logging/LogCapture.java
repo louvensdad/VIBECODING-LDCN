@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.vibecode.support.logging.LoggerLevels;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.LoggerFactory;
@@ -26,10 +27,18 @@ final class LogCapture {
     void run();
   }
 
-  /** Runs {@code work} with the root logger at TRACE and returns every event it produced. */
+  /**
+   * Runs {@code work} with the root logger at TRACE and returns every event it produced.
+   *
+   * <p>The whole level configuration is snapshotted, not just the root's. Raising the root is this
+   * class's own change and easy to undo, but {@code work} is arbitrary application code and may
+   * itself set a level; putting back every logger costs the same and leaves nothing to argue
+   * about. Appenders are not part of the snapshot, so the capture appender is still detached by
+   * hand below.
+   */
   static List<ILoggingEvent> capturing(Work work) {
     Logger root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
-    Level original = root.getLevel();
+    LoggerLevels before = LoggerLevels.snapshot();
     ListAppender<ILoggingEvent> appender = new ListAppender<>();
     appender.start();
     root.addAppender(appender);
@@ -37,7 +46,7 @@ final class LogCapture {
     try {
       work.run();
     } finally {
-      root.setLevel(original);
+      before.restore();
       root.detachAppender(appender);
       appender.stop();
     }
