@@ -26,6 +26,18 @@ import org.junit.jupiter.api.Test;
  * <p>Auto-partitioning is the point. A table introduced next month is in the "must be clean" half
  * by default, so a future write path that spills context into it fails here without anyone
  * remembering to update a list.
+ *
+ * <p><b>One column type the sweep cannot read, named so "every table" is not read as "every
+ * byte".</b> {@link #occurrencesIn(String, String)} stringifies each value with {@code
+ * String.valueOf}, which renders a {@code byte[]} as {@code [B@1f2c3d4} — a binary column is
+ * therefore swept and always comes back clean, whatever is in it. Three columns in the schema are
+ * binary today, all of them in the vault: {@code vault_secret_versions.ciphertext}, {@code .nonce}
+ * and {@code .wrapped_data_key}. They are an implausible destination for a leak in both
+ * directions — the context engine cannot reach the vault to write there, and ciphertext is what
+ * that table is <em>for</em> — so this is a stated gap rather than an unmeasured one. Textual
+ * columns are read correctly, {@code TEXT}/CLOB included: turning off content redaction makes this
+ * sweep go red, which is what establishes that {@code String.valueOf} is not being defeated by
+ * H2's CLOB mapping.
  */
 class ContextSchemaWideLeakTest extends ContextProbeFixture {
 
@@ -172,7 +184,13 @@ class ContextSchemaWideLeakTest extends ContextProbeFixture {
     return perTable;
   }
 
-  /** Every value of every column of one table, stringified, counted for the needle. */
+  /**
+   * Every value of every column of one table, stringified, counted for the needle.
+   *
+   * <p>Textual columns read correctly, {@code TEXT}/CLOB included. A {@code byte[]} column does
+   * not: {@code String.valueOf} renders it as {@code [B@...} and the needle can never be found in
+   * it. See the class javadoc for which columns that is and why it is accepted.
+   */
   private int occurrencesIn(String table, String needle) {
     List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM \"" + table + "\"");
     int occurrences = 0;

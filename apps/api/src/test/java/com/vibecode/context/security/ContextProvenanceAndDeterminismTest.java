@@ -199,7 +199,24 @@ class ContextProvenanceAndDeterminismTest extends ContextProbeFixture {
   void theResolutionCheckIsNotBlind() {
     // Without this, a query with a typo in its WHERE clause -- or one that counted the whole table
     // -- would report every item as resolvable and the check above would be a formality.
-    for (ContextItem item : candidates.collect(planted.projectId(), ContextReadWindow.DEFAULT)) {
+    //
+    // A task is blocked first so that the active-error:task shape is among the candidates. The
+    // base fixture blocks nothing, so without this that branch of resolutionQueryFor would be the
+    // one query shape whose positive path is exercised and whose zero path never is.
+    Task blocked =
+        tasks.addTask(
+            planted.projectId(),
+            planted.phase().getId(),
+            3,
+            "A task that gets stuck, again",
+            "Blocked so the task-shaped active error is among the shapes checked below.",
+            RiskLevel.LOW);
+    tasks.start(planted.projectId(), blocked.getId());
+    tasks.markBlocked(planted.projectId(), blocked.getId());
+
+    List<ContextItem> collected =
+        candidates.collect(planted.projectId(), ContextReadWindow.DEFAULT);
+    for (ContextItem item : collected) {
       Integer matching =
           jdbc.queryForObject(
               resolutionQueryFor(item), Integer.class, UUID.randomUUID(), planted.projectId());
@@ -207,6 +224,15 @@ class ContextProvenanceAndDeterminismTest extends ContextProbeFixture {
           .as("the query behind %s must find nothing for an id that names no row", item.id())
           .isZero();
     }
+
+    // Both ACTIVE_ERRORS shapes have to be in the loop above, or the branch this test was extended
+    // for is still unmeasured.
+    assertThat(collected)
+        .as("the task-shaped active error must be among the shapes just checked")
+        .anyMatch(item -> item.id().startsWith("active-error:task:"));
+    assertThat(collected)
+        .as("and so must the analysis-shaped one, which takes the other branch")
+        .anyMatch(item -> item.id().startsWith("active-error:analysis:"));
   }
 
   @Test
@@ -434,6 +460,27 @@ class ContextProvenanceAndDeterminismTest extends ContextProbeFixture {
             "item %s claims source %s %s; that must name exactly one row of this project",
             item.id(), item.provenance().sourceType(), item.provenance().sourceId())
         .isEqualTo(1);
+
+    // "A row of the right kind exists" is weaker than it reads: point every brain item at the same
+    // brain entry and the count above is 1 for all of them, right table, right project, wrong row
+    // for all but one. Every collector in the module embeds the record's key in the item id it
+    // constructs -- brain:<id>, roadmap:<id>, roadmap-phase:<id>, current-phase:<id>,
+    // current-task:<id>:objective, criterion:<id>, evidence:<id>, analysis:<id>,
+    // active-error:{task,analysis}:<id>, project:<id>:identity, state:<id>:progress,
+    // security-summary:<id> -- so the item id is a second, independently constructed statement of
+    // which record this came from, and the two must agree.
+    //
+    // What it does NOT catch, so nobody reads more into it: a collector that derives the item id
+    // and the source id from the SAME wrong record stays consistent and passes both checks. For
+    // PROJECT, CURRENT_STATE and SECURITY_SUMMARY it adds nothing either -- their source id is the
+    // project id, which the resolution query already pins to the pack's own project. It is aimed
+    // squarely at the case above: provenance drifting away from an id that stayed correct.
+    assertThat(item.id())
+        .as(
+            "item %s says it came from %s, but its own id names a different record -- the two are"
+                + " constructed separately by the collector and must agree",
+            item.id(), item.provenance().sourceId())
+        .contains(item.provenance().sourceId());
   }
 
   /**

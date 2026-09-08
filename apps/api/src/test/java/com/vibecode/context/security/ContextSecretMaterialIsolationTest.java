@@ -34,9 +34,26 @@ import org.junit.jupiter.api.Test;
  * or a provider account. That is a real rule and it catches the obvious route, but it says nothing
  * about a class in an allowed package that holds a {@code VaultService} and hands back a decrypted
  * value — {@code context → someFacade → vault} satisfies every direct rule while being exactly the
- * route that must not exist. {@link #contextCannotReachTheVaultByAnyRouteAtAll()} closes that: it
- * walks the dependency graph from {@code ..context..} to fixpoint and asserts the vault is not in
- * the reachable set at any depth.
+ * route that must not exist. {@link #contextReachesNoVaultClassByAnyStaticallyResolvableChain()}
+ * closes that particular hole: it walks the dependency graph from {@code ..context..} to fixpoint
+ * and asserts the vault is not in the reachable set at any depth.
+ *
+ * <p><b>And there is a third route that neither rule can see, named here rather than left to be
+ * discovered.</b> The closure is over statically resolvable bytecode edges — what a class names in
+ * its own constant pool, including generic signatures. A route that never puts a vault type in any
+ * constant pool is invisible to it: {@code applicationContext.getBean("vaultService")} with a
+ * {@code Class.forName("com.vibecode.vault.domain.SecretReference")} beside it reaches live vault
+ * plaintext with every rule in this file green, and it was demonstrated doing exactly that. No
+ * amount of work on this test changes that, because bytecode reachability cannot follow a string.
+ *
+ * <p>That is a known limitation and it is written down as one. It is the same answer the architect
+ * gave for the {@code RedactedContextItem} reflection bypass — the guarantee is against the routes
+ * a compiler records, and we do not manufacture a false claim of impossibility on a JVM that has
+ * {@code setAccessible} in its standard library. What the rules here do buy is that every ordinary
+ * route, including one deliberately laundered through a facade in an allowed package, fails loudly
+ * and names itself. A reflective route additionally has to survive code review as a line that
+ * looks up a bean by string name inside a module whose whole stated purpose is that it cannot see
+ * the vault.
  *
  * <p>Two of the rules below deliberately do not go through ArchUnit's dependency graph. {@code
  * SecretReference} is a record of two fields, so a method that took one and used only its {@code
@@ -125,17 +142,30 @@ class ContextSecretMaterialIsolationTest {
   }
 
   @Test
-  @DisplayName("Nothing reachable from context, at any depth, is in the vault or a provider package")
-  void contextCannotReachTheVaultByAnyRouteAtAll() {
+  @DisplayName("No statically resolvable chain of any length runs from context to vault or provider")
+  void contextReachesNoVaultClassByAnyStaticallyResolvableChain() {
     // The rule the four above cannot state. A direct-dependency check is defeated by one ordinary
     // class in an allowed package: give it a VaultService field and a method returning a decrypted
     // value, have a collector call that method, and every rule above stays green while vault
     // plaintext walks into a context item. This closes the graph instead of checking one edge.
     //
-    // The walk stays inside com.vibecode because that is what was imported: a class outside the
-    // imported packages arrives as a stub with no dependencies of its own, so the JDK and Spring
-    // are boundaries rather than an explosion. That is a property of the importer above, and if
-    // the import ever widens, this becomes a slow test rather than an unsound one.
+    // WHAT THIS TEST CANNOT SEE, stated because the name would otherwise promise it. The edges
+    // walked here are the ones a compiler recorded: field, parameter, return, throws, call site,
+    // annotation, and generic signature (ArchUnit 1.3 emits those, so a `List<VaultService>` field
+    // is followed). A route that puts no vault type in any constant pool is outside all of it --
+    // `applicationContext.getBean("vaultService")` alongside
+    // `Class.forName("com.vibecode.vault.domain.SecretReference")` reaches live vault plaintext
+    // with this test green, and has been demonstrated doing so. No version of this walk fixes
+    // that; bytecode reachability cannot follow a string. It is a named limit, not a hedge, and it
+    // is the same position the architect took on the RedactedContextItem reflection bypass: the
+    // guarantee covers the routes a compiler records, and nothing here claims impossibility on a
+    // JVM that ships setAccessible.
+    //
+    // The walk is bounded by the `startsWith("com.vibecode")` filter below and by nothing else.
+    // Not by the importer: a class outside the imported packages is NOT a dependency-free stub --
+    // java.nio.charset.StandardCharsets, reached from ContextItem, reports seven direct
+    // dependencies of its own. Widening the import would therefore change nothing here, and
+    // deleting that filter would walk the JDK. The filter is the bound; keep it.
     Map<String, String> reachedVia = new LinkedHashMap<>();
     Deque<JavaClass> pending = new ArrayDeque<>();
     for (JavaClass inContext : PRODUCTION_CLASSES) {
@@ -171,9 +201,11 @@ class ContextSecretMaterialIsolationTest {
     }
     assertThat(forbiddenRoutes)
         .as(
-            "a secret is a reference and a reference is never context, so no chain of calls of any"
-                + " length may lead from the context engine to the vault or to a provider account."
-                + " Each line below is the route, from the context class that starts it.")
+            "a secret is a reference and a reference is never context, so no chain of statically"
+                + " resolvable dependencies, of any length, may lead from the context engine to the"
+                + " vault or to a provider account. Each line below is the route, from the context"
+                + " class that starts it. A reflective or bean-name route is outside what this can"
+                + " see; see the comment above.")
         .isEmpty();
   }
 
