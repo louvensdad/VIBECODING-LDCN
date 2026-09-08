@@ -13,6 +13,7 @@ import com.vibecode.identity.domain.User;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.support.MutableClock;
 import com.vibecode.support.TestIdentity;
+import com.vibecode.context.infrastructure.persistence.ContextPackRepository;
 import jakarta.persistence.EntityManagerFactory;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -27,7 +28,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
@@ -61,6 +64,8 @@ class ContextPackListBoundsTest {
   @Autowired ProjectService projects;
   @Autowired MutableClock clock;
   @Autowired EntityManagerFactory entityManagerFactory;
+  @Autowired ContextPackRepository packs;
+  @Autowired javax.sql.DataSource dataSource;
 
   private User alice;
   private UUID project;
@@ -154,14 +159,62 @@ class ContextPackListBoundsTest {
     // page of ids, one to fetch those packs with their items, and the reads around them.
     assertThat(queries).isLessThanOrEqualTo(8);
 
+    // HOW MUCH WAS READ, which is the number the query count cannot see. Asserted below as a
+    // property rather than a constant — see readsScaleWithThePageAndNotWithTheProject.
+    assertThat(entities).isPositive();
+
     // And the proof that the constant is a constant. A per-pack query would make these two differ
     // by 35; "fewer statements than before" would not have caught a page size that merely moved the
     // N+1 behind a smaller N.
-    assertThat(queriesForLimit(5)).isEqualTo(queriesForLimit(40));
+    assertThat(cost(5).queries()).isEqualTo(cost(40).queries());
   }
 
-  /** Statements issued while serving the list route at one page size. */
-  private long queriesForLimit(int limit) throws Exception {
+  @Test
+  @DisplayName("A smaller page reads less, which is what the statement count cannot see")
+  void readsScaleWithThePageAndNotWithTheProject() throws Exception {
+    for (int i = 0; i < PACKS; i++) {
+      clock.advance(Duration.ofSeconds(1));
+      compile("TASK-" + i);
+    }
+
+    // THE MISTAKE THIS EXISTS TO CATCH. Replacing the two-query route with a single paged
+    // `left join fetch` leaves every statement-level metric looking the same or better — it issues
+    // TWO queries rather than three — because a collection fetch cannot be paged in SQL. Hibernate
+    // says so itself and then does it anyway:
+    //
+    //   HHH90003004: firstResult/maxResults specified with collection fetch; applying in memory
+    //
+    // It reads all forty packs with their items and discards twenty. Measured: 3 queries and 101
+    // entities for the real route, 2 queries and 201 entities for the mutation.
+    //
+    // WHY A PROPERTY AND NOT A CONSTANT. The obvious assertion is a ceiling on entities loaded, and
+    // choosing its value is where it goes wrong: the page holds 20 packs plus their items, which is
+    // 101 today, and how many items a pack carries is the engine's business and will change. A
+    // ceiling below 101 fails on correct code; one above 201 cannot fail on the mutation; anything
+    // between is a magic number nobody can maintain, sitting between two figures that both move.
+    //
+    // The property has no such problem and is the thing actually being promised: reads scale with
+    // the PAGE, not with the project. Under the mutation both page sizes read the whole project, so
+    // the two measurements are equal and this fails — with no constant to keep up to date.
+    Cost small = cost(5);
+    Cost large = cost(PACKS);
+
+    assertThat(small.entities())
+        .as("a five-pack page must read less than a forty-pack page; equal means both read"
+            + " the whole project and paged in memory")
+        .isLessThan(large.entities());
+
+    // The page is what is read, so the ratio tracks the page sizes rather than being merely
+    // unequal. Loose enough not to encode the item count, tight enough that reading everything and
+    // discarding most of it cannot satisfy it.
+    assertThat(small.entities()).isLessThan(large.entities() / 2);
+  }
+
+  /** What one list request cost: statements issued and entities read. */
+  private record Cost(long queries, long entities) {}
+
+  /** Serves the list route at one page size and reports what it cost. */
+  private Cost cost(int limit) throws Exception {
     Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
     boolean wasEnabled = statistics.isStatisticsEnabled();
     statistics.setStatisticsEnabled(true);
@@ -171,9 +224,12 @@ class ContextPackListBoundsTest {
               get("/api/projects/" + project + "/context?limit=" + limit)
                   .with(TestIdentity.as(alice)))
           .andExpect(status().isOk());
-      long queries = statistics.getPrepareStatementCount();
-      System.out.println("[CTX-07] limit=" + limit + " -> queries=" + queries);
-      return queries;
+      Cost cost =
+          new Cost(statistics.getPrepareStatementCount(), statistics.getEntityLoadCount());
+      System.out.println(
+          "[CTX-07] limit=" + limit + " -> queries=" + cost.queries()
+              + " entitiesLoaded=" + cost.entities());
+      return cost;
     } finally {
       statistics.setStatisticsEnabled(wasEnabled);
     }
@@ -304,6 +360,60 @@ class ContextPackListBoundsTest {
     listed.forEach(node -> instants.add(node.get("assembledAt").asText()));
     assertThat(instants).hasSize(expected);
     return instants.stream().distinct().count();
+  }
+
+  @Test
+  @DisplayName("With both time keys tied, the id decides — the third sort key, reached directly")
+  void theThirdSortKeyOrdersPacksWhenBothTimeKeysTie() throws Exception {
+    // THE THIRD KEY, closed at the repository rather than through the API.
+    //
+    // I previously declared this uncovered and called it unreachable. Unreachable THROUGH THE API
+    // is true — createdAt is Instant.now() taken inside ContextPackEntity.from, and two HTTP
+    // compiles measured 100-200ms apart against a microsecond column, so they cannot tie. Calling
+    // it unclosable was a notch stronger than the code supports: the condition is one UPDATE away,
+    // and the repository method can be called without a controller.
+    //
+    // Forcing created_at equal is the whole point rather than a shortcut. The rows are written by
+    // the real write path and only the one column the API cannot control is then tied, which is
+    // exactly the state the third key exists for and the only way to observe it deciding anything.
+    for (int i = 0; i < 8; i++) {
+      compile("TASK-third-key-" + i);
+    }
+
+    JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+    jdbc.update(
+        "update context_packs set created_at = ? where project_id = ?",
+        java.sql.Timestamp.from(java.time.Instant.parse("2026-01-01T00:00:00Z")),
+        project);
+
+    // Both time keys now tie: assembledAt from the frozen clock, createdAt from the update above.
+    // Asserted, not assumed — if either stopped tying, the third key would go unexercised again and
+    // this test would pass while covering nothing, which is the decay mode the tie test already
+    // guards against.
+    assertThat(
+            jdbc.queryForObject(
+                "select count(distinct assembled_at) + count(distinct created_at)"
+                    + " from context_packs where project_id = ?",
+                Integer.class,
+                project))
+        .as("both time keys must tie, or the id is not what is being tested")
+        .isEqualTo(2);
+
+    List<UUID> ordered =
+        packs.findPackIdsByProjectNewestFirst(project, PageRequest.of(0, 50));
+
+    // Compared against the database's own descending id order rather than against Java's
+    // UUID.compareTo, which orders by SIGNED longs and does not agree with how the column is
+    // compared. The point is not which collation is right; it is that the repository's answer is
+    // decided by the id at all. Without `p.id desc` the query returns insertion order, and for
+    // eight random ids that differs from id order with overwhelming probability.
+    List<UUID> byIdDescending =
+        jdbc.queryForList(
+            "select id from context_packs where project_id = ? order by id desc",
+            UUID.class,
+            project);
+
+    assertThat(ordered).hasSize(8).containsExactlyElementsOf(byIdDescending);
   }
 
   @Test

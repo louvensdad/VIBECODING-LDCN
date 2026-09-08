@@ -52,6 +52,14 @@ public interface ContextPackRepository extends JpaRepository<ContextPackEntity, 
    * engines, and under a frozen clock every pack in a project shares one instant — at which point a
    * sort on that column alone leaves the order entirely to the database, which returned insertion
    * order: the exact reverse of the guarantee this method's name makes.
+   *
+   * <p><b>Only the first key is indexed.</b> {@code idx_context_packs_project} covers
+   * {@code (project_id, assembled_at DESC)} and nothing further, so PostgreSQL can walk the index
+   * for the first key but must sort the project's whole pack set to resolve the other two. That is
+   * irrelevant at any volume this product will see soon — the packs of one project — but this
+   * method exists because of what the route cost, so the remark belongs here rather than in
+   * somebody's head. Widening the index is a migration and V1–V9 are frozen; it is worth doing only
+   * if a project's pack count ever makes the sort visible, and not before.
    */
   @Query(
       "select p.id from ContextPackEntity p where p.projectId = :projectId"

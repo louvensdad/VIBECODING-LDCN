@@ -186,6 +186,20 @@ public class ContextPackController {
    * @param limit how many packs to return, newest first. Out of range is refused rather than
    *     clamped — a caller who asked for a thousand and silently received a hundred would have no
    *     way to know the answer had been narrowed, and would read a partial list as a complete one.
+   *     <p><b>The two range messages below are currently unreachable, and that is recorded rather
+   *     than fixed.</b> A violated {@code @Min}/{@code @Max} on a <em>method parameter</em> raises
+   *     {@code HandlerMethodValidationException}, which no handler in {@code ApiExceptionHandler}
+   *     claims; it implements {@code ErrorResponse}, so the last-resort branch answers 400 with
+   *     {@code code: "BAD_REQUEST"} and an empty {@code violations} array, and the sentences here
+   *     never reach a client. A limit that is not a number takes the other path and answers 400
+   *     with {@code code: "VALIDATION_ERROR"} and a populated {@code violations} — so one parameter
+   *     yields two body shapes. Both statuses are right, which is why this is debt and not a
+   *     defect. {@code limit} is the first constrained method parameter in the application; every
+   *     other {@code @Min}/{@code @Max} is on a request-body field and takes the good path. The fix
+   *     is a shared handler for that exception, which changes the error contract for every module
+   *     and needs tests across all of them — deliberately not done here. The messages are left in
+   *     place because they are correct and will start being delivered the moment that handler
+   *     exists; this note is here so nobody reads them as evidence of what a client sees.
    */
   @GetMapping
   @Transactional(readOnly = true)
