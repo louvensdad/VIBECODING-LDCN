@@ -65,6 +65,40 @@ CREATE TABLE context_packs (
   -- recomputing today would not give them.
   content_fingerprint VARCHAR(64) NOT NULL,
 
+  -- The compiler's digest over the pack's canonical payload: policy version, budget, item order,
+  -- and per item its kind, provenance, redacted content, admitting rule id and that rule's
+  -- explanation. ALSO DESCRIPTIVE ONLY, and under exactly the same prohibitions as
+  -- content_fingerprint above: no uniqueness, no index, no foreign key, no row ever found by it.
+  --
+  -- The two are not interchangeable and neither replaces the other. content_fingerprint covers
+  -- what one pack's items say; this covers the whole compilation, so a policy change that admits
+  -- the same text under a different rule moves this one and leaves that one alone. That difference
+  -- is the reason both are here.
+  --
+  -- NOT NULL because every pack is produced by the compiler and the compiler always computes one.
+  -- A nullable column could therefore only ever record that a write path lost it, and it would
+  -- read as "this pack has no digest" -- which is a claim about the pack rather than about the
+  -- bug, and the wrong one.
+  --
+  -- VARCHAR(64) because SHA-256 in lowercase hex is exactly 64 characters, always.
+  pack_digest VARCHAR(64) NOT NULL,
+
+  -- The policy version in force when this pack's items were admitted. Stored so that a reader
+  -- comparing an old pack with a new one can see whether the rules moved, instead of assuming the
+  -- project's state did. Without it the only available explanation for a difference is "the
+  -- records changed", which is usually wrong and always unprovable.
+  --
+  -- Deliberately NOT the application version. Tying it to the build would restamp every pack on
+  -- every release whether or not a single rule moved, and would leave two packs compiled by
+  -- identical rules claiming to have been compiled under different policies.
+  --
+  -- NOT NULL because there is no path that compiles a pack without a policy: the compiler takes
+  -- one, and it stamps what it used. A null here would describe an impossible pack.
+  --
+  -- VARCHAR(20) matches ContextPolicyVersion, which caps the label at 20 for the same reason: it
+  -- is an opaque handle compared for equality, not a description and not something to sort by.
+  policy_version VARCHAR(20) NOT NULL,
+
   -- When the row was written. No updated_at: a snapshot that could be updated is not a snapshot.
   created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
@@ -114,6 +148,28 @@ CREATE TABLE context_pack_items (
   provenance_project_id UUID NOT NULL,
   -- When the source state was observed, not when the pack was assembled.
   recorded_at TIMESTAMP WITH TIME ZONE NOT NULL,
+
+  -- The admission that let this item in: which rule decided, and what that rule said. Kept as a
+  -- historical fact rather than re-derived on read. A pack is a snapshot, and asking today's
+  -- policy why an item was admitted two versions ago yields an answer that sounds authoritative
+  -- and is about a different set of rules.
+  --
+  -- There is deliberately NO decision column. A denied item is never written -- its content does
+  -- not reach this table at all, which is the entire point of denying it -- so every row here is
+  -- an allow by construction. A column repeating that on every row would carry no information,
+  -- and would invite someone to start storing denials "just for the record", which would put the
+  -- text policy refused into the database in the clear.
+  --
+  -- Widths follow the convention set above: policy_rule_id is an identifier a person types, so
+  -- 200; explanation is human text that is displayed, so 500, like label and task_reference.
+  --
+  -- Both NOT NULL, and that pairing is the point rather than an accident. The rule id is what
+  -- makes a reason traceable to something a reader can look up and disagree with; the explanation
+  -- is what makes it readable at all. An item stored with either one missing is an item nobody can
+  -- account for, which is precisely the state this engine exists to prevent -- so the database
+  -- refuses it here, rather than trusting every future write path to remember.
+  policy_rule_id VARCHAR(200) NOT NULL,
+  explanation VARCHAR(500) NOT NULL,
 
   -- Uniqueness is not validity: without this check a position of -1 is as acceptable to the
   -- database as 0, and a pack whose first item claims a place before the beginning would load
