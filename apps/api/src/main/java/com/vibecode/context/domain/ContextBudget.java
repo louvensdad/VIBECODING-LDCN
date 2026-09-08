@@ -21,10 +21,11 @@ import java.util.Optional;
  *
  * <p><b>Labels are not budgeted, and that is a decision rather than an oversight.</b> All three
  * dimensions are measured over {@link ContextItem#content()} only. An item's label is metadata for
- * the Context Inspector: it is redacted, it is length-limited by its column, and it goes into the
- * canonical snapshot and the digest — but it is not part of the payload a provider would be sent in
- * this version, so charging it against a ceiling that exists to bound what leaves the platform
- * would bill the pack for text that never leaves it. A review flagged labels as "unbudgeted"; this
+ * the Context Inspector: it is redacted, it is capped at {@link ContextItem#MAX_LABEL_LENGTH} by
+ * the domain and not only by its column, and it goes into the canonical snapshot and the digest —
+ * but it is not part of the payload a provider would be sent in this version, so charging it
+ * against a ceiling that exists to bound what leaves the platform would bill the pack for text that
+ * never leaves it. A review flagged labels as "unbudgeted"; this
  * paragraph is the answer, and {@code labelIsInspectorMetadataNotProviderPayload} in {@code
  * ContextPackTest} is the answer in executable form.
  *
