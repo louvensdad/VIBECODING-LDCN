@@ -1,15 +1,16 @@
 package com.vibecode.context;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
-import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.theClass;
 
 import com.tngtech.archunit.core.domain.JavaClasses;
-import com.vibecode.context.application.redaction.ContextRedaction;
-import com.vibecode.context.domain.ContextItem;
-import com.vibecode.context.domain.RedactedContextItem;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import com.vibecode.context.application.redaction.ContextRedaction;
+import com.vibecode.context.domain.AdmittedContextItem;
+import com.vibecode.context.domain.ContextItem;
+import com.vibecode.context.domain.RedactedContextItem;
+import com.vibecode.context.infrastructure.persistence.ContextPackItemEntity;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -184,27 +185,62 @@ class ContextModuleArchitectureTest {
   }
 
   @Test
-  void nobodyOffersAnAlternativeRouteToRedactedContent() {
-    // The failure mode the two rules above cannot see: not a second CALL to a mint, but a second
-    // way to GET one. A convenience method somewhere returning a RedactedContextItem - a cache, a
-    // mapper, a test double promoted into production - would satisfy both rules and hand every
-    // caller the wrapper without the redactor having run. So the return type is fenced too: only
-    // the type itself and the redaction step may produce one.
-    noMethods()
+  void nothingOutsideTheAllowlistMayEvenNameRedactedContent() {
+    // THIS RULE IS THE BOUNDARY. The two above are the message: they name the exact call a reader
+    // is being warned off, and they fail with a sentence about redaction rather than about
+    // dependencies. Keep both, but if the two ever disagree with this one, this one is right.
+    //
+    // Why it is a dependency fence and not a check on calls or on return types. The first version
+    // of this rule fenced the declared return type and the two above fenced the calls, and a
+    // review got past all three with eleven ordinary lines in this very package:
+    //
+    //     private static final Function<ContextItem, RedactedContextItem> MINT =
+    //         RedactedContextItem::producedByRedaction;
+    //
+    // A method reference compiles to invokedynamic, which ArchUnit models as a JavaMethodReference
+    // and not a JavaMethodCall, so callMethod(...) never fired; and the class declared no method
+    // returning the type, so the return-type rule never fired either. No reflection, no
+    // setAccessible - a launderer with a Function field, and the raw fixture reached
+    // context_pack_items.
+    //
+    // The fix is deliberately NOT "also match method references". Enumerating access kinds is open
+    // by construction: the next shape nobody thought of gets through exactly the way this one did.
+    // A dependency fence is closed by construction - naming the type at all, by any mechanism the
+    // JVM has or gains, is a dependency - so the question becomes "who may know this type exists",
+    // which has a short and reviewable answer.
+    //
+    // That answer is enumerated by class rather than by package or pattern, because each entry is
+    // there for its own reason and a pattern would silently admit the next class to match it.
+    //
+    // Scoped to the whole application rather than to ..context.., which costs nothing and removes
+    // a caveat: a class in another module naming this type would be a launderer with a longer
+    // import, and there is no legitimate reason for one to exist.
+    noClasses()
         .that()
-        .areDeclaredInClassesThat()
-        .doNotBelongToAnyOf(RedactedContextItem.class, ContextRedaction.class)
-        .and()
-        // AdmittedContextItem.redactedItem() is the record's own accessor: it hands back the
-        // wrapper it was constructed with and cannot invent one. Exempted by name rather than by
-        // exempting the whole class, so a genuine factory added there would still be caught.
-        .doNotHaveName("redactedItem")
+        .doNotBelongToAnyOf(
+            // The type itself.
+            RedactedContextItem.class,
+            // Mints on the materialisation path. The one step allowed to say content is redacted.
+            ContextRedaction.class,
+            // Mints on rehydration. The one place holding a row it wrote itself.
+            ContextPackItemEntity.class,
+            // Holds one. It cannot produce one - its only constructor demands it be handed one -
+            // so it needs to name the type without being able to supply it.
+            AdmittedContextItem.class)
         .should()
-        .haveRawReturnType(RedactedContextItem.class)
+        .dependOnClassesThat()
+        .haveFullyQualifiedName("com.vibecode.context.domain.RedactedContextItem")
         .because(
-            "a redacted item is produced at one boundary or rehydrated at one other; a third"
-                + " supplier would make the type a label rather than a boundary")
+            "a redacted item is minted at one boundary and rehydrated at one other; any fifth"
+                + " class that can even name the type is a class that can hand one out, whatever"
+                + " mechanism it uses to get it")
         .check(PRODUCTION_CLASSES);
+
+    // The previous version of this rule carried a `.doNotHaveName("redactedItem")` exemption for
+    // AdmittedContextItem's record accessor. It was a codebase-wide exemption on a method NAME:
+    // any production class anywhere could have declared `RedactedContextItem redactedItem()` and
+    // passed. It is deleted rather than narrowed - the allowlist above is per class, so the
+    // accessor is covered by AdmittedContextItem being on it, and there is nothing left to exempt.
   }
 
   @Test

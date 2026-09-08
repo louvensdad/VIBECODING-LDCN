@@ -61,10 +61,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       demonstrate that by executing it — the demonstration is that the code cannot be written —
  *       so the shapes are asserted by reflection instead, and they are what a compile error would
  *       have been about.
- *   <li><b>Build.</b> The two mints on {@code RedactedContextItem} are fenced to one package each
- *       by {@code ContextModuleArchitectureTest}, and the return type is fenced across the whole
- *       application. Java without a JPMS module cannot say "one other package may call this", so
- *       this is where that sentence lives.
+ *   <li><b>Build.</b> Four production classes in the entire application may depend on {@code
+ *       RedactedContextItem} at all — the type, {@code ContextRedaction}, {@code
+ *       ContextPackItemEntity} and {@code AdmittedContextItem} — enforced as a dependency
+ *       allowlist by {@code ContextModuleArchitectureTest}, with two narrower call rules kept
+ *       beside it for the message they produce. Java without a JPMS module cannot say "one other
+ *       package may call this", so this is where that sentence lives. It is a dependency rule
+ *       rather than a call rule because the call rule was walked through: a {@code Function} field
+ *       holding {@code RedactedContextItem::producedByRedaction} is a method reference, ArchUnit
+ *       models that as a reference and not a call, and the fixture reached the table with no
+ *       reflection at all.
  *   <li><b>Nothing.</b> Reflection forges the wrapper, and the last test does exactly that and
  *       persists the result. That is not a defect being reported; it is true of every type in the
  *       language, and a claim of impossibility would be the dishonest version of this file.

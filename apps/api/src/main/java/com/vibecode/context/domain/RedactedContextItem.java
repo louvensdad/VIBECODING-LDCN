@@ -27,9 +27,18 @@ import java.util.Objects;
  *
  * <p><b>What it does not claim.</b> It does not redact; {@code ContextRedaction} does, and the
  * domain cannot see the Guardian's redactor by design. So this type does not verify that the text
- * it holds went through the redactor — it records <em>which boundary</em> produced it, and the build
- * enforces that only two callers exist. It is a marker of provenance-through-redaction, not a proof
- * of it, and saying otherwise would be promising more than the code delivers.
+ * it holds went through the redactor — it records <em>which boundary</em> produced it. It is a
+ * marker of provenance-through-redaction, not a proof of it, and saying otherwise would be
+ * promising more than the code delivers.
+ *
+ * <p>What the build does enforce, exactly: {@code ContextModuleArchitectureTest} allows four
+ * production classes in {@code ..context..} to depend on this type at all — this one, {@code
+ * ContextRedaction}, {@code ContextPackItemEntity} and {@code AdmittedContextItem} — so a fifth
+ * class cannot name it, by a call, a method reference, a field type or any other mechanism the JVM
+ * has or gains. An earlier version of that rule fenced calls and declared return types instead, and
+ * a review walked through it with a {@code Function} field holding a method reference: no
+ * reflection, and the fixture reached the table. The fence is a dependency rule now because
+ * enumerating access kinds is open by construction and an allowlist is not.
  *
  * <p><b>The limit, stated plainly.</b> The private constructor is reachable by reflection, as the
  * private constructor of every type in Java is. The claim defended here is that no ordinary
@@ -51,10 +60,13 @@ public final class RedactedContextItem {
   /**
    * The one mint on the materialisation path: the item as {@code ContextRedaction} returned it.
    *
-   * <p>Callable only from {@code com.vibecode.context.application.redaction}, which is enforced by
-   * {@code ContextModuleArchitectureTest} rather than by the compiler — a package-private
-   * constructor cannot express "one other package" without a JPMS module, and this project has
-   * none. The rule bites on the build, which is the same place a broken compile would.
+   * <p>Reachable only from {@code ContextRedaction}, and that is a build rule rather than a
+   * language one: a package-private constructor cannot express "one other package may call this"
+   * without a JPMS module, and this project has none. Two rules in {@code
+   * ContextModuleArchitectureTest} hold it — the dependency allowlist, which is the boundary
+   * because it covers every way of naming this class, and a narrower rule on direct calls, which
+   * exists to fail with a sentence about redaction rather than about dependencies. Both bite on the
+   * build, which is the same place a broken compile would.
    *
    * <p>Named for what it asserts. A method called {@code of} would read as a conversion and would
    * be reached for by the next person in a hurry; this one cannot be called without writing down
@@ -70,9 +82,15 @@ public final class RedactedContextItem {
    * <p><b>This is a different boundary from creation, and it is honest about being one.</b> Nothing
    * here re-runs redaction and nothing here can tell redacted text from raw. It trusts the row,
    * because the row was written by this application after redaction ran — there is no column in
-   * {@code context_pack_items} that could hold a pre-redaction value, and no write path that could
-   * fill one. A hand-edited row therefore comes back exactly as edited, and that is the accepted
-   * cost of being able to load a snapshot at all.
+   * {@code context_pack_items} that could hold a pre-redaction value, and the only write path is
+   * one whose types demand a redacted item. A hand-edited row therefore comes back exactly as
+   * edited, and that is the accepted cost of being able to load a snapshot at all.
+   *
+   * <p>"The only write path" is a claim about production code that a build rule keeps true, not a
+   * property of the schema. A class that could name this type could hand a launderer a wrapper over
+   * anything, and for one commit a method reference in the compiler package did exactly that — see
+   * the class javadoc. The dependency allowlist is what closed it; without that rule this paragraph
+   * would be wishful.
    *
    * <p>Re-redacting on read would be worse than useless: the stored digest was taken over the text
    * as written, so a second pass that changed anything would produce a pack that no longer matched

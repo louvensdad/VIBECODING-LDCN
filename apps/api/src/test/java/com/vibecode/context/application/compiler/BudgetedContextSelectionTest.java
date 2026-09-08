@@ -2,8 +2,8 @@ package com.vibecode.context.application.compiler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.vibecode.context.domain.AdmittedContextItem;
 import com.vibecode.context.application.redaction.ContextRedaction;
+import com.vibecode.context.domain.AdmittedContextItem;
 import com.vibecode.context.domain.ContextAdmission;
 import com.vibecode.context.domain.ContextBudget;
 import com.vibecode.context.domain.ContextItem;

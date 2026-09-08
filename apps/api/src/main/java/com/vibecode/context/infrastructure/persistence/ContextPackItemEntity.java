@@ -148,9 +148,12 @@ public class ContextPackItemEntity {
    * <p>Rehydration is a different boundary from creation, and {@link
    * RedactedContextItem#rehydratedFromStorage(ContextItem)} is named so nobody has to guess which
    * one this is. Nothing re-redacts here. The content in this row was redacted before it was
-   * written — there is no column that could have held the raw value and no write path that could
-   * have filled one — so what comes back is trusted because we wrote it, not because it was
-   * checked. Re-running the redactor on read would be worse: the stored digest was taken over the
+   * written — there is no column that could have held the raw value, and the only write path is
+   * one whose types demand a redacted item — so what comes back is trusted because we wrote it, not
+   * because it was checked. That second clause is a claim about production code held by a build
+   * rule, not by the schema: for one commit a method reference in the compiler package was a write
+   * path that filled exactly this column with raw text, and the dependency allowlist in {@code
+   * ContextModuleArchitectureTest} is what closed it. Re-running the redactor on read would be worse: the stored digest was taken over the
    * text as written, and a redactor whose patterns had widened since would hand back a pack that no
    * longer matched its own digest.
    *

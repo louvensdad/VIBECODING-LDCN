@@ -27,7 +27,11 @@ import com.vibecode.guardian.domain.SensitiveDataRedactor;
  * property of the type system — with one honest gap, which is that this class cannot prove to the
  * domain that the text it hands over really went through the redactor above. It marks the boundary;
  * it does not certify the bytes. The architecture test is what keeps the boundary single: no other
- * production class may call {@link RedactedContextItem#producedByRedaction(ContextItem)}.
+ * production class in {@code ..context..} may depend on {@link RedactedContextItem} at all, so no
+ * other class can reach {@link RedactedContextItem#producedByRedaction(ContextItem)} by a call, a
+ * method reference, or any other route. Stated as a dependency and not as a call because the
+ * call-shaped version of this rule was walked through with a method reference, and a rule that
+ * enumerates access kinds is open to whichever kind is thought of next.
  *
  * <p><b>What: every piece of free text a pack stores.</b> That is an item's content, an item's
  * label, and the pack's own task reference. Content is the obvious one. The label is redacted

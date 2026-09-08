@@ -3,6 +3,7 @@ package com.vibecode.context.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.vibecode.context.application.redaction.ContextRedaction;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -261,10 +262,13 @@ class ContextPackTest {
    * this test is the answer rather than the fix — a ceiling that exists to bound what leaves the
    * platform must not be charged for text that does not leave it.
    *
-   * <p>It is not outside everything else. A label is redacted by {@code ContextRedaction}, it is
-   * capped at 500 characters by its column, and it goes into the canonical payload and therefore
-   * into the digest — which this test pins too, because "not budgeted" is otherwise one careless
-   * step from "not covered".
+   * <p>It is not outside everything else, and the body checks two of the three ways it is covered:
+   * a label is redacted by {@code ContextRedaction}, and it is inside the canonical payload and so
+   * inside {@link CompiledContextPack#packDigest()}. The third — the 500-character cap — is a
+   * column width in V9 and a {@code @Column(length = 500)} on {@code ContextPackItemEntity}, and no
+   * test asserts it in either place; it is named here so a reader knows where it lives and knows it
+   * is unguarded, not so this test can take credit for it. "Not budgeted" is otherwise one careless
+   * step from "not covered", which is why the other two are asserted rather than asserted about.
    *
    * <p><b>If labels are ever sent to a provider, {@link ContextBudget} must change with them</b> —
    * {@link ContextUsage#plus(ContextItem)} and {@link ContextItem#characterCount()} are the two
@@ -312,7 +316,41 @@ class ContextPackTest {
     assertThat(tighterThanTheLabel.admits(longLabelled.usage())).isTrue();
 
     // And yet the label is not invisible: it is part of what a pack says it holds, so two packs
-    // differing only in a label are different packs.
+    // differing only in a label are different packs. Both digests are checked, because they are
+    // different digests over different field lists and "the label is covered" has to be true of
+    // the one the compiler actually publishes.
     assertThat(longLabelled.contentFingerprint()).isNotEqualTo(shortLabelled.contentFingerprint());
+    assertThat(compiledDigestOf(withLongLabel)).isNotEqualTo(compiledDigestOf(withShortLabel));
+
+    // And a label is redacted like any other stored free text - not budgeted is not the same as
+    // not looked at.
+    ContextItem secretLabelled =
+        new ContextItem(
+            "i-label",
+            ContextKind.DECISION,
+            "TOKEN=vc_label_fixture_5501234",
+            content,
+            new ContextProvenance(
+                ContextSource.of(ContextSourceType.BRAIN_ENTRY, "dec-1"), PROJECT, OBSERVED));
+    ContextItem afterRedaction = ContextRedaction.redact(secretLabelled).item();
+    assertThat(afterRedaction.label()).doesNotContain("vc_label_fixture_5501234");
+    assertThat(afterRedaction.label()).contains("[REDACTED]");
+  }
+
+  /** The compiler's digest over a one-item pack, which is where the published claim lives. */
+  private static String compiledDigestOf(ContextItem item) {
+    return new CompiledContextPack(
+            UUID.fromString("00000000-0000-0000-0000-0000000000c3"),
+            PROJECT,
+            "TASK-CTX-01",
+            Instant.parse("2026-02-02T12:00:00Z"),
+            GENEROUS,
+            ContextPolicyVersion.CURRENT,
+            List.of(
+                new AdmittedContextItem(
+                    ContextRedaction.redact(item),
+                    ContextAdmission.allow(
+                        "context.policy.test", "Fixture admission for the label decision."))))
+        .packDigest();
   }
 }
