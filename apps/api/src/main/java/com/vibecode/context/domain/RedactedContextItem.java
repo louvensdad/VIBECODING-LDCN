@@ -32,10 +32,16 @@ import java.util.Objects;
  * promising more than the code delivers.
  *
  * <p>What the build does enforce, exactly: {@code ContextModuleArchitectureTest} allows four
- * production classes in {@code ..context..} to depend on this type at all — this one, {@code
- * ContextRedaction}, {@code ContextPackItemEntity} and {@code AdmittedContextItem} — so a fifth
- * class cannot name it, by a call, a method reference, a field type or any other mechanism the JVM
- * has or gains. An earlier version of that rule fenced calls and declared return types instead, and
+ * production classes in the whole application — not merely in {@code ..context..} — to depend on
+ * this type at all: this one, {@code ContextRedaction}, {@code ContextPackItemEntity} and {@code
+ * AdmittedContextItem}. The four are excluded by fully qualified name and not by {@code
+ * belongToAnyOf}, which would have exempted anything nested inside them; that was the second
+ * bypass, and a public nested class in {@code AdmittedContextItem.java} minting by method
+ * reference passed every rule until it was fixed. So no fifth class may declare this type, call a
+ * method on it, or reference one of its methods — which is every way of obtaining one that does
+ * not already have one in hand. Passing along a wrapper somebody else made is invisible to the
+ * rule and harmless: making one over raw content requires reaching this class, and reaching it is
+ * what the fence sees. An earlier version of that rule fenced calls and declared return types instead, and
  * a review walked through it with a {@code Function} field holding a method reference: no
  * reflection, and the fixture reached the table. The fence is a dependency rule now because
  * enumerating access kinds is open by construction and an allowlist is not.

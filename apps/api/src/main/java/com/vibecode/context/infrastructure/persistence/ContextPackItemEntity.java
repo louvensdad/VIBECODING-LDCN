@@ -153,9 +153,11 @@ public class ContextPackItemEntity {
    * because it was checked. That second clause is a claim about production code held by a build
    * rule, not by the schema: for one commit a method reference in the compiler package was a write
    * path that filled exactly this column with raw text, and the dependency allowlist in {@code
-   * ContextModuleArchitectureTest} is what closed it. Re-running the redactor on read would be worse: the stored digest was taken over the
-   * text as written, and a redactor whose patterns had widened since would hand back a pack that no
-   * longer matched its own digest.
+   * ContextModuleArchitectureTest} is what closed it.
+   *
+   * <p>Re-running the redactor on read would be worse: the stored digest was taken over the text as
+   * written, and a redactor whose patterns had widened since would hand back a pack that no longer
+   * matched its own digest.
    *
    * <p>The admission comes back as an allow because that is what a stored row is: a denied item was
    * never written. {@link ContextAdmission} re-checks that the rule id and the explanation are both

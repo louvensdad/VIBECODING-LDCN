@@ -70,7 +70,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       rather than a call rule because the call rule was walked through: a {@code Function} field
  *       holding {@code RedactedContextItem::producedByRedaction} is a method reference, ArchUnit
  *       models that as a reference and not a call, and the fixture reached the table with no
- *       reflection at all.
+ *       reflection at all. A second review then walked through the first version of the fence
+ *       itself: it excluded the four by {@code belongToAnyOf}, which also exempts anything nested
+ *       inside them, so a public nested class in {@code AdmittedContextItem.java} minting by method
+ *       reference passed all nine rules. The allowlist excludes by fully qualified name now. Both
+ *       bypasses are recorded in that test rather than summarised here, because the shape of the
+ *       code that got through is the part worth reading.
  *   <li><b>Nothing.</b> Reflection forges the wrapper, and the last test does exactly that and
  *       persists the result. That is not a defect being reported; it is true of every type in the
  *       language, and a claim of impossibility would be the dishonest version of this file.

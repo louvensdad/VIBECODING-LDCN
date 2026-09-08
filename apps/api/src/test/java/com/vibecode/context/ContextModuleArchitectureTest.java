@@ -155,6 +155,19 @@ class ContextModuleArchitectureTest {
     // Widened to the whole application on purpose rather than scoped to ..context..: a mint
     // reached from outside the module would be worse than one reached from inside it, and a rule
     // that only looked inward would have missed it.
+    //
+    // THIS RULE IS THE MESSAGE, NOT THE BOUNDARY, and the distinction is load-bearing rather than
+    // stylistic. callMethod matches a JavaMethodCall and nothing else, so
+    // `RedactedContextItem::producedByRedaction` - a method reference, modelled as a
+    // JavaMethodReference - passes it. That blindness is known and left in place deliberately: the
+    // predicate is kept narrow so its failure names the exact call a reader is being warned off,
+    // in a sentence about redaction rather than about dependencies.
+    //
+    // It is safe to leave narrow ONLY because the dependency fence below covers the same ground by
+    // a mechanism that has no such blind spot, including inside the four allowlisted files. When
+    // the fence exempted whole files rather than classes, this rule was the only guard over their
+    // contents, and a nested class minting by method reference passed the entire suite. Do not let
+    // this rule become the only guard over anything again.
     noClasses()
         .that()
         .resideOutsideOfPackage("..context.application.redaction..")
@@ -212,35 +225,74 @@ class ContextModuleArchitectureTest {
     // That answer is enumerated by class rather than by package or pattern, because each entry is
     // there for its own reason and a pattern would silently admit the next class to match it.
     //
+    // AND THE FIRST ATTEMPT TO WRITE THAT DOWN WAS ITSELF A PATTERN. It used doNotBelongToAnyOf,
+    // whose semantics are "these classes OR any inner, anonymous or nested class of them" - so the
+    // allowlist was four FILES, and the pattern was "anything declared inside these four files".
+    // The review walked through it in three steps, none of them reflective:
+    //
+    //     1. a public nested class inside AdmittedContextItem.java minting by direct call:
+    //        the fence did not fire at all, and only onlyTheRedactionStepMintsRedactedContent
+    //        caught it;
+    //     2. the same nested class minting by method reference instead: nine rules green, because
+    //        the fence exempted it as nested and rule 1 is blind to method references;
+    //     3. a fifth class in application.compiler calling that nested laundry - its own call
+    //        descriptor is (ContextItem, ContextAdmission) -> AdmittedContextItem, so it depends on
+    //        RedactedContextItem nowhere. Nine rules green, fixture in context_pack_items.
+    //
+    // Hence doNotHaveFullyQualifiedName below, one per class, which excludes exactly the four named
+    // types and nothing declared inside them. It is worth more than the fix that the belief which
+    // failed was "enumerated by class": the next person to write an allowlist here will reach for
+    // belongToAnyOf for the same reason, and it will admit nested types for them too.
+    //
     // Scoped to the whole application rather than to ..context.., which costs nothing and removes
     // a caveat: a class in another module naming this type would be a launderer with a longer
     // import, and there is no legitimate reason for one to exist.
     noClasses()
         .that()
-        .doNotBelongToAnyOf(
-            // The type itself.
-            RedactedContextItem.class,
-            // Mints on the materialisation path. The one step allowed to say content is redacted.
-            ContextRedaction.class,
-            // Mints on rehydration. The one place holding a row it wrote itself.
-            ContextPackItemEntity.class,
-            // Holds one. It cannot produce one - its only constructor demands it be handed one -
-            // so it needs to name the type without being able to supply it.
-            AdmittedContextItem.class)
+        // The type itself.
+        .doNotHaveFullyQualifiedName("com.vibecode.context.domain.RedactedContextItem")
+        .and()
+        // Mints on the materialisation path. The one step allowed to say content is redacted.
+        .doNotHaveFullyQualifiedName("com.vibecode.context.application.redaction.ContextRedaction")
+        .and()
+        // Mints on rehydration. The one place holding a row it wrote itself.
+        .doNotHaveFullyQualifiedName(
+            "com.vibecode.context.infrastructure.persistence.ContextPackItemEntity")
+        .and()
+        // Holds one. It cannot produce one - its only constructor demands it be handed one - so it
+        // needs to name the type without being able to supply it.
+        .doNotHaveFullyQualifiedName("com.vibecode.context.domain.AdmittedContextItem")
         .should()
         .dependOnClassesThat()
         .haveFullyQualifiedName("com.vibecode.context.domain.RedactedContextItem")
         .because(
-            "a redacted item is minted at one boundary and rehydrated at one other; any fifth"
-                + " class that can even name the type is a class that can hand one out, whatever"
-                + " mechanism it uses to get it")
+            "a redacted item is minted at one boundary and rehydrated at one other, and outside"
+                + " those four types nothing may declare it, call a method on it, or reference one"
+                + " of its methods - which is every way of obtaining one that does not already have"
+                + " one in hand")
         .check(PRODUCTION_CLASSES);
 
+    // WHAT THIS RULE DOES NOT CATCH, and why it is still the boundary. ArchUnit's dependency model
+    // carries neither the return type of a call nor the parameter types of a constructor call, so
+    // a wrapper can flow through a class invisibly:
+    //
+    //     var wrapper = legit.redactedItem();
+    //     return new AdmittedContextItem(wrapper, allow);
+    //
+    // ContextPackCompiler is exactly that shape - it funnels a wrapper from ContextRedaction into
+    // a new AdmittedContextItem, is not allowlisted, and is correctly not flagged. The reason that
+    // is a gap in this rule's *description* and not in the boundary is worth stating, because the
+    // argument lives nowhere else in the code: producing a wrapper over RAW content needs either a
+    // call whose owner is RedactedContextItem or a method reference to one of its mints, and both
+    // are dependencies on the owner, so both are caught. An inference-only flow has no way to make
+    // a wrapper - it can only pass along one that already exists, and one that already exists was
+    // either redacted or read from a row we wrote.
+    //
     // The previous version of this rule carried a `.doNotHaveName("redactedItem")` exemption for
     // AdmittedContextItem's record accessor. It was a codebase-wide exemption on a method NAME:
     // any production class anywhere could have declared `RedactedContextItem redactedItem()` and
-    // passed. It is deleted rather than narrowed - the allowlist above is per class, so the
-    // accessor is covered by AdmittedContextItem being on it, and there is nothing left to exempt.
+    // passed. It is deleted rather than narrowed - the allowlist above names that class, so the
+    // accessor is covered, and there is nothing left to exempt.
   }
 
   @Test
