@@ -135,6 +135,77 @@ class ContextPackMigrationTest {
     assertThat(indexes).isZero();
   }
 
+
+  @Test
+  @DisplayName("The pack digest is not an identity either, and carries no key or index")
+  void thePackDigestIsNotAKey() {
+    SimpleDriverDataSource dataSource = database("context-migration-digest-" + UUID.randomUUID());
+    flyway(dataSource, null).migrate();
+
+    JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+
+    // Same reasoning as the fingerprint above and one more besides: two packs compiled from
+    // unchanged state under the same policy share this value by design, so a unique constraint
+    // would turn a legitimate rebuild into an error.
+    Integer constraints =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM information_schema.key_column_usage "
+                + "WHERE LOWER(column_name) = 'pack_digest'",
+            Integer.class);
+    assertThat(constraints).isZero();
+
+    Integer indexes =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM information_schema.index_columns "
+                + "WHERE LOWER(column_name) = 'pack_digest'",
+            Integer.class);
+    assertThat(indexes).isZero();
+  }
+
+  @Test
+  @DisplayName("The four admission columns exist and none of them is nullable")
+  void anItemCannotBeStoredWithoutSayingWhy() {
+    SimpleDriverDataSource dataSource = database("context-migration-admission-" + UUID.randomUUID());
+    flyway(dataSource, null).migrate();
+
+    JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+
+    // Nullable would mean a row could exist saying "admitted, reason unknown", which is the state
+    // the whole engine exists to prevent - and it would be reached by a write path forgetting a
+    // field rather than by anybody deciding anything.
+    assertThat(isNotNull(jdbc, "context_pack_items", "policy_rule_id")).isTrue();
+    assertThat(isNotNull(jdbc, "context_pack_items", "explanation")).isTrue();
+    assertThat(isNotNull(jdbc, "context_packs", "policy_version")).isTrue();
+    assertThat(isNotNull(jdbc, "context_packs", "pack_digest")).isTrue();
+
+    // And there is no decision column: every stored row is an allow by construction, so a column
+    // repeating that would carry no information while inviting someone to store refusals - with
+    // the content that was refused still attached.
+    assertThat(columnExists(jdbc, "context_pack_items", "decision")).isFalse();
+  }
+
+  private boolean isNotNull(JdbcTemplate jdbc, String table, String column) {
+    String nullable =
+        jdbc.queryForObject(
+            "SELECT is_nullable FROM information_schema.columns "
+                + "WHERE LOWER(table_name) = ? AND LOWER(column_name) = ?",
+            String.class,
+            table,
+            column);
+    return "NO".equalsIgnoreCase(nullable);
+  }
+
+  private boolean columnExists(JdbcTemplate jdbc, String table, String column) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM information_schema.columns "
+                + "WHERE LOWER(table_name) = ? AND LOWER(column_name) = ?",
+            Integer.class,
+            table,
+            column);
+    return count != null && count > 0;
+  }
+
   private boolean tableExists(JdbcTemplate jdbc, String table) {
     Integer count =
         jdbc.queryForObject(

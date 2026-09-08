@@ -1,5 +1,7 @@
 package com.vibecode.context.infrastructure.persistence;
 
+import com.vibecode.context.domain.AdmittedContextItem;
+import com.vibecode.context.domain.ContextAdmission;
 import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextKind;
 import com.vibecode.context.domain.ContextProvenance;
@@ -30,6 +32,13 @@ import java.util.UUID;
  * <p>{@code content} holds redacted text and there is no second copy of it here. Redaction runs
  * before anything is persisted, so this class has no field — and the table no column — that could
  * hold the value that was redacted away.
+ *
+ * <p>The row also carries the admission that let the item in: the id of the policy rule and that
+ * rule's explanation, both mandatory. They are stored rather than re-derived because a pack is a
+ * historical snapshot - asking today's policy why an item was admitted two versions ago would
+ * produce an answer that sounds authoritative and is about a different set of rules. There is
+ * deliberately no decision column: a denied item is never written, so every row here is an allow by
+ * construction, and a column saying so on every row would carry no information.
  */
 @Entity
 @Table(name = "context_pack_items")
@@ -82,10 +91,24 @@ public class ContextPackItemEntity {
   @Column(name = "recorded_at", nullable = false)
   private Instant recordedAt;
 
+  /** The rule that admitted this item, as it was named at the time. See the class javadoc. */
+  @Column(name = "policy_rule_id", nullable = false, length = 200)
+  private String policyRuleId;
+
+  /** That rule's explanation, as it read at the time. Human text, so 500 - see the V9 comments. */
+  @Column(name = "explanation", nullable = false, length = 500)
+  private String explanation;
+
   /** For JPA only. */
   protected ContextPackItemEntity() {}
 
-  ContextPackItemEntity(ContextPackEntity pack, int itemPosition, ContextItem item) {
+  /**
+   * Takes an {@link AdmittedContextItem} and not a bare {@link ContextItem}, which is the whole
+   * point: there is no constructor here that can build a row without an admission, so an item
+   * cannot reach the database with nobody able to say why it is there.
+   */
+  ContextPackItemEntity(ContextPackEntity pack, int itemPosition, AdmittedContextItem admitted) {
+    ContextItem item = admitted.item();
     ContextProvenance provenance = item.provenance();
     this.id = UUID.randomUUID();
     this.pack = pack;
@@ -99,6 +122,8 @@ public class ContextPackItemEntity {
     this.sourceVersion = provenance.sourceVersion().orElse(null);
     this.provenanceProjectId = provenance.projectId();
     this.recordedAt = provenance.recordedAt();
+    this.policyRuleId = admitted.admission().policyRuleId();
+    this.explanation = admitted.admission().explanation();
   }
 
   /**
@@ -113,8 +138,30 @@ public class ContextPackItemEntity {
         itemId, kind, label, content, new ContextProvenance(source, provenanceProjectId, recordedAt));
   }
 
+  /**
+   * Rebuilds the item together with the decision that admitted it.
+   *
+   * <p>The admission comes back as an allow because that is what a stored row is: a denied item was
+   * never written. {@link ContextAdmission} re-checks that the rule id and the explanation are both
+   * present, so a row edited to drop either of them fails to load rather than coming back as an item
+   * nobody can account for.
+   */
+  public AdmittedContextItem toAdmitted() {
+    return new AdmittedContextItem(toDomain(), ContextAdmission.allow(policyRuleId, explanation));
+  }
+
   public UUID getId() {
     return id;
+  }
+
+  /** The rule that admitted this item when the pack was compiled. Never re-derived on read. */
+  public String getPolicyRuleId() {
+    return policyRuleId;
+  }
+
+  /** That rule's explanation as it read at the time. */
+  public String getExplanation() {
+    return explanation;
   }
 
   public int getItemPosition() {

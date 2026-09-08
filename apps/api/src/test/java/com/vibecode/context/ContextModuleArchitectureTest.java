@@ -95,4 +95,69 @@ class ContextModuleArchitectureTest {
                 + " default removes it and disarms the compile error that guards a new entry type")
         .check(PRODUCTION_CLASSES);
   }
+
+  @Test
+  void nothingInContextEvenNamesTheVaultService() {
+    // The package rule above already forbids this, and this one overlaps it deliberately. The
+    // package rule is the one an over-eager refactor could weaken by moving a class; this one names
+    // the single type that would actually do the damage, so a reviewer reading either test knows
+    // exactly what is being defended. SECRETS ARE REFERENCES, NEVER CONTEXT.
+    noClasses()
+        .that()
+        .resideInAPackage("..context..")
+        .should()
+        .dependOnClassesThat()
+        .haveFullyQualifiedName("com.vibecode.vault.application.VaultService")
+        .because(
+            "resolving a secret is not a step this pipeline has; an item is text from an official"
+                + " record, and a SecretReference is never dereferenced to build one")
+        .check(PRODUCTION_CLASSES);
+  }
+
+  @Test
+  void onlyTheRedactionStepReachesTheGuardiansRedactor() {
+    // One chokepoint, not a habit. Redaction has to happen before persistence, before the digest
+    // and before measurement, and the way to keep that true is for there to be exactly one place
+    // in this module that can call the redactor at all. A collector that started redacting on its
+    // own would look harmless and would move the boundary: the budget would then be measuring text
+    // that a later step might redact again, and two items would have been through different
+    // treatments with nothing recording which.
+    //
+    // The rule names the Guardian's class rather than its package, because the context engine has
+    // other legitimate business with the guardian - the security summary collector reads findings.
+    noClasses()
+        .that()
+        .resideInAPackage("..context..")
+        .and()
+        .resideOutsideOfPackage("..context.application.redaction..")
+        .should()
+        .dependOnClassesThat()
+        .haveFullyQualifiedName("com.vibecode.guardian.domain.SensitiveDataRedactor")
+        .because(
+            "ContextRedaction is the single point at which context content is redacted, and a"
+                + " second caller would mean two answers to when redaction happens")
+        .check(PRODUCTION_CLASSES);
+  }
+
+  @Test
+  void contextPersistenceDependsOnTheDomainAndNotOnTheCompiler() {
+    // Why the admission model lives in the domain rather than beside the compiler. Persistence has
+    // to name the type it stores; if that type lived in the application layer, infrastructure would
+    // depend on application while the application already depends on ContextPackRepository - a
+    // cycle, and the kind that only shows up as a mysterious startup failure much later.
+    //
+    // It also keeps a second door shut: an entity that could see the policy would be one refactor
+    // away from re-deriving an item's explanation from today's rules on read, which would quietly
+    // rewrite what a stored pack says about itself.
+    noClasses()
+        .that()
+        .resideInAPackage("..context.infrastructure..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAPackage("..context.application..")
+        .because(
+            "a stored pack is described by the domain; persistence must not need the compiler or"
+                + " the policy to say what it holds")
+        .check(PRODUCTION_CLASSES);
+  }
 }

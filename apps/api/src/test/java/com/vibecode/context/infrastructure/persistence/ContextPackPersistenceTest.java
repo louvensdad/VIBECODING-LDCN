@@ -3,10 +3,14 @@ package com.vibecode.context.infrastructure.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.vibecode.context.domain.AdmittedContextItem;
+import com.vibecode.context.domain.CompiledContextPack;
+import com.vibecode.context.domain.ContextAdmission;
 import com.vibecode.context.domain.ContextBudget;
 import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextKind;
 import com.vibecode.context.domain.ContextPack;
+import com.vibecode.context.domain.ContextPolicyVersion;
 import com.vibecode.context.domain.ContextProvenance;
 import com.vibecode.context.domain.ContextSource;
 import com.vibecode.context.domain.ContextSourceType;
@@ -51,6 +55,19 @@ class ContextPackPersistenceTest {
   /** Generous, because this test is about persistence and not about where a budget binds. */
   private static final ContextBudget BUDGET = new ContextBudget(50, 100_000L, 200_000L);
 
+  /**
+   * A stand-in admission, so these fixtures can be stored at all.
+   *
+   * <p>Nothing here is testing the policy: what these tests are about is the round trip. But there
+   * is no way to store a pack without an admission per item, which is the point of {@link
+   * AdmittedContextItem} - so a fixture has to supply one, and it says out loud that it is a
+   * fixture rather than borrowing a real rule id that a reader might then go looking for.
+   */
+  private static final ContextAdmission FIXTURE_ADMISSION =
+      ContextAdmission.allow(
+          "test.fixture.persistence",
+          "A synthetic admission used by the persistence round-trip fixtures.");
+
   @Autowired ContextPackRepository packs;
   @Autowired ProjectService projects;
   @Autowired TestIdentity identity;
@@ -84,6 +101,26 @@ class ContextPackPersistenceTest {
     return new ContextPack(UUID.randomUUID(), projectId, "TASK-42", ASSEMBLED_AT, BUDGET, items);
   }
 
+  /**
+   * The compiled form of a fixture pack, since a bare pack is not storable.
+   *
+   * <p>Every item gets {@link #FIXTURE_ADMISSION}. The admissions are uniform on purpose: these
+   * tests assert about order, provenance and widths, and varying the rule id per item would only
+   * add a second thing that could differ between what was written and what came back.
+   */
+  private CompiledContextPack compiled(ContextPack pack) {
+    return new CompiledContextPack(
+        pack.packId(),
+        pack.projectId(),
+        pack.taskReference(),
+        pack.assembledAt(),
+        pack.budget(),
+        ContextPolicyVersion.CURRENT,
+        pack.items().stream()
+            .map(item -> new AdmittedContextItem(item, FIXTURE_ADMISSION))
+            .toList());
+  }
+
   private List<String> idsOf(ContextPack pack) {
     return pack.items().stream().map(ContextItem::id).toList();
   }
@@ -105,7 +142,7 @@ class ContextPackPersistenceTest {
     Collections.shuffle(items, new Random(20260301L));
 
     ContextPack written = packOf(items);
-    packs.save(ContextPackEntity.from(written));
+    packs.save(ContextPackEntity.from(compiled(written)));
 
     ContextPack read = packs.findById(written.packId()).orElseThrow().toDomain();
 
@@ -136,7 +173,7 @@ class ContextPackPersistenceTest {
             null);
 
     ContextPack written = packOf(List.of(versioned, unversioned));
-    packs.save(ContextPackEntity.from(written));
+    packs.save(ContextPackEntity.from(compiled(written)));
 
     ContextPack read = packs.findById(written.packId()).orElseThrow().toDomain();
 
@@ -180,8 +217,8 @@ class ContextPackPersistenceTest {
     assertThat(first.contentFingerprint()).isEqualTo(second.contentFingerprint());
     assertThat(first.packId()).isNotEqualTo(second.packId());
 
-    packs.save(ContextPackEntity.from(first));
-    packs.save(ContextPackEntity.from(second));
+    packs.save(ContextPackEntity.from(compiled(first)));
+    packs.save(ContextPackEntity.from(compiled(second)));
 
     // Both rows exist. A unique constraint on the fingerprint would have rejected the second, and a
     // rebuild of unchanged context would have become an error instead of a second snapshot.
@@ -211,7 +248,7 @@ class ContextPackPersistenceTest {
                 item("tamper-a", ContextKind.OBJECTIVE, ContextSourceType.CURRENT_TASK, "task-1", null),
                 item("tamper-b", ContextKind.RULE, ContextSourceType.BRAIN_ENTRY, "entry-1", 1),
                 item("tamper-c", ContextKind.ERROR, ContextSourceType.ACTIVE_ERRORS, "err-1", null)));
-    packs.save(ContextPackEntity.from(written));
+    packs.save(ContextPackEntity.from(compiled(written)));
 
     // Swap the first two positions behind the mapping's back, through a temporary value because
     // the database will not let two items claim the same place even for an instant.
@@ -239,16 +276,20 @@ class ContextPackPersistenceTest {
   void negativePositionIsRejected() {
     ContextPack written =
         packOf(List.of(item("only", ContextKind.NOTE, ContextSourceType.PROJECT, "project-1", null)));
-    packs.save(ContextPackEntity.from(written));
+    packs.save(ContextPackEntity.from(compiled(written)));
 
     // Uniqueness alone would have accepted this row: no other item claims position -1.
     assertThatThrownBy(
             () ->
                 jdbc.update(
+                    // Every column is supplied, the admission pair included, so the only thing
+                    // this row violates is the position check. Leaving policy_rule_id or
+                    // explanation out would still throw - on NOT NULL - and the test would pass
+                    // while asserting nothing about item_position at all.
                     "INSERT INTO context_pack_items (id, pack_id, item_position, item_id, kind, "
                         + "label, content, source_type, source_id, source_version, "
-                        + "provenance_project_id, recorded_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        + "provenance_project_id, recorded_at, policy_rule_id, explanation) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     UUID.randomUUID(),
                     written.packId(),
                     -1,
@@ -260,7 +301,9 @@ class ContextPackPersistenceTest {
                     "project-1",
                     null,
                     projectId,
-                    OBSERVED_AT))
+                    OBSERVED_AT,
+                    FIXTURE_ADMISSION.policyRuleId(),
+                    FIXTURE_ADMISSION.explanation()))
         .isInstanceOf(DataIntegrityViolationException.class);
   }
 
@@ -290,7 +333,7 @@ class ContextPackPersistenceTest {
             BUDGET,
             List.of(labelled));
 
-    packs.save(ContextPackEntity.from(written));
+    packs.save(ContextPackEntity.from(compiled(written)));
 
     ContextPack read = packs.findById(written.packId()).orElseThrow().toDomain();
     assertThat(read.taskReference()).isEqualTo(longTaskReference);
@@ -322,7 +365,7 @@ class ContextPackPersistenceTest {
         new ContextPack(
             UUID.randomUUID(), projectId, "TASK-42", nanosecondPrecision, BUDGET, List.of(precise));
 
-    packs.save(ContextPackEntity.from(written));
+    packs.save(ContextPackEntity.from(compiled(written)));
     ContextPack read = packs.findById(written.packId()).orElseThrow().toDomain();
 
     Instant readAssembledAt = read.assembledAt();

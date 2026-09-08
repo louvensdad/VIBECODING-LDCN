@@ -1,8 +1,11 @@
 package com.vibecode.context.infrastructure.persistence;
 
+import com.vibecode.context.domain.AdmittedContextItem;
+import com.vibecode.context.domain.CompiledContextPack;
 import com.vibecode.context.domain.ContextBudget;
 import com.vibecode.context.domain.ContextItem;
 import com.vibecode.context.domain.ContextPack;
+import com.vibecode.context.domain.ContextPolicyVersion;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -23,9 +26,16 @@ import java.util.UUID;
  * being evidence of what context looked like and become a working set with a misleading name. A
  * changed selection is a new pack with a new id.
  *
- * <p><b>Identity is {@link #getId()}, the pack's UUID.</b> {@code contentFingerprint} is stored
- * beside it as description only — see {@link #getContentFingerprint()} — and nothing here or in
- * {@link ContextPackRepository} looks a pack up by it.
+ * <p><b>Identity is {@link #getId()}, the pack's UUID.</b> Two digests are stored beside it and
+ * neither is an identity: {@code contentFingerprint} describes what one pack's items say — see
+ * {@link #getContentFingerprint()} — and {@code packDigest} describes the whole compilation,
+ * policy version and admissions included, see {@link #getPackDigest()}. Nothing here or in {@link
+ * ContextPackRepository} looks a pack up by either.
+ *
+ * <p><b>The only way in is a {@link CompiledContextPack}.</b> There is deliberately no factory
+ * taking a bare {@link ContextPack}: a pack without admissions is not storable, because the rows it
+ * would produce could not say why any of their items are there. Making that a missing method rather
+ * than a runtime check is what stops it being reintroduced by someone in a hurry.
  */
 @Entity
 @Table(name = "context_packs")
@@ -56,6 +66,14 @@ public class ContextPackEntity {
   @Column(name = "content_fingerprint", nullable = false, length = 64)
   private String contentFingerprint;
 
+  /** The compiler's digest over the canonical payload. Description, never identity. */
+  @Column(name = "pack_digest", nullable = false, length = 64)
+  private String packDigest;
+
+  /** The policy in force when these items were admitted. See {@link ContextPolicyVersion}. */
+  @Column(name = "policy_version", nullable = false, length = 20)
+  private String policyVersion;
+
   @Column(name = "created_at", nullable = false)
   private Instant createdAt;
 
@@ -80,23 +98,29 @@ public class ContextPackEntity {
   /**
    * Takes the snapshot as it stands.
    *
-   * <p>The item order is the pack's own canonical order — {@link ContextPack} has already sorted
-   * it, so the position written here is a copy of a decision the domain made, not one this class
-   * makes.
+   * <p>The item order is the pack's own canonical order — {@link CompiledContextPack} has already
+   * sorted it, so the position written here is a copy of a decision the domain made, not one this
+   * class makes.
+   *
+   * <p>Both digests and the policy version are copied, never computed. Recomputing a digest at
+   * write time would digest whatever this entity happened to hold, which is a different claim from
+   * the one the compiler made about what it selected.
    */
-  public static ContextPackEntity from(ContextPack pack) {
+  public static ContextPackEntity from(CompiledContextPack compiled) {
     ContextPackEntity entity = new ContextPackEntity();
-    entity.id = pack.packId();
-    entity.projectId = pack.projectId();
-    entity.taskReference = pack.taskReference();
-    entity.assembledAt = pack.assembledAt();
-    entity.budgetMaxItems = pack.budget().maxItems();
-    entity.budgetMaxCharacters = pack.budget().maxCharacters();
-    entity.budgetMaxBytes = pack.budget().maxBytes();
-    entity.contentFingerprint = pack.contentFingerprint();
+    entity.id = compiled.packId();
+    entity.projectId = compiled.projectId();
+    entity.taskReference = compiled.taskReference();
+    entity.assembledAt = compiled.assembledAt();
+    entity.budgetMaxItems = compiled.budget().maxItems();
+    entity.budgetMaxCharacters = compiled.budget().maxCharacters();
+    entity.budgetMaxBytes = compiled.budget().maxBytes();
+    entity.contentFingerprint = compiled.pack().contentFingerprint();
+    entity.packDigest = compiled.packDigest();
+    entity.policyVersion = compiled.policyVersion().value();
     entity.createdAt = Instant.now();
 
-    List<ContextItem> packItems = pack.items();
+    List<AdmittedContextItem> packItems = compiled.admittedItems();
     for (int position = 0; position < packItems.size(); position++) {
       entity.items.add(new ContextPackItemEntity(entity, position, packItems.get(position)));
     }
@@ -127,13 +151,26 @@ public class ContextPackEntity {
    * all, so a pack edited into overrunning its ceiling is rejected here too.
    */
   public ContextPack toDomain() {
-    List<ContextItem> storedOrder = new ArrayList<>(items.size());
+    return toCompiled().pack();
+  }
+
+  /**
+   * Rebuilds the compiled pack: the snapshot, the policy version it was compiled under, and every
+   * item's admission as it was recorded.
+   *
+   * <p>This is the full reconstruction; {@link #toDomain()} is the same thing viewed without the
+   * admissions. The order check described above happens here, before {@link CompiledContextPack}
+   * sorts anything — running it afterwards would compare a sorted list against itself and pass
+   * exactly the rows it exists to catch.
+   */
+  public CompiledContextPack toCompiled() {
+    List<AdmittedContextItem> storedOrder = new ArrayList<>(items.size());
     for (ContextPackItemEntity item : items) {
-      storedOrder.add(item.toDomain());
+      storedOrder.add(item.toAdmitted());
     }
 
-    List<ContextItem> canonicalOrder = new ArrayList<>(storedOrder);
-    canonicalOrder.sort(ContextItem.CANONICAL_ORDER);
+    List<AdmittedContextItem> canonicalOrder = new ArrayList<>(storedOrder);
+    canonicalOrder.sort(AdmittedContextItem.CANONICAL_ORDER);
     if (!idsOf(storedOrder).equals(idsOf(canonicalOrder))) {
       throw new IllegalStateException(
           "Stored pack "
@@ -148,17 +185,18 @@ public class ContextPackEntity {
               + " be silently re-sorted under a rule invented after it was taken.");
     }
 
-    return new ContextPack(
+    return new CompiledContextPack(
         id,
         projectId,
         taskReference,
         assembledAt,
         new ContextBudget(budgetMaxItems, budgetMaxCharacters, budgetMaxBytes),
+        new ContextPolicyVersion(policyVersion),
         storedOrder);
   }
 
-  private static List<String> idsOf(List<ContextItem> items) {
-    return items.stream().map(ContextItem::id).toList();
+  private static List<String> idsOf(List<AdmittedContextItem> items) {
+    return items.stream().map(AdmittedContextItem::id).toList();
   }
 
   public UUID getId() {
@@ -191,6 +229,23 @@ public class ContextPackEntity {
    */
   public String getContentFingerprint() {
     return contentFingerprint;
+  }
+
+  /**
+   * The compiler's digest as it was computed when this pack was written.
+   *
+   * <p>Description, never identity, for the same reasons as {@link #getContentFingerprint()} — and
+   * with one more: it covers the policy version and every item's admitting rule, so it changes when
+   * the rules change even if the text did not. Comparing two packs by it is the point; finding a
+   * pack by it is not, and the repository offers no way to.
+   */
+  public String getPackDigest() {
+    return packDigest;
+  }
+
+  /** The policy version these items were admitted under. A historical fact, not today's version. */
+  public String getPolicyVersion() {
+    return policyVersion;
   }
 
   public Instant getCreatedAt() {
