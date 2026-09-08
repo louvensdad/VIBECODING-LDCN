@@ -24,6 +24,14 @@ public final class SensitiveDataRedactor {
   private static final Pattern OPENAI_KEY_PATTERN =
       Pattern.compile("sk-[A-Za-z0-9_-]{16,}");
 
+  /**
+   * {@code $NAME}: a shell or Compose variable read, which is a reference to a secret and not one.
+   * An identifier, deliberately — a name, optionally dotted or dashed the way a Spring property is,
+   * and nothing else. {@code $2b$12$…} is not an identifier and is therefore not exempt.
+   */
+  private static final Pattern INTERPOLATED_NAME_PATTERN =
+      Pattern.compile("\\$[A-Za-z_][A-Za-z0-9_.-]*");
+
   private static final Pattern GITHUB_TOKEN_PATTERN =
       Pattern.compile("(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}");
 
@@ -65,21 +73,32 @@ public final class SensitiveDataRedactor {
    * and is returned untouched, and so is {@code PASSWORD_FILE=/etc/pw} — the secret word must be
    * the <em>end</em> of the key for the separator to follow it.
    *
-   * <p><b>Group 2 is everything between the key and the value, kept verbatim</b>: an optional quote
-   * closing a JSON key, the separator, the whitespace on either side, and an optional quote opening
-   * the value. Keeping it rather than rebuilding it does two things. It makes {@code "password":
-   * "…"} — the spelling this API's own responses are written in — reachable, where before the
-   * closing quote sat between the key and the colon and stopped the match dead. And it means
-   * redaction substitutes the value and edits nothing else, so {@code PASSWORD  =  x} keeps its
-   * spacing instead of being silently reformatted to {@code PASSWORD=x}.
+   * <p><b>Group 2 is everything between the key and the value, kept verbatim</b>: the separator, the
+   * whitespace on either side, an optional quote opening the value, and — before a colon only — an
+   * optional quote closing the key. Keeping it rather than rebuilding it does two things. It makes
+   * {@code "password": "…"} — the spelling this API's own responses are written in — reachable,
+   * where before the closing quote sat between the key and the colon and stopped the match dead.
+   * And it means redaction substitutes the value and edits nothing else, so {@code PASSWORD  =  x}
+   * keeps its spacing instead of being silently reformatted to {@code PASSWORD=x}.
    *
-   * <p>Group 3 is the value, ending at whitespace, comma, semicolon or quote. Unchanged.
+   * <p><b>The quoted key is allowed before {@code :} and not before {@code =}</b>, which looks
+   * arbitrary and is not. JSON, YAML and JavaScript object literals quote a key and then write a
+   * colon; no format quotes a key and then writes {@code =}. What does look like that is a Ruby or
+   * PHP hash — {@code 'password' => 'secret'} — and allowing a quote before {@code =} made the
+   * pattern match its {@code =}, take {@code >} as the whole value and produce
+   * {@code 'password' =[REDACTED] 'secret'}: the line mangled and the secret still in it. That was
+   * strictly worse than doing nothing, which is what the previous pattern did here, so the colon
+   * carries the quote and the equals sign does not. {@code PASSWORD=>secret} under a bare key is
+   * unaffected and still redacted, exactly as it was before.
+   *
+   * <p>Group 3 is the value, ending at whitespace, comma, semicolon or quote. Unchanged — and see
+   * {@code SecretAssignmentGrammarTest} for what that costs on a passphrase.
    */
   private static final Pattern SENSITIVE_KV_PATTERN =
       Pattern.compile(
           "(?i)\\b([A-Za-z0-9_]*(?:"
               + SENSITIVE_KEY_WORDS
-              + "))([\"']?\\s*[=:]\\s*[\"']?)([^\\s,;\"'\\r\\n]+)");
+              + "))((?:[\"']?\\s*:|\\s*=)\\s*[\"']?)([^\\s,;\"'\\r\\n]+)");
 
   private SensitiveDataRedactor() {}
 
@@ -181,7 +200,24 @@ public final class SensitiveDataRedactor {
     if (trimmed.startsWith("${") && trimmed.endsWith("}")) {
       return true;
     }
-    if (trimmed.startsWith("$")) {
+    // A bare $NAME: the other spelling of the same interpolation. Deliberately an identifier and
+    // not "anything after a dollar sign", which is what this used to be.
+    //
+    // That earlier rule reopened this task's own finding for the cost of one character. EVERY
+    // bcrypt hash begins "$2", and a password may begin with "$" like any other character, so
+    // VIBECODE_DB_PASSWORD=$2b$12$… was matched by the key rule and then handed back untouched by
+    // this method — reaching the 201 body, items[].label, items[].content, the canonical payload,
+    // the digest and both context tables. Byte for byte the blast radius of FINDING CTX-09B-1,
+    // reopened by a character that is part of the secret's own shape.
+    //
+    // The narrowing preserves the intent rather than changing the policy: the exemption was always
+    // meant to cover interpolation syntax, and startsWith("$") was an over-broad implementation of
+    // it. ${NAME}, $NAME, <ANYTHING>, [REDACTED], ***, CHANGE_ME and REPLACE_ME all stay exempt.
+    // What stops being exempt is a value that merely begins with a dollar sign: $2b$12$…, and also
+    // shell command substitution $(…), which is now redacted rather than passed through. That
+    // second one is a deliberate accepted cost — it errs towards removing a value that was not a
+    // secret, which is the safe direction, where the first errs towards publishing one that was.
+    if (INTERPOLATED_NAME_PATTERN.matcher(trimmed).matches()) {
       return true;
     }
     if (trimmed.startsWith("<") && trimmed.endsWith(">")) {

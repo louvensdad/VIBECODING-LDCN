@@ -303,6 +303,159 @@ class SecretAssignmentGrammarTest {
     }
   }
 
+  // ------------------------------------------------------------------------- the widened region
+
+  /**
+   * <b>What the widened key pattern costs, named on both sides.</b>
+   *
+   * <p>The commit that fixed FINDING CTX-09B-1 claimed that no existing test changed behaviour and
+   * offered that as evidence the widening ate nothing it should not. <b>That claim was wrong</b>,
+   * and it was wrong in a way worth being precise about: the suite has no test anywhere in the
+   * widened region, so its silence was evidence of nothing at all. The negatives in {@link Prose}
+   * cannot reach this class either — {@code passwordHash} and {@code user.getAccessToken()} have no
+   * separator, and {@code PASSWORD_FILE=} and {@code TOKEN_LIMIT=} put the secret word at the
+   * <em>start</em> of the key. The widened region is a secret word at the <em>end</em> of a longer
+   * identifier, followed by a separator, and nothing tested it.
+   *
+   * <p>It was then measured, line by line, over this repository's own text: 446 files, 42,006
+   * non-blank lines, each line put through the redactor as it stood at 6d784fb and through the
+   * redactor as it stands now. Counting only files this task did not itself write — the four it
+   * touched are prose <em>about</em> the redactor and match it by construction, so including them
+   * would inflate the number with its own documentation — <b>24 lines are rewritten that were not
+   * before, and 0 lines that were rewritten before are left alone now.</b> The widening is strictly
+   * one-directional: nothing stopped being redacted. Five of the 24 are in shipped code rather than
+   * tests, and none of the 24 contains a secret.
+   *
+   * <p>The cases below are the real ones, copied verbatim from that scan. They are pinned as
+   * {@code isEqualTo} on the mangled output rather than described in a comment, for the same reason
+   * {@code password: ok} is pinned: <b>whoever narrows this pattern later must see the cost
+   * first</b>, in a test that goes green when they fix it, rather than discovering the trade after
+   * they have made it. Two things to understand before reading them as an argument for narrowing:
+   *
+   * <ul>
+   *   <li><b>This class of damage is not new.</b> {@code String token = match.group();} was already
+   *       mangled by the old redactor, to {@code String token=[REDACTED];} — a bare identifier that
+   *       happens to be a secret word has always been treated as an assignment. The widening
+   *       extends that reach from bare identifiers to identifiers ending in one; it does not invent
+   *       the behaviour.
+   *   <li><b>Narrowing costs redaction.</b> Requiring the prefix to end in a delimiter would spare
+   *       {@code rawPassword ==} and {@code accessToken:} and would give up {@code dbPassword=} and
+   *       {@code apiKey=} — the camelCase spelling a JSON body actually uses. It would not spare
+   *       {@code CHARACTERS_PER_TOKEN = 4}, which is underscore-delimited and indistinguishable in
+   *       form from {@code SERVICE_AUTH_TOKEN=secret}, the very case this task was required to fix.
+   * </ul>
+   *
+   * <p>{@code redact()} output is what reaches a client and a coding model, so a Java or TypeScript
+   * file pasted into a context item comes back with declarations and comparisons chewed out. That
+   * is a real cost and it is recorded here as one.
+   */
+  @Nested
+  @DisplayName("The widened region: what a suffixed key costs and what it still misses")
+  class WidenedRegion {
+
+    @Test
+    @DisplayName("COST: ordinary source code whose identifier ends in a secret word is mangled")
+    void sourceCodeInTheWidenedRegionIsMangled() {
+      // Every one of these is real, from src/main and src/test of this repository. None contains a
+      // secret. All five were returned untouched by the redactor at 6d784fb.
+      assertThat(redact("private static final int CHARACTERS_PER_TOKEN = 4;"))
+          .isEqualTo("private static final int CHARACTERS_PER_TOKEN = [REDACTED];");
+      assertThat(redact("if (rawPassword == null) {"))
+          .isEqualTo("if (rawPassword =[REDACTED] null) {");
+      assertThat(redact("if (encodedPassword == null || encodedPassword.isBlank()) {"))
+          .isEqualTo("if (encodedPassword =[REDACTED] null || encodedPassword.isBlank()) {");
+      assertThat(redact("accessToken: string;")).isEqualTo("accessToken: [REDACTED];");
+      assertThat(redact("csrfToken = json.readTree(body).get(\"token\").asText();"))
+          .isEqualTo("csrfToken = [REDACTED]\"token\").asText();");
+    }
+
+    @Test
+    @DisplayName("COST: a quoted key before a colon also catches a JavaScript ternary")
+    void theQuotedKeyAlsoCatchesATernary() {
+      // The price of reading "password": "..." as an assignment, which is the spelling this API's
+      // own responses use. A ternary puts a quoted string, a colon and another quoted string in the
+      // same order, and nothing in the text distinguishes them.
+      assertThat(redact("autoComplete={registering ? \"new-password\" : \"current-password\"}"))
+          .isEqualTo("autoComplete={registering ? \"new-password\" : \"[REDACTED]\"}");
+    }
+
+    @Test
+    @DisplayName("The one input that was strictly worse than before, and is not any more")
+    void theRubyHashArrowIsNotMangled() {
+      // 'password' => 'secret' was mangled AND still leaking: the pattern took the = of =>, read >
+      // as the whole value, and produced 'password' =[REDACTED] 'secret'. Strictly worse than the
+      // old behaviour, which was to leave it alone. A quote may now close a key only before a
+      // colon, never before an equals sign — no format writes "key" = value, and this is what
+      // writes 'key' => value.
+      assertUntouched("'password' => '" + VALUE + "'");
+      assertUntouched("$config['password'] => '" + VALUE + "'");
+      // Not bought at the price of the bare-key form, which the old redactor did catch and which
+      // this still catches — the value there is ">" plus the secret, and all of it goes.
+      assertThat(redact("PASSWORD=>" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      // And the two spellings the quote before a colon exists for are unaffected.
+      assertRedacted("\"password\": \"" + VALUE + "\"");
+      assertRedacted("'password': '" + VALUE + "'");
+    }
+
+    /**
+     * The other half of the trade, and the half the first version of this work documented without
+     * naming: the secret word must be the <em>end</em> of the key, so anything after it is a miss.
+     *
+     * <p>Each of these carries the value through with its shape intact, which is the full blast
+     * radius of FINDING CTX-09B-1 for anyone who spells their key this way. It is left as a miss
+     * deliberately. Widening far enough to catch {@code DB_PASSWORD_VALUE=} means matching a secret
+     * word anywhere inside a key, and the measurement above is what that costs — {@code
+     * PASSWORD_FILE=/etc/pw.txt} names a path, not a password, and would go with it.
+     *
+     * <p>This test is the tripwire for that. It is written as {@code isEqualTo} on the untouched
+     * input, so a future widening that starts matching a secret word mid-key turns it red and its
+     * author reads this paragraph before deciding.
+     */
+    @Test
+    @DisplayName("MISS: a secret word that is not the end of the key passes the value through")
+    void aSuffixedKeyIsNotRecognised() {
+      assertUntouched("DB_PASSWORDS=" + VALUE);
+      assertUntouched("DB_PASSWORD_VALUE=" + VALUE);
+      assertUntouched("DB_TOKEN_2=" + VALUE);
+      assertUntouched("dbPasswordValue=" + VALUE);
+      assertUntouched("creds[password]=" + VALUE);
+
+      // The other side of the same rule, and the reason it is the rule: these name a path, a
+      // number and a schedule, and redacting them would destroy the information without removing a
+      // secret.
+      assertUntouched("PASSWORD_FILE=/etc/vibecode/pw.txt");
+      assertUntouched("TOKEN_LIMIT=4096");
+      assertUntouched("API_KEY_ROTATION_DAYS=30");
+    }
+
+    /**
+     * A value ends at whitespace, so a passphrase is redacted down to its first word and the rest
+     * is published.
+     *
+     * <p>This is not new — {@code PASSWORD="uma senha longa"} lost only {@code uma} at 6d784fb too —
+     * but it is newly <em>reachable</em> under a prefixed or quoted key, which means it now happens
+     * to text that used to pass through whole. That reads as a success in a body search for the
+     * full value and is a partial one: {@code correct horse battery staple} is a password, and
+     * three quarters of it survives.
+     *
+     * <p>Not changed here. Extending the value to the closing quote is a real fix and a real risk —
+     * an unbalanced quote in prose would swallow a paragraph — and it belongs to whoever owns the
+     * value half of this pattern, not to a key-pattern fix. Pinned so it is a known limitation
+     * rather than a surprise.
+     */
+    @Test
+    @DisplayName("LIMITATION: a multi-word value keeps everything after its first token")
+    void aMultiWordValueIsOnlyPartlyRemoved() {
+      assertThat(redact("\"password\": \"correct horse battery staple\""))
+          .isEqualTo("\"password\": \"[REDACTED] horse battery staple\"");
+      assertThat(redact("VIBECODE_DB_PASSWORD=\"minha frase secreta longa\""))
+          .isEqualTo("VIBECODE_DB_PASSWORD=\"[REDACTED] frase secreta longa\"");
+      // The single-token case, for contrast: nothing survives there.
+      assertThat(redact("\"password\": \"" + VALUE + "\""))
+          .isEqualTo("\"password\": \"[REDACTED]\"");
+    }
+  }
+
   // -------------------------------------------------------------------------------- placeholders
 
   @Nested
@@ -331,7 +484,61 @@ class SecretAssignmentGrammarTest {
       assertUntouched("ACCESS_TOKEN=REPLACE_ME");
       assertUntouched("SERVICE_AUTH_TOKEN=CHANGE_ME");
       assertUntouched("PASSWORD=$DB_PASSWORD");
+      assertUntouched("VIBECODE_DB_PASSWORD=$DB_PASSWORD");
+      assertUntouched("PASSWORD=$db.password");
+      assertUntouched("Authorization: Bearer $ACCESS_TOKEN");
       assertUntouched("PASSWORD=***");
+    }
+
+    /**
+     * The exemption that reopened the finding, and the narrowing that closes it.
+     *
+     * <p>{@code isSafePlaceholder} exempted any value beginning with {@code $}. The key rule now
+     * reaches a prefixed assignment, and then handed it straight back: <b>every bcrypt hash begins
+     * {@code $2}</b>, and a password may begin with a dollar sign like any other character. One
+     * character prepended to the value reopened the whole of FINDING CTX-09B-1 — the 201 body,
+     * {@code items[].label}, {@code items[].content}, the canonical payload, the digest and both
+     * context tables — and the character was part of the secret's own shape rather than something a
+     * caller had to be careful about.
+     *
+     * <p>The narrowing keeps the intent and drops the over-reach: the exemption was always for
+     * interpolation syntax, and {@code startsWith("$")} was an over-broad way of writing it. A
+     * {@code $} followed by an identifier is a variable read; a {@code $} followed by anything at
+     * all is not.
+     *
+     * <p>Everything the architect enumerated stays exempt, and that is asserted above rather than
+     * asserted here, so this test cannot pass by having quietly emptied the policy. What stops
+     * being exempt, besides a hash, is shell command substitution — {@code $(cat /run/secrets/db)}
+     * is now redacted. That is an accepted cost in the safe direction: it removes something that
+     * was not a secret, where the old rule published something that was.
+     */
+    @Test
+    @DisplayName("A value that merely begins with $ is not a placeholder: bcrypt is redacted")
+    void aDollarSignAloneIsNotAPlaceholder() {
+      assertRedacted("VIBECODE_DB_PASSWORD=$2b$12$" + VALUE);
+      assertRedacted("PASSWORD=$2b$12$" + VALUE);
+      assertRedacted("\"password\": \"$2y$10$" + VALUE + "\"");
+      assertRedacted("PASSWORD=$1$salt$hash");
+      assertRedacted("PASSWORD=$argon2id$v=19$m=65536");
+      // The residue, pinned rather than pretended away: a value that is a dollar sign followed by
+      // something spelled exactly like a shell variable is still exempt, because nothing in the
+      // text distinguishes $Pa55phrase_zqxw_610455 from $DB_PASSWORD. That is the irreducible cost
+      // of exempting interpolation at all, and it is far smaller than "anything after a $": it now
+      // requires the secret to contain no character outside an identifier, where before it required
+      // only that the secret start with one.
+      assertUntouched("PASSWORD=$" + VALUE);
+      assertThat(SensitiveDataRedactor.isSafePlaceholder("$2b$12$KIXQ8fQzqxw610455mnopABCDEF"))
+          .as("a bcrypt hash is not a placeholder")
+          .isFalse();
+      assertThat(SensitiveDataRedactor.isSafePlaceholder("$DB_PASSWORD"))
+          .as("an interpolated name still is")
+          .isTrue();
+      assertThat(SensitiveDataRedactor.isSafePlaceholder("${DB_PASSWORD}")).isTrue();
+      // The accepted cost, pinned so it is a decision and not a surprise.
+      assertThat(SensitiveDataRedactor.isSafePlaceholder("$(cat /run/secrets/db)"))
+          .as("command substitution is no longer exempt; it is over-redacted, which is the safe way"
+              + " to be wrong")
+          .isFalse();
     }
 
     @Test

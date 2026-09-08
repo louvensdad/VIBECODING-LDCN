@@ -125,6 +125,27 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
   private static final String PREFIXED_SHAPED = "OPENAI_API_KEY=" + SHAPED;
 
   /**
+   * The same shape-less secret with a bcrypt prefix on the front, which is a third value travelling
+   * the same path and differing from {@link #SHAPELESS} by seven characters.
+   *
+   * <p>It is here because the fix that closed this finding did not close it for this value. The key
+   * rule reached the assignment and {@code isSafePlaceholder} then handed it back untouched, because
+   * it exempted anything beginning with {@code $} — and every bcrypt hash begins {@code $2}. Four of
+   * the eight tests in this class went red when the fixture was given this value, and the blast
+   * radius was byte for byte the one the class was written to measure: the 201 body, {@code
+   * items[].label}, {@code items[].content}, the canonical payload, the digest, {@code
+   * context_packs} and {@code context_pack_items}.
+   *
+   * <p>So it is planted permanently rather than measured once. A value whose leading character is
+   * part of its own shape must not be able to reopen a closed finding, and the way to guarantee that
+   * is to make the class's existing measurements cover it, not to add a gentler test beside them.
+   */
+  private static final String BCRYPT_SHAPELESS = "$2b$12$" + SHAPELESS;
+
+  /** The bcrypt-shaped value under the same prefixed key. */
+  private static final String PREFIXED_BCRYPT = "SERVICE_AUTH_TOKEN=" + BCRYPT_SHAPELESS;
+
+  /**
    * The tables that are the project's own records: the user wrote the secret into these and the
    * engine only reads them. Every other table is in the "must be clean" half by default, so a table
    * added later that starts holding pack content fails the sweep without anyone updating a list.
@@ -200,6 +221,17 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
         BrainEntryType.VISION,
         "Vision " + PREFIXED_SHAPELESS,
         "Written next to " + PREFIXED_SHAPELESS,
+        "test");
+    // The bcrypt-shaped value, in a title and a body of its own so it reaches label and content the
+    // same way the other two do. Because BCRYPT_SHAPELESS ends with SHAPELESS, every assertion in
+    // this class that searches for SHAPELESS covers this value too — it does not need assertions of
+    // its own, and giving it any would make it possible to close this class's measurements while
+    // leaving that one open.
+    brain.add(
+        projectId,
+        BrainEntryType.ARCHITECTURE,
+        "Architecture " + PREFIXED_BCRYPT,
+        "The service authenticates with " + PREFIXED_BCRYPT,
         "test");
 
     outsider = identity.createUser("http-exposure-outsider");
