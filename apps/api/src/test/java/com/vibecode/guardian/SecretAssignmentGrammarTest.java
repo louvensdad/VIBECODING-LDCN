@@ -398,8 +398,12 @@ class SecretAssignmentGrammarTest {
       assertThat(redact("if (encodedPassword == null || encodedPassword.isBlank()) {"))
           .isEqualTo("if (encodedPassword =[REDACTED] null || encodedPassword.isBlank()) {");
       assertThat(redact("accessToken: string;")).isEqualTo("accessToken: [REDACTED];");
+      // J1: this line used to come back as csrfToken = [REDACTED]"token").asText(); — the value
+      // stopped at the quote inside get("token"), so half the statement survived beside a chewed
+      // stump. The balanced extent runs the call chain to its end. Still over-redaction, and still
+      // pinned as such, but no longer over-redaction that also breaks the line in the middle.
       assertThat(redact("csrfToken = json.readTree(body).get(\"token\").asText();"))
-          .isEqualTo("csrfToken = [REDACTED]\"token\").asText();");
+          .isEqualTo("csrfToken = [REDACTED];");
     }
 
     @Test
@@ -484,19 +488,17 @@ class SecretAssignmentGrammarTest {
      * falling back to the behaviour that existed before the widening.
      */
     @Test
-    @DisplayName("A quoted key whose value is a container is left alone rather than mangled")
+    @DisplayName("A quoted key whose value is a container is redacted whole or left alone, never mangled")
     void aStructuralJsonValueIsNotMangled() {
-      // Twelve forms, not the four an earlier version of this test claimed. Every one of them
-      // mangled and leaked when the quoted-key branch accepted any value; every one is untouched
-      // now. The fix covers all twelve without enumerating them, because the rule is structural —
-      // "does the character after the colon begin a scalar" — rather than a list of spellings, so
-      // the YAML and nesting cases below were closed without ever being tested for.
+      // Ten forms. Twelve were listed before J1; the two bracketed ones moved below, where they
+      // are now redacted whole rather than left alone. Every one mangled and leaked when the
+      // quoted-key branch accepted any value. The whitelist covers them without enumerating them,
+      // because it is structural rather than a list of spellings, so the YAML and nesting cases
+      // below were closed without ever being tested for.
       String[] containers = {
-        // JSON objects and arrays, including one the reviewer supplied and one nested two deep.
+        // JSON objects, including one the reviewer supplied and one nested two deep.
         "{\"password\": {\"inner\": \"" + VALUE + "\"}}",
-        "{\"password\": [\"" + VALUE + "\"]}",
         "{\"config\": {\"apiKey\": {\"v\": \"" + VALUE + "\"}}}",
-        "{\"password\": [{\"k\": \"" + VALUE + "\"}]}",
         "\"password\": {inner: \"" + VALUE + "\"}",
         "- \"password\": {\"x\": \"" + VALUE + "\"}",
         "{\"clientSecret\": (\"" + VALUE + "\")}",
@@ -513,6 +515,22 @@ class SecretAssignmentGrammarTest {
       for (String container : containers) {
         assertUntouched(container);
       }
+
+      // J1 SPLIT THIS LIST IN TWO. Two of the twelve forms this test used to enumerate are
+      // bracketed, and a bracketed value's extent is now measured rather than guessed, so they are
+      // no longer left alone — they are redacted whole. That is a strict improvement on being left
+      // alone, because being left alone left the secret in the document; here it is gone and the
+      // document is intact.
+      //
+      // The ten above stay untouched, and the dividing line is not arbitrary: a bracketed value
+      // ends on the same line, at a character this file can find by counting. A block scalar, an
+      // anchor, a tag and a merge key end somewhere on the following lines, and finding that needs
+      // a YAML parser rather than a redactor. Whitelist, same as before: what is not measurable is
+      // not touched.
+      assertThat(redact("{\"password\": [\"" + VALUE + "\"]}"))
+          .isEqualTo("{\"password\": [REDACTED]");
+      assertThat(redact("{\"password\": [{\"k\": \"" + VALUE + "\"}]}"))
+          .isEqualTo("{\"password\": [REDACTED]");
 
       // Not bought at the price of the spelling the branch exists for, at any depth.
       assertThat(redact("{\"password\": \"" + VALUE + "\"}"))
@@ -628,34 +646,70 @@ class SecretAssignmentGrammarTest {
      * is not valid single-line YAML in the first place.
      */
     @Test
-    @DisplayName("COST: a flow sequence starting with a bare scalar is mangled, and stays that way")
-    void aFlowSequenceIsMangledByTheBracketAdmission() {
-      // Pinned as isEqualTo on the mangled output, the way theRubyHashArrowIsNotMangled pins its
-      // case: these go green the day someone narrows the admission, and red if anyone widens it.
+    @DisplayName("FINDING J1 CLOSED: a flow sequence is redacted whole, never split at its comma")
+    void aFlowSequenceIsRedactedWholeAndNoLongerLeaks() {
+      // These six are FINDING J1 itself, and every one of them used to come back as
+      //     {"password": [REDACTED], Pa55phrase_zqxw_610455]}
+      // — the opening bracket deleted so the document no longer parses, and the secret still in it.
+      // Mangled AND leaking, which is the one combination this redactor is not allowed to produce.
+      //
+      // The closing brace still goes, and that is deliberate rather than an oversight: see
+      // valueExtent's note on why a closer at depth zero must stay an ordinary character. Mangled
+      // without leaking is the trade already accepted for {"password": $2b$12$…}.
       assertThat(redact("{\"password\": [prod, " + VALUE + "]}"))
-          .isEqualTo("{\"password\": [REDACTED], " + VALUE + "]}");
+          .isEqualTo("{\"password\": [REDACTED]");
       assertThat(redact("{\"apiKey\": [prod, " + VALUE + "]}"))
-          .isEqualTo("{\"apiKey\": [REDACTED], " + VALUE + "]}");
+          .isEqualTo("{\"apiKey\": [REDACTED]");
       assertThat(redact("\"password\": [prod, " + VALUE + "]"))
-          .isEqualTo("\"password\": [REDACTED], " + VALUE + "]");
+          .isEqualTo("\"password\": [REDACTED]");
       assertThat(redact("'password': [a, b, " + VALUE + "]"))
-          .isEqualTo("'password': [REDACTED], b, " + VALUE + "]");
+          .isEqualTo("'password': [REDACTED]");
       assertThat(redact("{\"clientSecret\": [x, " + VALUE + "]}"))
-          .isEqualTo("{\"clientSecret\": [REDACTED], " + VALUE + "]}");
+          .isEqualTo("{\"clientSecret\": [REDACTED]");
       assertThat(redact("{\"accessToken\": [1, " + VALUE + "]}"))
-          .isEqualTo("{\"accessToken\": [REDACTED], " + VALUE + "]}");
+          .isEqualTo("{\"accessToken\": [REDACTED]");
 
-      // The seventh, and the reason it is weaker: a space, not a bracket.
-      assertThat(redact("\"password\": - " + VALUE))
-          .isEqualTo("\"password\": [REDACTED] " + VALUE);
+      // Nesting, which the old admission also split at the first comma.
+      assertThat(redact("{\"password\": [a, [b, " + VALUE + "]]}"))
+          .isEqualTo("{\"password\": [REDACTED]");
+      // A bracket inside a quoted element does not count as a closer.
+      assertThat(redact("{\"password\": [\"a]b\", " + VALUE + "]}"))
+          .isEqualTo("{\"password\": [REDACTED]");
 
       // The two the admission exists for, so a narrowing cannot be made by simply removing it.
       assertThat(redact("{\"password\": [REDACTED]" + VALUE + "}"))
           .isEqualTo("{\"password\": [REDACTED]");
       assertThat(redact("PASSWORD=[" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
-      // And the container spelling the admission already refuses, for contrast: no comma is needed
-      // to make this one safe, because a quote follows the bracket.
-      assertUntouched("{\"password\": [\"" + VALUE + "\"]}");
+      // And the form that used to be pinned as "refused for contrast": a quote after the bracket
+      // no longer means anything, because the extent is counted rather than sniffed.
+      assertThat(redact("{\"password\": [\"" + VALUE + "\"]}"))
+          .isEqualTo("{\"password\": [REDACTED]");
+    }
+
+    /**
+     * The seventh of the seven J1 forms, and the one that is <b>still open</b>.
+     *
+     * <p>{@code "password": - SECRET} is not a bracket problem. The {@code -} is admitted as the
+     * start of a negative number, the secret is past a space, and the value therefore ends at the
+     * space the way {@code password: a b} does. Nothing about balancing brackets reaches it.
+     *
+     * <p>It is left open because every fix that would reach it is a refusal keyed on the value, and
+     * a refusal keyed on the value fails by publishing. "Refuse when the value is a lone {@code -}"
+     * publishes {@code PASSWORD=-}; "refuse when text remains on the line" publishes
+     * {@code password:\n  passphrase with spaces}, of which the old redactor at least removed the
+     * first word. Both were written, measured, and reverted. Pinned so the census stays complete.
+     */
+    @Test
+    @DisplayName("STILL OPEN: a value ending at whitespace leaks its tail, bracket or no bracket")
+    void aValueEndingAtWhitespaceStillLeaksItsTail() {
+      assertThat(redact("\"password\": - " + VALUE))
+          .isEqualTo("\"password\": [REDACTED] " + VALUE);
+      assertThat(redact("password:\n  - " + VALUE))
+          .isEqualTo("password:\n  [REDACTED] " + VALUE);
+      assertThat(redact("password: |\n  " + VALUE))
+          .isEqualTo("password: [REDACTED]\n  " + VALUE);
+      // Byte-identical to the redactor at 5b07bb1. Measured, not assumed: none of these is a
+      // regression introduced by J1, and none is fixed by it either.
     }
 
     /**
@@ -679,16 +733,34 @@ class SecretAssignmentGrammarTest {
      * carries its own risk of swallowing a paragraph on an unbalanced quote.
      */
     @Test
-    @DisplayName("PRE-EXISTING: an unquoted key with a container value still mangles, as at 6d784fb")
-    void anUnquotedKeyWithAContainerValueStillMangles() {
-      assertThat(redact("PASSWORD={\"inner\": \"" + VALUE + "\"}"))
-          .isEqualTo("PASSWORD=[REDACTED]\"inner\": \"" + VALUE + "\"}");
-      assertThat(redact("PASSWORD=[\"" + VALUE + "\"]"))
-          .isEqualTo("PASSWORD=[REDACTED]\"" + VALUE + "\"]");
-      assertThat(redact("PASSWORD=(\"" + VALUE + "\")"))
-          .isEqualTo("PASSWORD=[REDACTED]\"" + VALUE + "\")");
-      assertThat(redact("password: {inner: " + VALUE + "}"))
-          .isEqualTo("password: [REDACTED] " + VALUE + "}");
+    @DisplayName("J1 ALSO CLOSED HERE: an unquoted key with a container value redacts it whole")
+    void anUnquotedKeyWithAContainerValueIsRedactedWhole() {
+      // These four were pinned as "pre-existing, not this task's to fix" and were the loudest of
+      // the lot: PASSWORD=[...] is an .env line, not an adversarial construction. The scalar-start
+      // whitelist never applied to an unquoted key, so nothing guarded them at all, and all four
+      // mangled and leaked. The extent scan is not part of the whitelist and does not care which
+      // spelling the key used, so they were closed by the same change rather than by four more
+      // alternatives in the pattern.
+      assertThat(redact("PASSWORD={\"inner\": \"" + VALUE + "\"}")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=[\"" + VALUE + "\"]")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=(\"" + VALUE + "\")")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("password: {inner: " + VALUE + "}")).isEqualTo("password: [REDACTED]");
+      assertThat(redact("PASSWORD=[prod," + VALUE + "]")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("password: [prod, " + VALUE + "]")).isEqualTo("password: [REDACTED]");
+
+      // AND THE COUNTERWEIGHT, which is why this is a scan and not a refusal. Each of these has an
+      // unbalanced opener, so the balanced scan fails — and failing falls back to the run this
+      // redactor has always used rather than to leaving the text alone. Refusing here would publish
+      // a password because the caller put a bracket in it, which is worse than any mangling.
+      assertThat(redact("PASSWORD=[" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD={" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=(" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=" + VALUE + "}evil")).isEqualTo("PASSWORD=[REDACTED]");
+      assertThat(redact("PASSWORD=[a}" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      // Unbalanced under a quoted key too: the fallback keeps the pre-existing mangle rather than
+      // upgrading it to a publish.
+      assertThat(redact("password: [prod, " + VALUE))
+          .isEqualTo("password: [REDACTED], " + VALUE);
     }
 
     /**

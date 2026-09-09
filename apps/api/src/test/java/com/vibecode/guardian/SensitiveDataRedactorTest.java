@@ -77,5 +77,86 @@ class SensitiveDataRedactorTest {
     String marked = "PASSWORD=[REDACTED]\nOPENAI_API_KEY=sk-****REDACTED****";
     assertThat(SensitiveDataRedactor.redact(marked)).isEqualTo(marked);
   }
+
+  /**
+   * <b>The invariant, as an executable statement rather than a claim in a comment.</b>
+   *
+   * <p><em>When a sensitive assignment is redacted, the count of the original plaintext is zero.</em>
+   * There is no acceptable outcome of the form "mangled text plus surviving plaintext". Every leak
+   * this redactor has had has been exactly that shape: FINDING J1 emitted
+   * {@code {"password": [REDACTED], SECRET]}}, which is a broken document with the secret still in
+   * it, and the two failures before it were the same thing under different punctuation.
+   *
+   * <p>This runs a cross-product rather than a list, because a list only ever contains the forms
+   * somebody already thought of, and J1 was reachable by six key spellings that a per-spelling test
+   * would have had to enumerate. <b>What would have to be true for this to fail:</b> the redactor
+   * would have to rewrite one of these inputs and leave the needle somewhere in the output. That
+   * was checked rather than assumed: making {@code valueExtent} return {@code plainExtent}
+   * unconditionally — the run that predates this fix — turns this test red on
+   * {@code password=[prod, Pa55phrase_zqxw_610455]}, the first bracketed value it reaches. (It
+   * reports one failure, not many: the assertion is inside the loop and AssertJ stops there. The
+   * count is not evidence of how much the mutation broke.)
+   *
+   * <p>The value shapes are restricted to the ones whose extent ends on the same line as the key,
+   * and that restriction is the honest boundary of this fix rather than a way of making the test
+   * green: {@code SecretAssignmentGrammarTest#aValueEndingAtWhitespaceStillLeaksItsTail} pins the
+   * classes that are still open, and they are open because every available fix for them publishes.
+   */
+  @Test
+  @DisplayName("INVARIANT: rewriting a same-line assignment always removes all of the plaintext")
+  void aRewrittenAssignmentNeverKeepsThePlaintext() {
+    String needle = "Pa55phrase_zqxw_610455";
+    String[] keys = {
+      "password", "PASSWORD", "apiKey", "API_KEY", "api-key", "secret", "token",
+      "client_secret", "clientSecret", "access_token", "accessToken", "private_key",
+      "VIBECODE_DB_PASSWORD", "DB_PASSWORD", "dbPassword", "REFRESH_TOKEN"
+    };
+    String[] quotes = {"", "\"", "'"};
+    String[] separators = {"=", ":", " = ", " : ", "\t=\t"};
+    String[] values = {
+      needle,
+      "$" + needle,
+      "$2b$12$" + needle,
+      "[" + needle + "]",
+      "[prod, " + needle + "]",
+      "[a, [b, " + needle + "]]",
+      "[\"" + needle + "\"]",
+      "[{\"k\": \"" + needle + "\"}]",
+      "{inner: " + needle + "}",
+      "(" + needle + ")",
+      "[REDACTED]" + needle,
+      "[" + needle,
+      "{" + needle,
+      needle + "}evil",
+      "\"" + needle + "\"",
+    };
+    String[] documents = {"%s", "{%s}", "{%s, \"user\": \"bob\"}", "- %s", "prefix %s"};
+
+    int rewritten = 0;
+    for (String key : keys) {
+      for (String quote : quotes) {
+        for (String separator : separators) {
+          for (String value : values) {
+            for (String document : documents) {
+              String input = String.format(document, quote + key + quote + separator + value);
+              String output = SensitiveDataRedactor.redact(input);
+              if (output.equals(input)) {
+                // Left alone. The secret is still there and that is the pre-existing behaviour;
+                // this invariant is about what redaction produces, not about coverage.
+                continue;
+              }
+              rewritten++;
+              assertThat(output)
+                  .as("redacting [%s] rewrote it and kept the plaintext", input)
+                  .doesNotContain(needle);
+            }
+          }
+        }
+      }
+    }
+    // Guards the guard: if the pattern stopped matching, every input would fall into the
+    // "left alone" branch above and this test would pass without asserting anything at all.
+    assertThat(rewritten).isGreaterThan(3000);
+  }
 }
 

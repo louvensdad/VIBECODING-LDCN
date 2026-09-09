@@ -180,6 +180,27 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
   private static final String QUOTED_BCRYPT = "{\"password\": " + BCRYPT_SHAPELESS + "}";
 
   /**
+   * FINDING J1: the same value again, as the second element of a <b>flow sequence</b>.
+   *
+   * <p>{@code {"password": [prod, $2b$12$…]}} was the last spelling that mangled and leaked at the
+   * same time. The redactor admitted the {@code [} because a scalar character followed it, then ran
+   * the value to the comma <em>inside</em> the brackets: the opening bracket was replaced, the
+   * document stopped parsing, and everything after the comma — the secret — stayed exactly where it
+   * was. Six quoted-key spellings reached it, and {@code apiKey: [prod, <key>]} is ordinary YAML
+   * that no adversary is needed to write.
+   *
+   * <p>Planted on the same terms as the three probes above, and that construction is the point
+   * rather than a convenience. The value <b>contains {@link #SHAPELESS}</b>, so all eight
+   * measurements this class makes — the three routes, the route with no request body, the canonical
+   * payload and digest, the logs, the audit rows and the table sweep — cover it as they stand, and
+   * it needs no assertion of its own. <b>A probe with no test of its own cannot be deleted along
+   * with its test.</b> That is not a hypothetical: closing one bypass while deleting the assertion
+   * that named it is how {@link #QUOTED_BCRYPT}'s leak survived a full green suite.
+   */
+  private static final String J1_FLOW_SEQUENCE =
+      "{\"password\": [prod, " + BCRYPT_SHAPELESS + "]}";
+
+  /**
    * What the three planted probes are, appended to the assertions that would otherwise report only
    * a field name or a table name.
    *
@@ -190,13 +211,14 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
    * price paid back — the search needle is one string, so the failure has to carry the list itself.
    */
   private static final String PROBES_PLANTED =
-      " Four values are planted, all containing the one needle this assertion searches for, so the"
+      " Five values are planted, all containing the one needle this assertion searches for, so the"
           + " failure above cannot say which of them escaped — and on this assertion the reported"
-          + " text is a list of field or table names, with no value in it to inspect. The four are"
+          + " text is a list of field or table names, with no value in it to inspect. The five are"
           + " the constants SHAPELESS (bare, under VIBECODE_DB_PASSWORD=), BCRYPT_SHAPELESS"
           + " ($2b$12$…, under SERVICE_AUTH_TOKEN=), DOLLAR_SHAPELESS ($…, under"
           + " APP_CLIENT_SECRET=) and QUOTED_BCRYPT (the same bcrypt value under a quoted JSON key"
-          + " with no quotes on the value). To find out which, re-run"
+          + " with no quotes on the value) and J1_FLOW_SEQUENCE (that same bcrypt value as the"
+          + " second element of a JSON flow sequence). To find out which, re-run"
           + " ContextShapelessSecretBlastRadiusTest and SecretAssignmentGrammarTest, or read the"
           + " offending row directly: SELECT content, label FROM context_pack_items. Then match"
           + " what you find against those four constants at the top of this class — each names the"
@@ -308,6 +330,17 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
         BrainEntryType.RULE,
         "Constraint " + QUOTED_BCRYPT,
         "The config we were sent reads " + QUOTED_BCRYPT,
+        "test");
+    // FINDING J1's spelling, planted on the same terms as the other three: it contains SHAPELESS,
+    // so the class's eight existing measurements catch it and it has no assertion of its own to be
+    // deleted with. Planted twice on purpose — once at the end of the text and once in the middle
+    // of it, because the value's extent runs to the end of the line and "…]} today" exercises a
+    // different path through it than "…]}" at a line end does.
+    brain.add(
+        projectId,
+        BrainEntryType.RULE,
+        "Sequence " + J1_FLOW_SEQUENCE,
+        "The environments file reads " + J1_FLOW_SEQUENCE + " today, and must be rotated.",
         "test");
 
     outsider = identity.createUser("http-exposure-outsider");

@@ -51,6 +51,27 @@ public final class SensitiveDataRedactor {
           + "|SECRET|TOKEN|PASSWORD";
 
   /**
+   * The whole key of a secret assignment, prefix included: {@code VIBECODE_DB_PASSWORD}, not
+   * {@code PASSWORD}. Published so that detection and redaction share one definition of "a
+   * sensitive key" instead of two copies that drift apart.
+   *
+   * <p>SEC-002 carried a hand-written copy of the pre-CTX-09B-1 expression —
+   * {@code \b(API_KEY|SECRET|…)} — where {@code \b} cannot fire before {@code PASSWORD} in
+   * {@code VIBECODE_DB_PASSWORD}, because {@code _} is a word character. That was a detection gap
+   * and not a leak path: the rule's evidence goes through {@link #redact(String)} either way. The
+   * two copies drifting apart is how the gap arose, so there is now one string.
+   *
+   * <p><b>Shared vocabulary, not a shared decision.</b> Detection and redaction stay separate jobs.
+   * No {@link SecurityRule} is consulted by {@link #redact(String)}, and redaction works with every
+   * rule disabled; the dependency points one way, from the rule to this constant, and stays inside
+   * Guardian. Context is not involved, so no cycle is created.
+   *
+   * <p>Contains no capturing group, so a caller may embed it and keep its own group numbering.
+   */
+  public static final String SENSITIVE_KEY_REGEX =
+      "[A-Za-z0-9_]*(?:" + SENSITIVE_KEY_WORDS + ")";
+
+  /**
    * The characters that may begin an unquoted value after a quoted key.
    *
    * <p><b>A whitelist, and that direction is deliberate.</b> Anything not listed falls out of the
@@ -75,13 +96,30 @@ public final class SensitiveDataRedactor {
    *       secret is behind it. So {@code <} is admitted unless another {@code <} follows.
    *   <li>{@code [} begins this redactor's own {@code [REDACTED]} marker — and therefore the
    *       {@code [REDACTED]secret} smuggling attempt, which must be redacted rather than passed
-   *       through. It also opens a JSON array. So {@code [} is admitted only when what follows it
-   *       could start a scalar: {@code ["secret"]} and {@code [{…}]} are containers and are
-   *       refused, {@code [REDACTED]secret} is not.
+   *       through. It also opens a JSON array. <b>It is now admitted unconditionally</b>, because
+   *       the character after it no longer has to decide anything: {@link #valueExtent} measures a
+   *       bracketed value by balancing it, so {@code [REDACTED]secret} and {@code [prod, secret]}
+   *       are both consumed whole.
    * </ul>
+   *
+   * <p><b>FINDING J1, and why the conditional admission was the wrong shape.</b> The lookahead
+   * that used to guard {@code [} asked whether the <em>next</em> character could start a scalar. It
+   * separated {@code [REDACTED]secret} from {@code ["secret"]} correctly and separated neither from
+   * a flow sequence whose first element is a bare scalar. {@code {"password": [prod, SECRET]}} was
+   * admitted, the value ran to the comma inside the brackets, and the output was
+   * {@code {"password": [REDACTED], SECRET]}}: the opening bracket deleted so the document no
+   * longer parses, <em>and the secret still in it</em>. Six quoted-key spellings did this, and
+   * {@code apiKey: [prod, k]} is ordinary YAML that needs no adversary to write.
+   *
+   * <p>A first-character test cannot tell a container from a scalar, because the two differ in
+   * where they <em>end</em>. So the extent is measured instead of guessed, and this whitelist keeps
+   * only the job it can actually do: refusing the openers whose extent is on <em>other lines</em>
+   * and therefore not measurable at all — {@code |} and {@code >} (block scalars), {@code &} (an
+   * anchor), {@code !} (a tag), {@code *} (an alias), {@code &#123;} and {@code (}. Refusing still
+   * means leaving the text exactly as it arrived.
    */
   private static final String SCALAR_VALUE_START =
-      "(?:[A-Za-z0-9$_./+~%@-]|<(?!<)|\\[(?=[A-Za-z0-9$_.+~%@-]))";
+      "(?:[A-Za-z0-9$_./+~%@-]|<(?!<)|\\[)";
 
   /**
    * A secret written as {@code key = value}, in the spellings a key is actually written in.
@@ -166,18 +204,21 @@ public final class SensitiveDataRedactor {
    * included — see {@code SecretAssignmentGrammarTest}, which pins the forms that predate this work
    * rather than quietly fixing some of them.
    *
-   * <p>Group 3 is the value, ending at whitespace, comma, semicolon or quote. Unchanged — and see
-   * {@code SecretAssignmentGrammarTest} for what that costs on a passphrase.
+   * <p><b>There is no group 3 any more.</b> The value used to be {@code [^\s,;"'\r\n]+} — a run
+   * ending at the first terminator — and that is precisely the expression that cannot express a
+   * bracketed value, whose terminators are all <em>inside</em> it. The pattern now ends at the
+   * separator with a zero-width assertion that at least one value character follows, and
+   * {@link #valueExtent} measures how far the value reaches. The assertion is what preserves the
+   * old gating: {@code PASSWORD=} with nothing after it still does not match.
    */
   private static final Pattern SENSITIVE_KV_PATTERN =
       Pattern.compile(
-          "(?i)\\b([A-Za-z0-9_]*(?:"
-              + SENSITIVE_KEY_WORDS
-              + "))((?:[\"']\\s*:\\s*[\"']"
+          "(?i)\\b(" + SENSITIVE_KEY_REGEX
+              + ")((?:[\"']\\s*:\\s*[\"']"
               + "|[\"']\\s*:\\s*(?="
               + SCALAR_VALUE_START
               + ")"
-              + "|\\s*[=:]\\s*[\"']?))([^\\s,;\"'\\r\\n]+)");
+              + "|\\s*[=:]\\s*[\"']?))(?=[^\\s,;\"'\\r\\n])");
 
   private SensitiveDataRedactor() {}
 
@@ -269,26 +310,158 @@ public final class SensitiveDataRedactor {
     // stored redacted and read back.
     Matcher kvMatcher = SENSITIVE_KV_PATTERN.matcher(result);
     StringBuilder sb = new StringBuilder();
-    while (kvMatcher.find()) {
+    int pos = 0;
+    while (kvMatcher.find(pos)) {
       String key = kvMatcher.group(1);
       String separator = kvMatcher.group(2);
-      String val = kvMatcher.group(3);
-
+      int valueStart = kvMatcher.end();
+      int valueEnd = valueExtent(result, valueStart);
+      String val = result.substring(valueStart, valueEnd);
+      sb.append(result, pos, kvMatcher.start());
       if (isAlreadyRedacted(val)) {
-        kvMatcher.appendReplacement(sb, Matcher.quoteReplacement(kvMatcher.group(0)));
+        sb.append(result, kvMatcher.start(), valueEnd);
       } else {
         // Only the value is substituted. The key and everything between it and the value are the
         // text as it arrived, so nothing outside the secret is rewritten; a closing quote sits
-        // after the match and is never consumed.
-        kvMatcher.appendReplacement(
-            sb, Matcher.quoteReplacement(key + separator + "[REDACTED]"));
+        // after the value and is never consumed.
+        sb.append(key).append(separator).append("[REDACTED]");
       }
+      pos = valueEnd;
     }
-    kvMatcher.appendTail(sb);
+    sb.append(result, pos, result.length());
     result = sb.toString();
 
     return result;
   }
+
+  /** The terminators of an unbracketed value. Unchanged from the run this replaces. */
+  private static final String VALUE_TERMINATORS = " \t,;\"'\r\n";
+
+  /**
+   * How far the value beginning at {@code from} reaches.
+   *
+   * <p><b>This method is the fix for FINDING J1.</b> It is deliberately not a parser: it balances
+   * brackets on one line and knows nothing about JSON, YAML, types, or what a value means. What it
+   * buys is the one fact the old {@code [^\s,;"'\r\n]+} run could not represent — that a bracketed
+   * value's terminators are all <em>inside</em> it, so the run stopped at the first comma and left
+   * the rest of the sequence, secret included, in the document beside a deleted opening bracket.
+   *
+   * <p><b>It never returns less than the run it replaces, and that is the whole safety argument.</b>
+   * The bracket scan differs from {@link #plainExtent} only by continuing <em>past</em> terminators
+   * that sit inside brackets or quoted spans, so where it succeeds it consumes a superset, and
+   * where it fails it falls back to that run verbatim. Nothing that was redacted stops being
+   * redacted, at any input, and there is no path on which this method's answer is the reason a
+   * value is published.
+   *
+   * <p><b>Why a refusal was written here first and then removed.</b> The obvious shape for
+   * "the extent could not be established" is to emit nothing and leave the text alone, and its
+   * failure direction reads as safe. It is not. {@code PASSWORD=[hunter2} has an unbalanced bracket
+   * and is a password; refusing it publishes the password in full, which is worse than the mangling
+   * the refusal was written to avoid. {@code SecretAssignmentGrammarTest} pins that exact string,
+   * and it caught this. <b>A rule whose failure mode is "publish the value" must never depend on
+   * the value</b> — and "is this value's bracket balanced" is a question about the value. So the
+   * unbalanced case falls back rather than refusing, and this method has no refusal at all.
+   *
+   * <p>Rules, in the order they apply:
+   *
+   * <ul>
+   *   <li><b>A line is the horizon.</b> A newline ends the scan. A value whose text continues on
+   *       the next line is not measurable here and never will be without a parser.
+   *   <li><b>{@code [}, {@code &#123;} and {@code (} open; the scan continues to the matching
+   *       closer</b>, nesting and skipping quoted spans so that a bracket inside a string does not
+   *       count. Terminators do not apply inside brackets — that is the entire point.
+   *   <li><b>Unbalanced at end of line, a mismatched closer, or an unterminated quote falls back</b>
+   *       to {@link #plainExtent}: the pre-existing behaviour, mangling included.
+   *   <li><b>A closer at depth zero is an ordinary character.</b> This looks like an omission and
+   *       is the opposite of one. Letting {@code &#125;} end a value would make
+   *       {@code {"password": [prod, k]}} come out as valid JSON, which is prettier — and it would
+   *       also turn {@code PASSWORD=hunter2}evil} into {@code PASSWORD=[REDACTED]}evil},
+   *       publishing the tail of a password because the caller put a brace in it. Same principle,
+   *       same answer. So {@code {"password": [prod, k]}} redacts to {@code {"password":
+   *       [REDACTED]}, losing the closing brace — mangled, and containing none of the secret. That
+   *       is exactly the trade already accepted for {@code {"password": $2b$12$…&#125;}.
+   * </ul>
+   */
+  private static int valueExtent(String text, int from) {
+    int balanced = bracketedExtent(text, from);
+    return balanced < 0 ? plainExtent(text, from) : balanced;
+  }
+
+  /** The run this redactor has always used: everything up to the first terminator. */
+  private static int plainExtent(String text, int from) {
+    int i = from;
+    while (i < text.length() && VALUE_TERMINATORS.indexOf(text.charAt(i)) < 0) {
+      i++;
+    }
+    return i;
+  }
+
+  /** The bracket-balanced extent, or {@code -1} when the line does not balance. */
+  private static int bracketedExtent(String text, int from) {
+    int n = text.length();
+    char[] open = new char[32];
+    int depth = 0;
+    int i = from;
+    while (i < n) {
+      char c = text.charAt(i);
+      if (c == '\n' || c == '\r') {
+        break;
+      }
+      if (depth == 0) {
+        if (c == '[' || c == '{' || c == '(') {
+          open[depth++] = c;
+          i++;
+          continue;
+        }
+        if (VALUE_TERMINATORS.indexOf(c) >= 0) {
+          break;
+        }
+        i++;
+        continue;
+      }
+      if (c == '"' || c == '\'') {
+        int close = text.indexOf(c, i + 1);
+        if (close < 0 || close > endOfLine(text, i)) {
+          return -1;
+        }
+        i = close + 1;
+        continue;
+      }
+      if (c == '[' || c == '{' || c == '(') {
+        if (depth == open.length) {
+          return -1;
+        }
+        open[depth++] = c;
+        i++;
+        continue;
+      }
+      if (c == ']' || c == '}' || c == ')') {
+        if (closerFor(open[depth - 1]) != c) {
+          return -1;
+        }
+        depth--;
+        i++;
+        continue;
+      }
+      i++;
+    }
+    return depth == 0 ? i : -1;
+  }
+
+  private static char closerFor(char opener) {
+    return opener == '[' ? ']' : opener == '{' ? '}' : ')';
+  }
+
+  private static int endOfLine(String text, int from) {
+    for (int i = from; i < text.length(); i++) {
+      char c = text.charAt(i);
+      if (c == '\n' || c == '\r') {
+        return i;
+      }
+    }
+    return text.length();
+  }
+
 
   /**
    * Whether the value is a marker this redactor itself emitted.

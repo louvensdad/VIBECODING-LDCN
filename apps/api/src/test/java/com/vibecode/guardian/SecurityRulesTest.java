@@ -77,6 +77,61 @@ class SecurityRulesTest {
     assertThat(findings2).isEmpty();
   }
 
+  /**
+   * SEC-002 and the redactor now share one definition of a sensitive key.
+   *
+   * <p>SEC-002 carried a verbatim copy of the redactor's pre-CTX-09B-1 expression,
+   * {@code \b(API_KEY|SECRET|TOKEN|PASSWORD|…)}. {@code _} is a word character, so {@code \b} never
+   * fires before {@code PASSWORD} in {@code VIBECODE_DB_PASSWORD} and every prefixed key was
+   * invisible to this rule. The redactor was fixed and this copy was not.
+   *
+   * <p><b>It was a detection gap and not a leak path</b>, which is why it is being closed here
+   * rather than as an incident: the rule's evidence goes through {@code redact()} whether or not a
+   * finding is raised, so nothing escaped — what was lost was the operator being told to rotate
+   * the credential. Both halves are asserted below, so a future change that raises the finding by
+   * carrying the secret into the evidence fails here rather than passing quietly.
+   *
+   * <p>The placeholder assertions in {@link #genericSecretAssignmentRule()} are unchanged and
+   * still green. Sharing the key vocabulary widens which <em>keys</em> are recognised; it does not
+   * touch which <em>values</em> are exempt, and that policy stays where it was.
+   */
+  @Test
+  @DisplayName("SEC-002: a prefixed key is detected, and its evidence is still redacted")
+  void genericSecretAssignmentRuleSeesPrefixedKeys() {
+    GenericSecretAssignmentRule rule = new GenericSecretAssignmentRule();
+    String needle = "Pa55phrase_zqxw_610455";
+    String[] keys = {
+      "DB_PASSWORD", "VIBECODE_DB_PASSWORD", "OPENAI_API_KEY", "CLIENT_SECRET", "ACCESS_TOKEN"
+    };
+
+    for (String key : keys) {
+      SecurityInspectionContext ctx =
+          SecurityInspectionContext.forText(
+              projectId, null, SecuritySourceType.TASK_EVIDENCE, "test", key + "=" + needle);
+      List<SecurityFindingCandidate> findings = rule.inspect(ctx);
+
+      assertThat(findings).as("SEC-002 should raise a finding for %s", key).hasSize(1);
+      SecurityFindingCandidate finding = findings.get(0);
+      assertThat(finding.severity()).isEqualTo(SecuritySeverity.HIGH);
+      // The key survives into the finding, because "rotate VIBECODE_DB_PASSWORD" and "rotate
+      // PASSWORD" are different instructions when three databases are configured.
+      assertThat(finding.description()).contains(key);
+      // And the value does not, in either field. This is the half that was never a leak; asserting
+      // it is what keeps it that way.
+      assertThat(finding.rawEvidence()).doesNotContain(needle).contains("[REDACTED]");
+      assertThat(finding.description()).doesNotContain(needle);
+    }
+
+    // Two of the five — CLIENT_SECRET and ACCESS_TOKEN — were already detected before the
+    // vocabulary was shared, because they are in the old alternation verbatim and start the string.
+    // The three that were not are DB_PASSWORD, VIBECODE_DB_PASSWORD and OPENAI_API_KEY. Measured
+    // against the old pattern, not inferred, so this test does not read as proving more than it does.
+    SecurityInspectionContext bare =
+        SecurityInspectionContext.forText(
+            projectId, null, SecuritySourceType.TASK_EVIDENCE, "test", "PASSWORD=" + needle);
+    assertThat(rule.inspect(bare)).hasSize(1);
+  }
+
   @Test
   @DisplayName("SEC-003: Known provider token patterns detected")
   void knownTokenPatternRule() {

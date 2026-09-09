@@ -192,7 +192,20 @@ class SecurityGuardianEndToEndTest {
         .read("/api/projects/" + projectId + "/security")
         .andExpect(jsonPath("$.gateStatus").value("BLOCKED"));
 
-    // Alice explicitly resolves finding
+    // Alice explicitly resolves every open finding.
+    //
+    // THIS LOOP USED TO RESOLVE findings.get(0) AND NOTHING ELSE, and it passed because the
+    // offending line raised exactly one finding. SEC-002 carried a stale copy of the redactor's
+    // pre-CTX-09B-1 key expression, whose \b could not fire before API_KEY in OPENAI_API_KEY, so
+    // "OPENAI_API_KEY=sk-…" was seen only by SEC-003. Aligning SEC-002 to the shared key vocabulary
+    // makes it see that line too, and one hardcoded credential now raises two findings: SEC-003
+    // CRITICAL, which names the provider from the value's shape, and SEC-002 HIGH, which names the
+    // assignment. Both are true, both carry redacted evidence, and resolving one no longer clears
+    // the gate — it went to REQUIRES_APPROVAL, which is the gate working, not a regression.
+    //
+    // Resolving all of them is also the more honest fixture: "Alice resolves the findings" is what
+    // the step says it does, and indexing element zero silently asserted that there would never be
+    // a second one.
     JsonNode findings =
         json.readTree(
             alice
@@ -200,14 +213,21 @@ class SecurityGuardianEndToEndTest {
                 .andReturn()
                 .getResponse()
                 .getContentAsString());
+    assertThat(findings.size()).isGreaterThanOrEqualTo(1);
     String findingId = findings.get(0).get("id").asText();
 
-    alice
-        .send(
-            "/api/projects/" + projectId + "/security/findings/" + findingId + "/resolve",
-            "{\"reason\":\"Token removido e rotacionado no provedor.\"}")
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.status").value("RESOLVED"));
+    for (JsonNode finding : findings) {
+      alice
+          .send(
+              "/api/projects/"
+                  + projectId
+                  + "/security/findings/"
+                  + finding.get("id").asText()
+                  + "/resolve",
+              "{\"reason\":\"Token removido e rotacionado no provedor.\"}")
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.status").value("RESOLVED"));
+    }
 
     // Security Gate now passes
     alice
