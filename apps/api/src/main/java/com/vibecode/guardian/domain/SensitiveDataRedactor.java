@@ -327,13 +327,14 @@ public final class SensitiveDataRedactor {
     // more specific of the two. That also makes redact idempotent, which matters because text is
     // stored redacted and read back.
     Matcher kvMatcher = SENSITIVE_KV_PATTERN.matcher(result);
+    ScanBudget scan = new ScanBudget(result);
     StringBuilder sb = new StringBuilder();
     int pos = 0;
     while (kvMatcher.find(pos)) {
       String key = kvMatcher.group(1);
       String separator = kvMatcher.group(2);
       int valueStart = kvMatcher.end();
-      int valueEnd = valueExtent(result, valueStart, separator);
+      int valueEnd = valueExtent(result, valueStart, separator, scan);
 
       if (valueEnd < 0) {
         // THE WIDENED AXIS REFUSES. The value opens a container under a quoted key and could not be
@@ -366,6 +367,11 @@ public final class SensitiveDataRedactor {
 
   /** The terminators of an unbracketed value. Unchanged from the run this replaces. */
   private static final String VALUE_TERMINATORS = " \t,;\"'\r\n";
+
+  /** The markers this redactor emits. Order is irrelevant; each is matched whole. */
+  private static final String[] REDACTION_MARKERS = {
+    "[REDACTED]", "sk-****REDACTED****", "ghp_****REDACTED****"
+  };
 
   /**
    * How far the value beginning at {@code from} reaches.
@@ -434,12 +440,75 @@ public final class SensitiveDataRedactor {
    *       the value and {@code {"password": {"inner": "k"}}} comes out as valid JSON.
    * </ul>
    */
-  private static int valueExtent(String text, int from, String separator) {
+  private static int valueExtent(String text, int from, String separator, ScanBudget scan) {
+    int lineEnd = scan.horizonFor(from);
     if (arrivedOnTheWidenedAxis(text, from, separator)) {
-      return wholeContainerExtent(text, from);
+      return wholeContainerExtent(text, from, lineEnd, scan);
     }
-    int balanced = bracketedExtent(text, from);
-    return balanced < 0 ? plainExtent(text, from) : balanced;
+    int balanced = bracketedExtent(text, from, lineEnd, scan);
+    return balanced < 0 ? plainExtent(text, from, lineEnd) : balanced;
+  }
+
+  /**
+   * Per-{@code redact} scan state: where the current line ends, and how much scanning is left.
+   *
+   * <h2>FINDING F2, and why hoisting {@code endOfLine} out of the inner loop was not the fix.</h2>
+   *
+   * <p>The previous round moved {@code endOfLine} out of the quoted-span loop, which removed one
+   * quadratic term and left another standing. {@code endOfLine} was still called once per match,
+   * and <b>one line can carry O(n) matches</b> — but the larger cost was the scan itself: in
+   * {@code PASSWORD=["a } repeated on a single line, every value opens a bracket that never closes,
+   * so every one of the N scans runs to the end of the line. Measured on the reviewer's control,
+   * which holds the bytes and the match count fixed and varies only the line structure:
+   * 130/260/520 KB on one line took 1,846 / 7,649 / 31,027 ms, and the identical content split
+   * across lines took 23 / 36 / 79 ms. Four times per doubling, against a baseline of 38 / 34 / 74.
+   *
+   * <p>So there are two guards, because there were two terms.
+   *
+   * <ul>
+   *   <li><b>The horizon is cached.</b> Matches are found left to right and {@code pos} only
+   *       advances, so a query at or past the cached end starts a new line and anything before it
+   *       is on the line already measured. Each line's end is found once.
+   *   <li><b>The scanning is budgeted</b>, proportional to the input. Without this, N matches on
+   *       one line each scanning that line is quadratic no matter how cheaply the line's end is
+   *       known. A normal document scans each value once and never approaches the budget; the
+   *       pathological one exhausts it and the pass stays linear.
+   * </ul>
+   *
+   * <p><b>Running out of budget cannot leak, and that is by construction rather than by luck.</b>
+   * Exhaustion makes a scan return {@code -1}, and {@code -1} means the pre-widening behaviour on
+   * both axes: the matched-before axis falls back to {@link #plainExtent}, which is what 5b07bb1
+   * did, and the newly admitted axis changes nothing, which is also what 5b07bb1 did. No redaction
+   * that existed before this work can be lost to it, so {@code changedByOldOnly} cannot move.
+   *
+   * <p>The budget depends only on the input's length and the order of matches, so {@code redact}
+   * stays a pure function of its argument — which it has to be, because its output is hashed into
+   * a pack digest and read back.
+   */
+  private static final class ScanBudget {
+    private final String text;
+    private int cachedLineEnd = -1;
+    private long remaining;
+
+    ScanBudget(String text) {
+      this.text = text;
+      // Generous: the scanning a well-formed document needs is bounded by the sum of its value
+      // lengths, which is less than its length. Eight times that is only reachable by re-scanning
+      // the same region, which is the defect this bounds.
+      this.remaining = 8L * text.length() + 65_536L;
+    }
+
+    int horizonFor(int from) {
+      if (from >= cachedLineEnd) {
+        cachedLineEnd = endOfLine(text, from);
+      }
+      return cachedLineEnd;
+    }
+
+    /** Charges one examined character. False once the pass has scanned all it is allowed to. */
+    boolean step() {
+      return --remaining > 0;
+    }
   }
 
   /**
@@ -475,9 +544,8 @@ public final class SensitiveDataRedactor {
    * balanced but the value did not end there, the answer would be a prefix, and a prefix is the
    * one thing that must never be emitted.
    */
-  private static int wholeContainerExtent(String text, int from) {
-    int lineEnd = endOfLine(text, from);
-    int close = matchingCloser(text, from, lineEnd);
+  private static int wholeContainerExtent(String text, int from, int lineEnd, ScanBudget scan) {
+    int close = matchingCloser(text, from, lineEnd, scan);
     if (close < 0) {
       return -1;
     }
@@ -495,7 +563,7 @@ public final class SensitiveDataRedactor {
    * The index just past the closer matching the opener at {@code from}, or {@code -1} if the line
    * does not close it. Never scans past {@code lineEnd}, and never past that closer.
    */
-  private static int matchingCloser(String text, int from, int lineEnd) {
+  private static int matchingCloser(String text, int from, int lineEnd, ScanBudget scan) {
     char c = text.charAt(from);
     if (c != '[' && c != '{' && c != '(') {
       return -1;
@@ -504,6 +572,9 @@ public final class SensitiveDataRedactor {
     int depth = 0;
     int i = from;
     while (i < lineEnd) {
+      if (!scan.step()) {
+        return -1;
+      }
       char ch = text.charAt(i);
       if (ch == '"' || ch == '\'') {
         i = skipQuotedSpan(text, i, lineEnd);
@@ -585,30 +656,30 @@ public final class SensitiveDataRedactor {
   }
 
   /** The run this redactor has always used: everything up to the first terminator. */
-  private static int plainExtent(String text, int from) {
+  private static int plainExtent(String text, int from, int lineEnd) {
     int i = from;
-    while (i < text.length() && VALUE_TERMINATORS.indexOf(text.charAt(i)) < 0) {
+    while (i < lineEnd && VALUE_TERMINATORS.indexOf(text.charAt(i)) < 0) {
       i++;
     }
     return i;
   }
 
   /** The bracket-balanced extent, or {@code -1} when the line does not balance. */
-  private static int bracketedExtent(String text, int from) {
-    // FINDING R3. The end of the line is computed ONCE. It used to be recomputed inside the quote
-    // branch, on every quoted span, each call scanning to the end of the line — so the cost was
-    // O(quotes x distance-to-end-of-line) and the method this replaced was linear. Measured, not
-    // inferred: 800 KB on one line took 150 seconds, against 146 ms for the redactor at 5b07bb1,
-    // and padding the same line with inert text scaled the cost while moving the identical padding
-    // past a newline left it flat. redact() runs on caller-authored strings with no length cap on
-    // context item content, so one HTTP request bought minutes of CPU.
-    int lineEnd = endOfLine(text, from);
+  private static int bracketedExtent(String text, int from, int lineEnd, ScanBudget scan) {
+    // FINDINGS R3 and F2. The line horizon arrives already computed and cached, and every
+    // character examined is charged to a per-pass budget. See ScanBudget for both measurements:
+    // R3 was endOfLine inside the quoted-span loop, F2 was N matches on one line each scanning
+    // that whole line. redact() runs on caller-authored strings with no length cap on context
+    // item content, so either one bought minutes of CPU for a single HTTP request.
     // Grows. A fixed 32 is not an implementation detail when exceeding it changes which bytes get
     // published: at depth 33 the scan returned -1 and the answer came from somewhere else.
     char[] open = new char[16];
     int depth = 0;
     int i = from;
     while (i < lineEnd) {
+      if (!scan.step()) {
+        return -1;
+      }
       char c = text.charAt(i);
       if (depth == 0) {
         if (c == '[' || c == '{' || c == '(') {
@@ -702,15 +773,30 @@ public final class SensitiveDataRedactor {
     // the change that prompted it and is recorded here rather than left to be discovered.
     // Every suffix is tried, not just the fully stripped one, because "[REDACTED]" ends in a closer
     // itself: stripping greedily would leave "[REDACTED" and the marker would stop matching.
+    //
+    // FINDING F3. This compares an index range instead of allocating substring(0, end) on every
+    // iteration. A value ending in a long run of closers copied its whole prefix each time, which
+    // is quadratic in the run's length: 40,760 ms at half a million closers, against 67 ms for the
+    // same length ending in an ordinary character. All three redactor generations measure
+    // identically, so it is not this work's regression — but this work made it reachable, because
+    // the extent scan now skips quoted spans and hands this method long values that used to stop
+    // at the first quote. Comparing without allocating is the same test at O(1) per iteration.
     for (int end = trimmed.length(); end > 0; end--) {
-      String core = trimmed.substring(0, end);
-      if (core.equals("[REDACTED]")
-          || core.equals("sk-****REDACTED****")
-          || core.equals("ghp_****REDACTED****")) {
+      if (isMarker(trimmed, end)) {
         return true;
       }
       if ("}])".indexOf(trimmed.charAt(end - 1)) < 0) {
         return false;
+      }
+    }
+    return false;
+  }
+
+  /** The markers {@link #redact} emits, matched against {@code value[0, end)} without allocating. */
+  private static boolean isMarker(String value, int end) {
+    for (String marker : REDACTION_MARKERS) {
+      if (marker.length() == end && value.regionMatches(0, marker, 0, end)) {
+        return true;
       }
     }
     return false;

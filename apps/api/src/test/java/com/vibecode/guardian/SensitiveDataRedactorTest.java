@@ -170,6 +170,23 @@ class SensitiveDataRedactorTest {
     swept.add("[".repeat(33) + needle + "]".repeat(33));
     swept.add("[".repeat(64) + needle + "]".repeat(64));
 
+    // FINDING F1-pinning. A COMPLETE CONTAINER FOLLOWED BY A TAIL, which every value above lacks:
+    // each of them is [c…needle…] or [c…needle, so the needle is always INSIDE the container the
+    // scan measures. Put the needle after it and the container is redacted while the needle
+    // survives — the redactor's oldest rule, "a value ends at the first depth-0 terminator", newly
+    // reachable on the widened axis rather than newly invented.
+    //
+    // These go in the pinned list rather than the strict one, because the strict assertion would
+    // fail on them and that failure is the point: the family exists, it is known, and it is named
+    // in SecretAssignmentGrammarTest#aValueEndingAtWhitespaceStillLeaksItsTail. Leaving them out
+    // of the generator entirely is what made the previous sweep report zero.
+    List<String> pinnedTailFamily =
+        List.of(
+            "[\"a\"] " + needle,
+            "[a] [b, " + needle + "]",
+            "({[a]}) " + needle,
+            "{\"a\": 1} " + needle);
+
     // THE SWEEP RUNS UNDER QUOTED KEYS, and that is a statement about which axis it tests, not a
     // filter that makes it pass. The widening this sweep exists to police —
     // \[(?=[A-Za-z0-9$_.+~%@-]) becoming [\[{(] — lives in the whitelist that ONLY the
@@ -197,6 +214,22 @@ class SensitiveDataRedactorTest {
         }
       }
     }
+
+    // The pinned family, asserted rather than tolerated: the container goes, the tail stays. This
+    // is a positive assertion on both halves, so a change in either direction fails here — if the
+    // tail stopped surviving this test would go red and someone would have to come and delete it
+    // on purpose, which is the only way a known-open family stays known.
+    int tailFamilyHits = 0;
+    for (String value : pinnedTailFamily) {
+      String input = "{\"password\": " + value + "}";
+      String output = SensitiveDataRedactor.redact(input);
+      tailFamilyHits++;
+      assertThat(output).as("the container should still be redacted in [%s]", input)
+          .contains("[REDACTED]");
+      assertThat(output).as("KNOWN OPEN: the tail after the container survives in [%s]", input)
+          .contains(needle);
+    }
+    assertThat(tailFamilyHits).isEqualTo(4);
 
     String[] values = values0;
     for (String key : keys) {

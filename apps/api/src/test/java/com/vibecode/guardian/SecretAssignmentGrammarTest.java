@@ -767,6 +767,33 @@ class SecretAssignmentGrammarTest {
           .isEqualTo("password: [REDACTED]\n  " + VALUE);
       // Byte-identical to the redactor at 5b07bb1. Measured, not assumed: none of these is a
       // regression introduced by J1, and none is fixed by it either.
+
+      // FINDING F1-pinning. A FOURTH MEMBER OF THIS FAMILY, AND THE ONE THIS TEST DID NOT NAME.
+      //
+      // A complete container followed by a tail. wholeContainerExtent stops at the FIRST balanced
+      // container and accepts when a terminator or a closer follows it, so the container is
+      // redacted and whatever comes after it at depth 0 survives.
+      //
+      // The behaviour is the redactor's oldest rule — "a value ends at the first depth-0
+      // terminator, the tail survives" — which is exactly what an unquoted key has always done and
+      // still does, as the second assertion below shows byte-for-byte against 5b07bb1. So this
+      // family is newly REACHABLE on the widened axis, not newly invented, and in well-formed JSON
+      // the same rule is the dividend that keeps {"password": {…}, "user": "bob"} intact.
+      //
+      // What was wrong was the bookkeeping. This test claimed to be the census of what is still
+      // open and did not list this member, and the invariant test's swept alphabet contained no
+      // value where a container is followed by a tail — so a 204-input sweep reported zero and the
+      // assertion was, for the third time in this task, true about its population and silent about
+      // the family that violates it.
+      assertThat(redact("{\"password\": [\"a\"] " + VALUE + "}"))
+          .isEqualTo("{\"password\": [REDACTED] " + VALUE + "}");
+      // The same shape under an unquoted key, where it predates all of this work.
+      assertThat(redact("{\"password\": [a] [b, " + VALUE + "]}"))
+          .isEqualTo("{\"password\": [REDACTED] [b, " + VALUE + "]}");
+      assertThat(redact("{\"password\": ({[a]}) " + VALUE + "}"))
+          .isEqualTo("{\"password\": [REDACTED] " + VALUE + "}");
+      assertThat(redact("{\"password\": [\"a\"]] " + VALUE + "}"))
+          .isEqualTo("{\"password\": [REDACTED]] " + VALUE + "}");
     }
 
     /**
