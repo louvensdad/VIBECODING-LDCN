@@ -3,6 +3,9 @@ package com.vibecode.guardian;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.vibecode.guardian.domain.SensitiveDataRedactor;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -113,7 +116,7 @@ class SensitiveDataRedactorTest {
     };
     String[] quotes = {"", "\"", "'"};
     String[] separators = {"=", ":", " = ", " : ", "\t=\t"};
-    String[] values = {
+    String[] values0 = {
       needle,
       "$" + needle,
       "$2b$12$" + needle,
@@ -136,7 +139,66 @@ class SensitiveDataRedactorTest {
     };
     String[] documents = {"%s", "{%s}", "{%s, \"user\": \"bob\"}", "- %s", "prefix %s"};
 
+    // FINDING R1-test. THE ALPHABET ABOVE WAS THE DEFECT, NOT THE ASSERTION.
+    //
+    // The assertion is real — reverting valueExtent reddens it — but it only ever saw the value
+    // shapes someone had thought of, and the shapes that leaked were not among them. Replayed with
+    // four more, this same generator produced 2,880 violations, 1,280 of them introduced at
+    // 43517ff. The shipped alphabet reported zero. That is a measurement that was true about the
+    // population it sampled and false about the code, and it is the second time in this task and
+    // the eighth time in this project that a green has meant the former.
+    //
+    // So the family is now GENERATED rather than listed. Every character outside the old inner
+    // lookahead class [A-Za-z0-9$_.+~%@-] is a character the widening newly admitted after "[",
+    // and each one reaches the scan differently: some make it return -1, and some — "]" above all
+    // — make it SUCCEED with an extent that is simply too short. {"password": []prod, SECRET]}
+    // balances at depth 0 and stops at the comma, so a guard that only checked for -1 passed it
+    // straight through. A list of spellings could not have covered that; a sweep does.
+    List<String> swept = new ArrayList<>();
+    for (char c : "\"'[]{}()<>,;:!*&|#=\\/ \t".toCharArray()) {
+      swept.add("[" + c + "prod, " + needle + "]");
+      swept.add("[" + c + needle + "]");
+      swept.add("[" + c + needle);
+    }
+    // Escaped quotes: ordinary valid JSON, and a password that contains a quotation mark. The
+    // quote count is odd because one is escaped, so a scan that skips to the next quote lands in
+    // the wrong place and the extent collapses to one character.
+    swept.add("[\"a\\\"b\", " + needle + "]");
+    swept.add("{\"k\": \"a\\\"b\", \"v\": \"" + needle + "\"}");
+    swept.add("[\"" + needle + "\\\"tail\"]");
+    // Depth, because the nesting stack used to be a fixed 32 and exceeding it changed the answer.
+    swept.add("[".repeat(33) + needle + "]".repeat(33));
+    swept.add("[".repeat(64) + needle + "]".repeat(64));
+
+    // THE SWEEP RUNS UNDER QUOTED KEYS, and that is a statement about which axis it tests, not a
+    // filter that makes it pass. The widening this sweep exists to police —
+    // \[(?=[A-Za-z0-9$_.+~%@-]) becoming [\[{(] — lives in the whitelist that ONLY the
+    // quoted-key-with-unquoted-value alternative consults. An unquoted key never had a whitelist:
+    // it matched every one of these shapes at 5b07bb1 and mangled some of them then, byte for
+    // byte, and refusing there would publish. That class is pinned with its exact output in
+    // unbalancedContainersUnderAnUnquotedKeyStillMangle rather than hidden here.
+    String[] quotedOnly = {"\"", "'"};
+
     int rewritten = 0;
+    for (String key : keys) {
+      for (String quote : quotedOnly) {
+        for (String value : swept) {
+          for (String document : documents) {
+            String input = String.format(document, quote + key + quote + ": " + value);
+            String output = SensitiveDataRedactor.redact(input);
+            if (output.equals(input)) {
+              continue;
+            }
+            rewritten++;
+            assertThat(output)
+                .as("the widened axis rewrote [%s] and kept the plaintext", input)
+                .doesNotContain(needle);
+          }
+        }
+      }
+    }
+
+    String[] values = values0;
     for (String key : keys) {
       for (String quote : quotes) {
         for (String separator : separators) {
@@ -196,6 +258,13 @@ class SensitiveDataRedactorTest {
         .isEqualTo("password=[REDACTED]\"" + needle);
     assertThat(SensitiveDataRedactor.redact("password=(\"" + needle))
         .isEqualTo("password=[REDACTED]\"" + needle);
+    // The same class reached by a scan that SUCCEEDS too short rather than failing: "[]" balances
+    // at depth 0 and the comma stops it. Under a quoted key this is refused (FINDING R1); under an
+    // unquoted key there is no whitelist to refuse from and the plain run is what 5b07bb1 did.
+    assertThat(SensitiveDataRedactor.redact("password=[]prod, " + needle + "]"))
+        .isEqualTo("password=[REDACTED], " + needle + "]");
+    assertThat(SensitiveDataRedactor.redact("password=[\"prod, " + needle + "]"))
+        .isEqualTo("password=[REDACTED]\"prod, " + needle + "]");
 
     // And the reason it cannot be closed by refusing: here the plain run removes the whole secret,
     // so a refusal keyed on "the opener did not close" would publish it.

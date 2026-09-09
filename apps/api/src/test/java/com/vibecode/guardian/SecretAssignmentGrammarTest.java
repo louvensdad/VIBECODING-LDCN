@@ -522,24 +522,24 @@ class SecretAssignmentGrammarTest {
       // so the same secret was removed or published according to punctuation the writer chose for
       // unrelated reasons.
       assertThat(redact("{\"password\": {\"inner\": \"" + VALUE + "\"}}"))
-          .isEqualTo("{\"password\": [REDACTED]");
+          .isEqualTo("{\"password\": [REDACTED]}");
       assertThat(redact("\"password\": {inner: \"" + VALUE + "\"}"))
           .isEqualTo("\"password\": [REDACTED]");
       assertThat(redact("- \"password\": {\"x\": \"" + VALUE + "\"}"))
           .isEqualTo("- \"password\": [REDACTED]");
       assertThat(redact("{\"clientSecret\": (\"" + VALUE + "\")}"))
-          .isEqualTo("{\"clientSecret\": [REDACTED]");
+          .isEqualTo("{\"clientSecret\": [REDACTED]}");
       // Nested two deep, and note WHICH key wins: the innermost sensitive one. "config" is not a
       // secret's key, so the match is on apiKey and it takes its own value. The needle is gone
       // either way, which is the only thing the invariant asks.
       assertThat(redact("{\"config\": {\"apiKey\": {\"v\": \"" + VALUE + "\"}}}"))
-          .isEqualTo("{\"config\": {\"apiKey\": [REDACTED]");
+          .isEqualTo("{\"config\": {\"apiKey\": [REDACTED]}}");
 
       // J1's half of the same split: bracketed values, measured rather than guessed.
       assertThat(redact("{\"password\": [\"" + VALUE + "\"]}"))
-          .isEqualTo("{\"password\": [REDACTED]");
+          .isEqualTo("{\"password\": [REDACTED]}");
       assertThat(redact("{\"password\": [{\"k\": \"" + VALUE + "\"}]}"))
-          .isEqualTo("{\"password\": [REDACTED]");
+          .isEqualTo("{\"password\": [REDACTED]}");
 
       // THE PRICE OF THE G2 ADMISSION, PAID HERE. A newly admitted opener that does NOT close on
       // its line must change nothing. It must not fall back to the plain run the way an unbalanced
@@ -553,6 +553,41 @@ class SecretAssignmentGrammarTest {
       // "[" followed by a quote was never admitted either, so it refuses too. "[" followed by a
       // scalar WAS admitted, so it still falls back — see the counterexamples further down.
       assertUntouched("{\"password\": [\"" + VALUE);
+
+      // FINDING R1: A REFUSAL ON -1 WAS NOT ENOUGH, BECAUSE PART OF THE FAMILY NEVER REACHES -1.
+      //
+      // The guard that closed G2 refused only when the extent scan failed. It missed the case
+      // where the scan SUCCEEDS and the answer is merely too short: here the bracket opens, closes
+      // immediately, "prod" runs on at depth 0, and the comma stops the scan with depth == 0, so
+      // the extent came back valid and one character long. Output was
+      //     {"password": [REDACTED], Pa55phrase_zqxw_610455]}
+      // — mangled and leaking, in a commit whose message said zero introduced. Four ways to fail
+      // and one way to succeed wrongly; only a test on the ANSWER covers all five, so the guard now
+      // asks whether the container is provably the whole value rather than whether the scan errored.
+      assertUntouched("{\"password\": []prod, " + VALUE + "]}");
+      assertUntouched("{\"password\": [][" + VALUE + "]}");
+      assertUntouched("{\"password\": {}" + VALUE + "}");
+      assertUntouched("{\"password\": ()" + VALUE + "}");
+
+      // ESCAPED QUOTES. Valid JSON, and reachable by a password that merely contains a quotation
+      // mark. The quote count is odd because one is escaped, so a scan that jumps to the next
+      // quote lands past the end of the span. These redact — and to valid JSON.
+      assertThat(redact("{\"password\": [\"a\\\"b\", " + VALUE + "]}"))
+          .isEqualTo("{\"password\": [REDACTED]}");
+      assertThat(redact("{\"password\": {\"k\": \"a\\\"b\", \"v\": \"" + VALUE + "\"}}"))
+          .isEqualTo("{\"password\": [REDACTED]}");
+
+      // DEPTH. The nesting stack was a fixed 32, and a hard-coded array length is not an
+      // implementation detail when exceeding it changes which bytes get published.
+      assertThat(redact("{\"password\": " + "[".repeat(33) + VALUE + "]".repeat(33) + "}"))
+          .isEqualTo("{\"password\": [REDACTED]}");
+      assertThat(redact("{\"password\": " + "[".repeat(64) + VALUE + "]".repeat(64) + "}"))
+          .isEqualTo("{\"password\": [REDACTED]}");
+
+      // AND THE POINT OF THE WHOLE-VALUE TEST: what surrounds the value survives, so a redacted
+      // object no longer eats the rest of the document.
+      assertThat(redact("{\"password\": {\"inner\": \"" + VALUE + "\"}, \"user\": \"bob\"}"))
+          .isEqualTo("{\"password\": [REDACTED], \"user\": \"bob\"}");
 
       // Not bought at the price of the spelling the branch exists for, at any depth.
       assertThat(redact("{\"password\": \"" + VALUE + "\"}"))
@@ -696,7 +731,7 @@ class SecretAssignmentGrammarTest {
           .isEqualTo("{\"password\": [REDACTED]");
       // A bracket inside a quoted element does not count as a closer.
       assertThat(redact("{\"password\": [\"a]b\", " + VALUE + "]}"))
-          .isEqualTo("{\"password\": [REDACTED]");
+          .isEqualTo("{\"password\": [REDACTED]}");
 
       // The two the admission exists for, so a narrowing cannot be made by simply removing it.
       assertThat(redact("{\"password\": [REDACTED]" + VALUE + "}"))
@@ -705,7 +740,7 @@ class SecretAssignmentGrammarTest {
       // And the form that used to be pinned as "refused for contrast": a quote after the bracket
       // no longer means anything, because the extent is counted rather than sniffed.
       assertThat(redact("{\"password\": [\"" + VALUE + "\"]}"))
-          .isEqualTo("{\"password\": [REDACTED]");
+          .isEqualTo("{\"password\": [REDACTED]}");
     }
 
     /**

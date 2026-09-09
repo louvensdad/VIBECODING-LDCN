@@ -131,7 +131,7 @@ public final class SensitiveDataRedactor {
    * The same secret was removed or published according to punctuation the writer chose for
    * unrelated reasons.
    *
-   * <p><b>The admission is not free, and the price is paid in {@link #widenedAdmissionMayFallBack}
+   * <p><b>The admission is not free, and the price is paid in {@link #wholeContainerExtent}
    * rather than here.</b> A newly admitted opener that does not close on its line must change
    * nothing, because for that spelling "change nothing" is what the redactor did before — inheriting
    * the fallback to the plain run would re-create the exact G2 output this is closing.
@@ -336,11 +336,11 @@ public final class SensitiveDataRedactor {
       int valueEnd = valueExtent(result, valueStart, separator);
 
       if (valueEnd < 0) {
-        // G2's guard. The value opens a container under a quoted key, the container does not close
-        // on this line, and this spelling had no behaviour before the widening that admitted it —
-        // so there is nothing to fall back TO. Copying the text through is the pre-widening
-        // behaviour exactly. See widenedAdmissionMayFallBack for why this is the only place a
-        // refusal is sound.
+        // THE WIDENED AXIS REFUSES. The value opens a container under a quoted key and could not be
+        // proved to be the whole value — it does not close on the line, or something follows it that
+        // a value can continue through. This spelling had no behaviour before the widening, so
+        // copying the text through is exactly what the redactor did before it. See valueExtent's
+        // note on the two axes for why refusing is sound on this axis and only this one.
         sb.append(result, pos, valueStart);
         pos = valueStart;
         continue;
@@ -376,95 +376,190 @@ public final class SensitiveDataRedactor {
    * value's terminators are all <em>inside</em> it, so the run stopped at the first comma and left
    * the rest of the sequence, secret included, in the document beside a deleted opening bracket.
    *
-   * <p><b>It never returns less than the run it replaces, and that is the whole safety argument.</b>
-   * The bracket scan differs from {@link #plainExtent} only by continuing <em>past</em> terminators
-   * that sit inside brackets or quoted spans, so where it succeeds it consumes a superset, and
-   * where it fails it falls back to that run verbatim. Nothing that was redacted stops being
-   * redacted, at any input, and there is no path on which this method's answer is the reason a
-   * value is published.
+   * <h2>TWO AXES, TWO GUARDS. FINDING R2, and it is the important one on this page.</h2>
    *
-   * <p><b>Why a refusal was written here first and then removed.</b> The obvious shape for
-   * "the extent could not be established" is to emit nothing and leave the text alone, and its
-   * failure direction reads as safe. It is not. {@code PASSWORD=[hunter2} has an unbalanced bracket
-   * and is a password; refusing it publishes the password in full, which is worse than the mangling
-   * the refusal was written to avoid. {@code SecretAssignmentGrammarTest} pins that exact string,
-   * and it caught this. <b>A rule whose failure mode is "publish the value" must never depend on
-   * the value</b> — and "is this value's bracket balanced" is a question about the value. So the
-   * unbalanced case falls back rather than refusing, and this method has no refusal at all.
+   * <p>An earlier version of this comment said: the bracket scan never returns less than the run it
+   * replaces, <em>and that is the whole safety argument</em>. The first half is true and was
+   * independently re-verified — at depth 0 the scan's break condition is character-for-character
+   * {@link #plainExtent}'s stop condition, and 72,000 fuzzed assignments plus 43,000 corpus lines
+   * found no counterexample. <b>The second half does not follow, and the word "so" that joined them
+   * was carrying weight it cannot carry.</b>
    *
-   * <p>Rules, in the order they apply:
+   * <p>A monotone extent constrains only inputs that <em>already matched</em>. It says nothing
+   * whatever about inputs that did not, and those are reached by a different change: the widening of
+   * {@link #SCALAR_VALUE_START} from {@code \[(?=[A-Za-z0-9$_.+~%@-])} to {@code [\[{(]}. That is a
+   * second axis, and every leak this file introduced arrived along it — which is how a correct proof
+   * and 2,100 introduced leaks came to live in the same commit. A correct proof about the wrong axis
+   * is worse than no proof, because it stops the question being asked.
+   *
+   * <p>So the value is measured by <b>which axis it arrived on</b>:
    *
    * <ul>
-   *   <li><b>A line is the horizon.</b> A newline ends the scan. A value whose text continues on
-   *       the next line is not measurable here and never will be without a parser.
-   *   <li><b>{@code [}, {@code &#123;} and {@code (} open; the scan continues to the matching
-   *       closer</b>, nesting and skipping quoted spans so that a bracket inside a string does not
-   *       count. Terminators do not apply inside brackets — that is the entire point.
-   *   <li><b>Unbalanced at end of line, a mismatched closer, or an unterminated quote falls back</b>
-   *       to {@link #plainExtent}: the pre-existing behaviour, mangling included.
-   *   <li><b>A closer at depth zero is an ordinary character.</b> This looks like an omission and
-   *       is the opposite of one. Letting {@code &#125;} end a value would make
-   *       {@code {"password": [prod, k]}} come out as valid JSON, which is prettier — and it would
-   *       also turn {@code PASSWORD=hunter2}evil} into {@code PASSWORD=[REDACTED]}evil},
-   *       publishing the tail of a password because the caller put a brace in it. Same principle,
-   *       same answer. So {@code {"password": [prod, k]}} redacts to {@code {"password":
-   *       [REDACTED]}, losing the closing brace — mangled, and containing none of the secret. That
-   *       is exactly the trade already accepted for {@code {"password": $2b$12$…&#125;}.
+   *   <li><b>Inputs that matched before this work</b> — an unquoted key, a quoted key with a quoted
+   *       value, or a quoted key whose value starts with a character
+   *       {@link #admittedBeforeTheExtentScan} accepted. Here the baseline is a redaction, so
+   *       refusing would publish and is forbidden: {@code PASSWORD=[hunter2} is a password with an
+   *       unbalanced bracket, and {@code SecretAssignmentGrammarTest} pins it. These take
+   *       {@link #bracketedExtent}, falling back to {@link #plainExtent}. Monotone, and that is the
+   *       axis the monotonicity proof is actually about.
+   *   <li><b>Inputs the widening newly admitted</b> — {@code &#123;}, {@code (}, and {@code [}
+   *       followed by any of 22 characters the old inner lookahead refused. Here the baseline is
+   *       <em>untouched</em>, so refusing costs nothing and a partial redaction is a leak this work
+   *       would have created. These take {@link #wholeContainerExtent}, which redacts only a
+   *       container it can prove is the entire value and otherwise changes nothing.
+   * </ul>
+   *
+   * <p><b>Why the newly admitted axis needed more than a {@code -1} check.</b> The guard this
+   * replaces refused only when {@link #bracketedExtent} returned {@code -1}, and part of the family
+   * never reaches {@code -1}: in {@code {"password": []prod, SECRET]}} the bracket opens, closes
+   * immediately, {@code prod} runs on at depth 0 and the comma stops the scan with {@code depth ==
+   * 0}, so the extent is <b>returned as valid and is simply too short</b> — {@code [REDACTED]} then
+   * the secret, mangled and leaking. Four distinct ways to fail and one way to succeed wrongly; only
+   * a test on the <em>answer</em> covers all five, so {@link #wholeContainerExtent} tests the answer.
+   *
+   * <p>Rules the scan itself follows, on both axes:
+   *
+   * <ul>
+   *   <li><b>A line is the horizon.</b> A value whose text continues on the next line is not
+   *       measurable here and never will be without a parser.
+   *   <li><b>{@code [}, {@code &#123;} and {@code (} open</b>; the scan runs to the matching closer,
+   *       nesting, and skipping quoted spans — <em>honouring backslash escapes</em>, so a password
+   *       containing a quote no longer breaks the count. Terminators do not apply inside brackets.
+   *   <li><b>The nesting stack grows.</b> It was a fixed 32 and a hard-coded array length is not an
+   *       implementation detail when exceeding it changes what gets published.
+   *   <li><b>A closer at depth zero is an ordinary character on the matched-before axis.</b> Letting
+   *       {@code &#125;} end a value there would turn {@code PASSWORD=hunter2}evil} into
+   *       {@code PASSWORD=[REDACTED]}evil}, publishing the tail of a password because the caller put
+   *       a brace in it. On the newly admitted axis the baseline is untouched, so a closer may end
+   *       the value and {@code {"password": {"inner": "k"}}} comes out as valid JSON.
    * </ul>
    */
   private static int valueExtent(String text, int from, String separator) {
-    int balanced = bracketedExtent(text, from);
-    if (balanced >= 0) {
-      return balanced;
+    if (arrivedOnTheWidenedAxis(text, from, separator)) {
+      return wholeContainerExtent(text, from);
     }
-    return widenedAdmissionMayFallBack(text, from, separator) ? plainExtent(text, from) : -1;
+    int balanced = bracketedExtent(text, from);
+    return balanced < 0 ? plainExtent(text, from) : balanced;
   }
 
   /**
-   * Whether an unmeasurable value may fall back to {@link #plainExtent}, or must be left alone.
+   * Whether this value reached the pattern only because the widening admitted it.
    *
-   * <p><b>The rule: the widening falls back to the behaviour it widened. Where there was no
-   * behaviour, there is nothing to fall back to.</b> That single sentence is what keeps
-   * {@code changedByOldOnly} at zero while G2 is closed, and both halves matter.
-   *
-   * <p>Falling back is right almost everywhere. {@code PASSWORD=[hunter2} is an unquoted key with an
-   * unbalanced bracket; the pattern matched it before this work and redacted it whole, and refusing
-   * would publish a password because the caller put a bracket in it. Same for
-   * {@code PASSWORD={hunter2}, for {@code "password": "{hunter2} where the separator took the
-   * value's opening quote, and for {@code {"password": [hunter2} — the old whitelist admitted
-   * {@code [} followed by a scalar character, so that spelling had a behaviour and keeps it.
-   *
-   * <p>It is wrong in exactly one place, and G2 is that place. {@code &#123;} after a quoted key was
-   * never admitted at all: {@code {"password": {"inner": "k"}}} produced no match and was copied
-   * through untouched. If admitting it inherited the fallback, then an <em>unbalanced</em> one —
-   * {@code {"password": {"inner": "k"} with no closer on the line — would take {@code &#123;} as
-   * the whole value and emit {@code {"password": [REDACTED]"inner": "k"}. That is the exact output
-   * the G2 mandate existed to prevent, re-created by the change that was supposed to close it, and
-   * it would be a mangle-and-leak this commit introduced rather than inherited.
-   *
-   * <p>So the widened admissions — {@code &#123;} and {@code (}, and {@code [} where the character
-   * after it is not one the old whitelist accepted — refuse instead of falling back. <b>Refusing is
-   * sound here and nowhere else</b>, because for these spellings refusing <em>is</em> the previous
-   * behaviour: no redaction was lost, because there was none. The failure direction is "change
-   * nothing", which is the only direction a value-dependent rule is allowed to fail in.
-   *
-   * <p>Note which branch this applies to. It is the quoted-key-with-unquoted-value alternative, the
-   * only one that consults a whitelist — its separator opens with a quote and does not close with
-   * one. An unquoted key never had a whitelist and always fell back; a quoted key with a quoted
-   * value took the value's opening quote into the separator and always fell back too.
+   * <p>True exactly when the quoted-key-with-unquoted-value alternative matched — its separator
+   * opens with a quote and does not close with one — and the value's first character is one the
+   * whitelist refused before {@link #wholeContainerExtent} existed. For those, and only those, the
+   * redactor's previous behaviour was to change nothing, so changing nothing remains available as a
+   * safe answer.
    */
-  private static boolean widenedAdmissionMayFallBack(String text, int from, String separator) {
+  private static boolean arrivedOnTheWidenedAxis(String text, int from, String separator) {
     if (separator.isEmpty()) {
-      return true;
+      return false;
     }
     char first = separator.charAt(0);
     char last = separator.charAt(separator.length() - 1);
     boolean quotedKeyUnquotedValue = (first == '"' || first == '\'') && last != '"' && last != '\'';
-    if (!quotedKeyUnquotedValue) {
-      return true;
-    }
-    return admittedBeforeTheExtentScan(text, from);
+    return quotedKeyUnquotedValue && !admittedBeforeTheExtentScan(text, from);
   }
+
+  /**
+   * The extent of a container that is provably the <b>whole</b> value, or {@code -1} to change
+   * nothing.
+   *
+   * <p>Used only on the newly admitted axis, where the redactor previously produced no output at
+   * all. That is what lets this be strict: every {@code -1} here reproduces the behaviour at
+   * 5b07bb1 exactly, so no redaction can be lost and {@code changedByOldOnly} cannot move.
+   *
+   * <p>The container must close on the line, and <b>what follows it must be something a value
+   * cannot continue through</b>: end of line, a terminator, or the closer of an enclosing
+   * container. If any other character follows — {@code p} in {@code []prod} — then the brackets
+   * balanced but the value did not end there, the answer would be a prefix, and a prefix is the
+   * one thing that must never be emitted.
+   */
+  private static int wholeContainerExtent(String text, int from) {
+    int lineEnd = endOfLine(text, from);
+    int close = matchingCloser(text, from, lineEnd);
+    if (close < 0) {
+      return -1;
+    }
+    if (close == lineEnd) {
+      return close;
+    }
+    char after = text.charAt(close);
+    if (VALUE_TERMINATORS.indexOf(after) >= 0 || after == ']' || after == '}' || after == ')') {
+      return close;
+    }
+    return -1;
+  }
+
+  /**
+   * The index just past the closer matching the opener at {@code from}, or {@code -1} if the line
+   * does not close it. Never scans past {@code lineEnd}, and never past that closer.
+   */
+  private static int matchingCloser(String text, int from, int lineEnd) {
+    char c = text.charAt(from);
+    if (c != '[' && c != '{' && c != '(') {
+      return -1;
+    }
+    char[] open = new char[16];
+    int depth = 0;
+    int i = from;
+    while (i < lineEnd) {
+      char ch = text.charAt(i);
+      if (ch == '"' || ch == '\'') {
+        i = skipQuotedSpan(text, i, lineEnd);
+        if (i < 0) {
+          return -1;
+        }
+        continue;
+      }
+      if (ch == '[' || ch == '{' || ch == '(') {
+        if (depth == open.length) {
+          open = java.util.Arrays.copyOf(open, depth * 2);
+        }
+        open[depth++] = ch;
+        i++;
+        continue;
+      }
+      if (ch == ']' || ch == '}' || ch == ')') {
+        if (depth == 0 || closerFor(open[depth - 1]) != ch) {
+          return -1;
+        }
+        depth--;
+        i++;
+        if (depth == 0) {
+          return i;
+        }
+        continue;
+      }
+      i++;
+    }
+    return -1;
+  }
+
+  /**
+   * The index just past a quoted span starting at {@code i}, or {@code -1} if it does not close on
+   * the line.
+   *
+   * <p><b>Backslash escapes are honoured</b>, and that is not cosmetic. Without it,
+   * {@code ["a\"b", SECRET]} has an odd number of quote characters, the span runs to the wrong
+   * place, the scan fails, and the value falls back to a one-character prefix — a leak reachable by
+   * ordinary valid JSON, or by a password that simply contains a quotation mark.
+   */
+  private static int skipQuotedSpan(String text, int i, int lineEnd) {
+    char quote = text.charAt(i);
+    for (int j = i + 1; j < lineEnd; j++) {
+      char c = text.charAt(j);
+      if (c == '\\') {
+        j++;
+        continue;
+      }
+      if (c == quote) {
+        return j + 1;
+      }
+    }
+    return -1;
+  }
+
 
   /**
    * The scalar-start whitelist exactly as it stood at 5b07bb1, before J1 widened it.
@@ -500,15 +595,21 @@ public final class SensitiveDataRedactor {
 
   /** The bracket-balanced extent, or {@code -1} when the line does not balance. */
   private static int bracketedExtent(String text, int from) {
-    int n = text.length();
-    char[] open = new char[32];
+    // FINDING R3. The end of the line is computed ONCE. It used to be recomputed inside the quote
+    // branch, on every quoted span, each call scanning to the end of the line — so the cost was
+    // O(quotes x distance-to-end-of-line) and the method this replaced was linear. Measured, not
+    // inferred: 800 KB on one line took 150 seconds, against 146 ms for the redactor at 5b07bb1,
+    // and padding the same line with inert text scaled the cost while moving the identical padding
+    // past a newline left it flat. redact() runs on caller-authored strings with no length cap on
+    // context item content, so one HTTP request bought minutes of CPU.
+    int lineEnd = endOfLine(text, from);
+    // Grows. A fixed 32 is not an implementation detail when exceeding it changes which bytes get
+    // published: at depth 33 the scan returned -1 and the answer came from somewhere else.
+    char[] open = new char[16];
     int depth = 0;
     int i = from;
-    while (i < n) {
+    while (i < lineEnd) {
       char c = text.charAt(i);
-      if (c == '\n' || c == '\r') {
-        break;
-      }
       if (depth == 0) {
         if (c == '[' || c == '{' || c == '(') {
           open[depth++] = c;
@@ -522,16 +623,16 @@ public final class SensitiveDataRedactor {
         continue;
       }
       if (c == '"' || c == '\'') {
-        int close = text.indexOf(c, i + 1);
-        if (close < 0 || close > endOfLine(text, i)) {
+        int close = skipQuotedSpan(text, i, lineEnd);
+        if (close < 0) {
           return -1;
         }
-        i = close + 1;
+        i = close;
         continue;
       }
       if (c == '[' || c == '{' || c == '(') {
         if (depth == open.length) {
-          return -1;
+          open = java.util.Arrays.copyOf(open, depth * 2);
         }
         open[depth++] = c;
         i++;
