@@ -80,6 +80,17 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
  *       {@link #theLimitContractHoldsAcrossEveryAcceptHeader}: eight spellings of {@code limit}
  *       against four {@code Accept} headers, pinned as status <em>and</em> body, because a
  *       status-only matrix is what let property 3 be broken in three different ways at once.
+ *
+ *       <p>And it was still not closed by that. Review found the check was comparing media types
+ *       with {@code isCompatibleWith} against a list derived from a parameterless {@code canWrite},
+ *       both of which discard media-type <em>parameters</em> — so a caller naming a charset Jackson
+ *       cannot encode was promised a body it could not be given, and escaped exactly as before.
+ *       {@code application/json;charset=ISO-8859-1} was a 500. The finding landed on this file by
+ *       name: {@link #theRefusalSurvivesEveryShapeOfAcceptHeader} declared that it attacked the
+ *       header itself and carried one charset row, {@code UTF-8}, one of the five Jackson accepts.
+ *       It could not have failed for the reason it existed. The charsets that break the encoder are
+ *       now sent, and {@link #aHonouredLimitUnderAnUnwritableCharsetIsCountedNotTraced} measures
+ *       the log flood that reached the <em>success</em> path through the same hole.
  * </ol>
  *
  * <p>The census is asserted as an exact map rather than as a count of distinct shapes. A count
@@ -825,14 +836,23 @@ class ContextHttpErrorSurfaceTest extends ContextProbeFixture {
    *
    * <p>The rows are chosen from what actually breaks a negotiation check: a type list rather than a
    * single type, wildcards at both levels, quality parameters including {@code q=0}, whitespace and
-   * casing, a charset parameter, an empty header, and two headers that are not media types at all.
+   * casing, <b>ten charsets straddling the five Jackson can encode</b>, and a header that is not a
+   * media type at all.
+   *
+   * <p><b>Review finding R3-A, and it landed on this test by name.</b> This method declared its job
+   * as attacking the header itself, and then carried exactly one charset row —
+   * {@code application/json;charset=UTF-8}, one of the five Jackson accepts. It could not have
+   * failed for the reason it existed. That is the standing lesson of this project applied to the
+   * test written to embody it: when an assertion passes, ask what would have to be true for it to
+   * fail, and if the answer is an input the test never sends, it is decoration. The charsets that
+   * break the encoder are now sent.
    * The last two are the ones a check written with {@code contains("json")} would pass and a check
    * written with {@code MediaType.parseMediaTypes} must survive: an unparseable header makes
    * Spring's own negotiation impossible too, so the only safe reading of it is "send no body", and
    * the status still stands.
    */
   @Test
-  @DisplayName("A refused limit stays a 400 under every Accept header, well-formed or not")
+  @DisplayName("A refused limit stays a 400 under every Accept header, charset and all")
   void theRefusalSurvivesEveryShapeOfAcceptHeader() throws Exception {
     // header -> whether some type in it is one this API can write an ApiError as
     Map<String, Boolean> headers = new LinkedHashMap<>();
@@ -844,6 +864,26 @@ class ContextHttpErrorSurfaceTest extends ContextProbeFixture {
     headers.put("APPLICATION/JSON", true);
     headers.put("  application/json  ", true);
     headers.put("application/json;charset=UTF-8", true);
+    // Review finding R3-A. This row used to be the only charset in the file, and it passed for a
+    // reason that had nothing to do with the guard being correct: UTF-8 is one of the five charsets
+    // Jackson has a JsonEncoding for. Ask what would have to be true for it to fail and the answer
+    // is "any charset but those five", which the row never sent. The rows below send them. Before
+    // the fix every one of the false ones answered 500 with no body on a real container, because
+    // the check compared media types with isCompatibleWith — which ignores parameters — while
+    // Spring's write path asks canWrite with the caller's full type, charset included.
+    headers.put("application/json;charset=US-ASCII", true);
+    headers.put("application/json;charset=UTF-16BE", true);
+    headers.put("application/json;charset=UTF-16LE", true);
+    headers.put("application/json;charset=UTF-32BE", true);
+    headers.put("application/json;charset=ISO-8859-1", false);
+    headers.put("application/json;charset=UTF-16", false);
+    headers.put("application/json;charset=UTF-32", false);
+    headers.put("application/json;charset=windows-1252", false);
+    headers.put("application/json;charset=Shift_JIS", false);
+    headers.put("application/problem+json;charset=ISO-8859-1", false);
+    // Spring selects one candidate and asks the converters about that one, so a writable
+    // alternative behind an unwritable one is not a safe bet. Refused, body dropped, status kept.
+    headers.put("application/json;charset=ISO-8859-1, application/json", false);
     headers.put("application/xml, application/json;q=0.9", true);
     // q=0 says "I would rather have nothing", and this API has nothing else to offer. Measured
     // rather than reasoned about: Spring's own negotiation does not drop a q=0 candidate before
@@ -899,6 +939,99 @@ class ContextHttpErrorSurfaceTest extends ContextProbeFixture {
                 .toList())
         .as("thirteen client mistakes, no stack frames")
         .isEmpty();
+  }
+
+  /**
+   * <b>Review finding R3-C: the stack-trace flood was reachable by one header, on the success
+   * path.</b>
+   *
+   * <p>A limit this route <em>honours</em> under a charset Jackson cannot encode is a genuine 406 —
+   * the page really has no representation this caller would take — and the 406 is not what was
+   * wrong. What was wrong is what it cost. {@code ApiExceptionHandler#notAcceptable} asked whether
+   * the caller accepts our representation, got {@code true} from a check that ignored the charset,
+   * concluded the fault must be ours, wrote an {@code ERROR} with the throwable, and then tried to
+   * send a body — which failed, adding the resolver's ~190-frame {@code Failure in @ExceptionHandler}
+   * WARN on top. Per request. That is precisely the unbounded, client-triggerable flood
+   * LOG-HTTP-R1 exists to prevent, arriving through a door LOG-HTTP-R1 did not measure.
+   *
+   * <p>And {@link #aHundredRefusedLimitsUnderAnUnacceptableAcceptCostNoStackTrace} reported zero
+   * throughout, because it only ever sends {@code application/xml} — a type that is not a candidate
+   * at all, so it never reached the charset question. A guard with a parameter, and the test never
+   * mutated the parameter.
+   *
+   * <p>One fix closes it: once the negotiation decision asks the converters with the caller's full
+   * media type, this header answers {@code false}, {@code notAcceptable} takes its
+   * caller's-mistake branch, and the request is counted rather than traced. So this test asserts
+   * the log, not just the status — the status was already right.
+   *
+   * <p>Each request is performed inside a try/catch rather than an assertion, deliberately: the
+   * failure being measured is an exception escaping the dispatcher, and a measurement that aborts
+   * on the first escape cannot report how many there were. The outcomes are asserted afterwards.
+   */
+  @Test
+  @DisplayName("R3-C: a honoured limit under an unencodable charset is a quiet 406, not a flood")
+  void aHonouredLimitUnderAnUnwritableCharsetIsCountedNotTraced() throws Exception {
+    compileForAlice("ALICE-CHARSET");
+    int linesBefore = captured.list.size();
+    long notAcceptableBefore = expectedErrors.countOf(406, "HttpMediaTypeNotAcceptableException");
+
+    List<String> outcomes = new ArrayList<>();
+    for (int i = 0; i < 36; i++) {
+      try {
+        outcomes.add(
+            String.valueOf(
+                mvc.perform(
+                        get(url(aliceProject))
+                            .param("limit", "20")
+                            .with(TestIdentity.as(alice))
+                            .header(HttpHeaders.ACCEPT, "application/json;charset=ISO-8859-1"))
+                    .andReturn()
+                    .getResponse()
+                    .getStatus()));
+      } catch (Exception escaped) {
+        outcomes.add("escaped:" + escaped.getClass().getSimpleName());
+      }
+    }
+
+    assertThat(outcomes)
+        .as("ISO-8859-1 is HTTP's own historical default text charset, not an exotic input")
+        .hasSize(36)
+        .containsOnly("406");
+
+    List<String> traces =
+        captured.list.stream()
+            .skip(linesBefore)
+            .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+            .filter(event -> event.getThrowableProxy() != null)
+            .map(event -> event.getLoggerName() + " @" + event.getLevel() + ": "
+                + LogCapture.lineOf(event))
+            .toList();
+    assertThat(traces)
+        .as(
+            "R3-C: thirty-six requests differing from an ordinary one by a charset must not write a"
+                + " single frame. Before the fix these wrote ERRORs with the throwable and the"
+                + " resolver's ~190-frame WARN on top, per request.")
+        .isEmpty();
+
+    // Counted, not silenced — the same signal the xml caller gets, for the same reason.
+    assertThat(expectedErrors.countOf(406, "HttpMediaTypeNotAcceptableException"))
+        .as("a 406 an operator can see is the point; silence would be the other way to get to zero")
+        .isEqualTo(notAcceptableBefore + 36);
+
+    // The positive control for that zero, in the same window and through the same predicate.
+    int beforeControl = captured.list.size();
+    LoggerFactory.getLogger(ContextHttpErrorSurfaceTest.class)
+        .warn("charset-control", new IllegalStateException("charset-control-zqxw-118033"));
+    assertThat(
+            captured.list.stream()
+                .skip(beforeControl)
+                .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+                .filter(event -> event.getThrowableProxy() != null)
+                .map(LogCapture::lineOf)
+                .toList())
+        .as("the filter that reported zero above must be able to report one")
+        .hasSize(1)
+        .allSatisfy(line -> assertThat(line).contains("charset-control-zqxw-118033"));
   }
 
   /**

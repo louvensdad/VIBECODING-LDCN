@@ -3,6 +3,7 @@ package com.vibecode.shared.web;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.domain.JavaConstructorCall;
 import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -36,10 +37,29 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
  * is what the next handler copies, and "this one is fine because of a condition three lines up" is
  * not a property a build can check.
  *
- * <p><b>What would have to be true for this test to fail.</b> Any {@code @ExceptionHandler}
- * anywhere in {@code src/main} calling {@code ResponseEntity.BodyBuilder#body}. That mutation was
- * applied — the original {@code InvalidLimitAdvice} body, restored — and this test named the method
- * before the fix was put back.
+ * <p><b>What would have to be true for this test to fail.</b> Any class carrying an
+ * {@code @ExceptionHandler} anywhere in {@code src/main} building a {@code ResponseEntity} with a
+ * body — through {@code body(...)}, {@code ok(body)}, or the {@code new ResponseEntity<>(body, ...)}
+ * constructor — or an {@code @ExceptionHandler} returning a bare {@link ApiError} under a
+ * {@code @ResponseStatus}. That first mutation was applied, the original {@code InvalidLimitAdvice}
+ * body restored, and this test named the method.
+ *
+ * <p><b>Review finding R3-D: what this rule is, and what it is not.</b> It was written per-method
+ * over {@code getMethodCallsFromSelf()}, and review defeated it twice — by moving the
+ * {@code .body(...)} into a private helper the handler calls, and by writing
+ * {@code new ResponseEntity<>(body, BAD_REQUEST)}, which is a constructor call and therefore
+ * invisible to a method-call detector. Both bypasses passed the rule while its own javadoc claimed
+ * that "matching the family is what stops a caller sliding out of the rule by rearranging the
+ * chain". It did not.
+ *
+ * <p>It is now scoped to the <b>class</b> rather than the method, and looks at constructor calls
+ * and at the return type as well, which closes both. What it still cannot see is a helper in a
+ * <em>different</em> class, or a handler that writes to the {@code HttpServletResponse} itself. So
+ * the honest claim is the narrow one: <b>this rule documents the boundary and catches the
+ * near-misses; the behavioural tests are what hold it.</b> Under the private-helper bypass this
+ * rule was silent and {@code ContextHttpErrorSurfaceTest} still failed with three failures and an
+ * error — those tests send requests, and a bypass has to survive an actual write to a caller who
+ * cannot read it. A structural rule cannot make that guarantee, and this one no longer says it can.
  */
 class OneErrorResponseBoundaryTest {
 
@@ -70,14 +90,38 @@ class OneErrorResponseBoundaryTest {
         .anyMatch(name -> name.contains("ApiExceptionHandler"))
         .anyMatch(name -> name.contains("InvalidLimitAdvice"));
 
+    // Scoped to the class, not the method: review defeated the per-method version by moving the
+    // .body(...) one call deeper into a private helper, which is a refactor anybody might make for
+    // reasons that have nothing to do with this rule.
     List<String> buildTheirOwnBody =
         PRODUCTION_CLASSES.stream()
+            .filter(
+                type ->
+                    type.getMethods().stream()
+                        .anyMatch(method -> method.isAnnotatedWith(ExceptionHandler.class)))
             .flatMap(type -> type.getMethods().stream())
-            .filter(method -> method.isAnnotatedWith(ExceptionHandler.class))
-            .filter(OneErrorResponseBoundaryTest::callsBodyOnAResponseEntityBuilder)
+            .filter(OneErrorResponseBoundaryTest::buildsAResponseEntityWithABody)
             .map(JavaMethod::getFullName)
             .sorted()
             .toList();
+
+    // And the shape that carries a body without a ResponseEntity at all: a handler returning the
+    // DTO directly, its status supplied by @ResponseStatus. Nothing writes one today, and a rule
+    // that only knew about ResponseEntity would not notice the first one.
+    List<String> returnAnErrorDirectly =
+        PRODUCTION_CLASSES.stream()
+            .flatMap(type -> type.getMethods().stream())
+            .filter(method -> method.isAnnotatedWith(ExceptionHandler.class))
+            .filter(method -> method.getReturnType().getName().equals(ApiError.class.getName()))
+            .map(JavaMethod::getFullName)
+            .sorted()
+            .toList();
+    assertThat(returnAnErrorDirectly)
+        .as(
+            "an @ExceptionHandler returning %s directly bypasses the boundary the same way, with"
+                + " the status supplied by @ResponseStatus instead of by a builder",
+            ApiError.class.getSimpleName())
+        .isEmpty();
 
     assertThat(buildTheirOwnBody)
         .as(
@@ -105,7 +149,7 @@ class OneErrorResponseBoundaryTest {
         PRODUCTION_CLASSES.stream()
             .filter(type -> type.getName().equals(ApiErrorResponder.class.getName()))
             .flatMap(type -> type.getMethods().stream())
-            .filter(OneErrorResponseBoundaryTest::callsBodyOnAResponseEntityBuilder)
+            .filter(OneErrorResponseBoundaryTest::buildsAResponseEntityWithABody)
             .map(JavaMethod::getName)
             .sorted()
             .toList();
@@ -116,20 +160,39 @@ class OneErrorResponseBoundaryTest {
   }
 
   /**
-   * Whether a method calls {@code body(...)} on one of Spring's {@code ResponseEntity} builders.
+   * Whether a method builds a {@code ResponseEntity} that carries a body.
    *
-   * <p>Matched on the owner's name prefix rather than on an exact class, because the call site's
-   * declared owner is {@code ResponseEntity$BodyBuilder} for a fluent chain and {@code
-   * ResponseEntity$HeadersBuilder} or {@code ResponseEntity} itself in other shapes. Matching the
-   * family is what stops a caller sliding out of the rule by rearranging the chain.
+   * <p>Three shapes, because review found the first version of this saw only one of them:
+   *
+   * <ul>
+   *   <li>{@code body(x)} on a builder, the fluent chain;
+   *   <li>{@code ResponseEntity.ok(x)}, a static factory that takes the body directly and never
+   *       touches a builder;
+   *   <li>{@code new ResponseEntity<>(x, status)}, a <em>constructor</em> call, which
+   *       {@code getMethodCallsFromSelf()} does not return at all. That was the second bypass, and
+   *       it is the one that falsified the previous version of this comment.
+   * </ul>
+   *
+   * <p>The owner is matched on name prefix rather than on an exact class, because the declared
+   * owner is {@code ResponseEntity$BodyBuilder} for a chain, {@code ResponseEntity$HeadersBuilder}
+   * in other shapes, and {@code ResponseEntity} itself for the factories and the constructor.
    */
-  private static boolean callsBodyOnAResponseEntityBuilder(JavaMethod method) {
+  private static boolean buildsAResponseEntityWithABody(JavaMethod method) {
     for (JavaMethodCall call : method.getMethodCallsFromSelf()) {
-      if (call.getName().equals("body")
-          && call.getTargetOwner().getName().startsWith("org.springframework.http.ResponseEntity")) {
+      if ((call.getName().equals("body") || call.getName().equals("ok"))
+          && isResponseEntity(call.getTargetOwner().getName())) {
+        return true;
+      }
+    }
+    for (JavaConstructorCall call : method.getConstructorCallsFromSelf()) {
+      if (isResponseEntity(call.getTargetOwner().getName())) {
         return true;
       }
     }
     return false;
+  }
+
+  private static boolean isResponseEntity(String owner) {
+    return owner.startsWith("org.springframework.http.ResponseEntity");
   }
 }

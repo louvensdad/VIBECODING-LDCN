@@ -46,12 +46,22 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  *       not about what happened. Answering 406 instead would throw away the fact that the request
  *       was also, say, unauthorised, and would let a header the caller chooses decide what this API
  *       reports.
- *   <li><b>The body is omitted</b> when the caller accepts nothing we write, because handing Spring
- *       a body Spring cannot write is the failure being prevented.
+ *   <li><b>The body is omitted</b> when nothing the caller would accept can actually be written,
+ *       because handing Spring a body Spring cannot write is the failure being prevented.
  *   <li><b>The omission is recorded</b> — as an expected client error for a 4xx, at DEBUG for a 5xx
  *       — so an operator can see that bodies are being dropped and why, without a server fault
  *       being filed as somebody else's mistake.
  * </ul>
+ *
+ * <p><b>"Can actually be written" is asked of the converters, not approximated.</b> The first
+ * version of this class compared media types with {@code isCompatibleWith} against a list derived
+ * from a parameterless {@code canWrite}, and both of those discard media-type <em>parameters</em>.
+ * Spring's write path does not. So {@code Accept: application/json;charset=ISO-8859-1} — HTTP's own
+ * historical default text charset, and a charset Jackson has no {@code JsonEncoding} for — was
+ * promised a body, could not be given one, and escaped as a 500 on a real container. That was review
+ * finding R3-A/R3-B, it was true of this check from the day it was written, and
+ * {@link #callerAcceptsOurRepresentation()} carries the full account. It is also why this class
+ * holds the converters and not only a list of types.
  */
 @Component
 public class ApiErrorResponder {
@@ -93,8 +103,21 @@ public class ApiErrorResponder {
    */
   private final List<MediaType> writableErrorTypes;
 
+  /**
+   * The converters themselves, kept rather than distilled into the list above.
+   *
+   * <p>Because the list above cannot answer the question that matters. It is derived from a
+   * <b>parameterless</b> {@code canWrite(ApiError.class, null)}, and comparing against it uses
+   * {@code isCompatibleWith}, which <b>ignores media-type parameters</b>. Spring's write path does
+   * neither: it calls {@code canWrite(valueType, selectedMediaType)} with the caller's full media
+   * type. So the list is the right thing to ask "is this type in the family we produce" and the
+   * wrong thing to ask "will this actually get written" — see {@link #callerAcceptsOurRepresentation()}.
+   */
+  private final List<HttpMessageConverter<?>> converters;
+
   ApiErrorResponder(ExpectedHttpErrorLog expectedErrors, HttpMessageConverters converters) {
     this.expectedErrors = expectedErrors;
+    this.converters = List.copyOf(converters.getConverters());
     this.writableErrorTypes = writableErrorTypesOf(converters);
   }
 
@@ -154,18 +177,52 @@ public class ApiErrorResponder {
   }
 
   /**
-   * Whether the caller will accept the one representation this API produces.
+   * Whether an {@link ApiError} can actually be written for this caller.
    *
-   * <p>"Our representation" is whatever the converters say they can write an {@link ApiError} as,
-   * not the string {@code application/json}. Today that resolves to {@code application/json} and
-   * {@code application/*+json}, so {@code application/problem+json}, {@code application/hal+json}
-   * and any vendor {@code +json} type keep their body — as they did before this infrastructure
-   * existed, and as review found they had stopped doing when this compared against one literal. A
-   * missing or blank header states no preference, and no preference accepts everything.
+   * <p>"Our representation" is whatever the converters say, not the string {@code
+   * application/json}. Today the family resolves to {@code application/json} and {@code
+   * application/*+json}, so {@code application/problem+json}, {@code application/hal+json} and any
+   * vendor {@code +json} type keep their body. A missing or blank header states no preference, and
+   * no preference accepts everything. An unparseable header answers false: Spring's own negotiation
+   * cannot use it either, so the choice is between omitting the body deliberately and letting the
+   * write fail, and the write failing is the defect being prevented.
    *
-   * <p>An unparseable header answers false. Spring's own negotiation cannot use it either, so the
-   * choice is between omitting the body deliberately and letting the write fail — and the write
-   * failing is the defect being prevented.
+   * <p><b>Review finding R3-A/R3-B: why this asks the converters instead of comparing types.</b>
+   * The first version of this check was
+   *
+   * <pre>
+   *   acceptable.isCompatibleWith(writable)   // over a list derived from canWrite(ApiError.class, null)
+   * </pre>
+   *
+   * <p>and both halves of that discard media-type <em>parameters</em>. Spring's write path does not:
+   * it calls {@code converter.canWrite(valueType, selectedMediaType)} with the caller's full type,
+   * and {@code getMostSpecificMediaType} prefers the caller's type precisely when it carries the
+   * extra parameters. {@code AbstractJackson2HttpMessageConverter.canWrite} returns <b>false</b> for
+   * any charset it has no {@code JsonEncoding} for. So this method said "write it", Spring said "no
+   * acceptable representation", the write threw inside the {@code @ExceptionHandler} — which Spring
+   * does not re-dispatch — and the exception escaped. Measured on a real container:
+   * {@code Accept: application/json;charset=ISO-8859-1}, HTTP's own historical default text charset,
+   * answered <b>500 with no body</b> on a request whose true answer was 400.
+   *
+   * <p>A {@code q} parameter had been measured against Spring and found genuinely harmless, and that
+   * measurement was then generalised to every parameter. The property that makes {@code q} safe to
+   * ignore is exactly the property that makes {@code charset} unsafe to ignore. So the decision is
+   * no longer an approximation of what the converters will do — it is what they say, asked with the
+   * same argument Spring will ask with.
+   *
+   * <p><b>Every candidate, not merely one.</b> Spring builds its candidate list, takes the
+   * <b>first concrete</b> entry and asks the converters about that one only. A writable alternative
+   * further along the header does not save the response if a compatible-but-unwritable type is
+   * selected ahead of it, so a header like
+   * {@code application/json;charset=ISO-8859-1, application/json} must answer false rather than bet
+   * on which entry Spring picks. Candidacy is still {@code isCompatibleWith} against
+   * {@link #writableErrorTypes}, deliberately: that mirrors how Spring decides which acceptable
+   * types enter the list at all, so a type outside the family — {@code application/xml} beside a
+   * plain {@code application/json} — cannot poison a header it was never going to be selected from.
+   *
+   * <p>The cost is a deliberate false negative on a mixed header Spring might have written: the body
+   * is dropped and the status is untouched. Dropping a body is recoverable and recorded; an escaped
+   * exception is neither.
    */
   public boolean callerAcceptsOurRepresentation() {
     if (!(RequestContextHolder.getRequestAttributes()
@@ -177,17 +234,52 @@ public class ApiErrorResponder {
     if (accept == null || accept.isBlank()) {
       return true;
     }
+    List<MediaType> acceptable;
     try {
-      for (MediaType acceptable : MediaType.parseMediaTypes(accept)) {
-        for (MediaType writable : writableErrorTypes) {
-          if (acceptable.isCompatibleWith(writable)) {
-            return true;
-          }
-        }
-      }
-      return false;
+      acceptable = MediaType.parseMediaTypes(accept);
     } catch (InvalidMediaTypeException malformed) {
       return false;
     }
+    boolean anyCandidate = false;
+    for (MediaType type : acceptable) {
+      if (!isCandidate(type)) {
+        continue;
+      }
+      anyCandidate = true;
+      if (!someConverterCanWrite(type)) {
+        return false;
+      }
+    }
+    return anyCandidate;
+  }
+
+  /**
+   * Whether Spring would put this acceptable type into the candidate list at all — the same
+   * {@code acceptable.isCompatibleWith(producible)} test its write path uses to build that list.
+   */
+  private boolean isCandidate(MediaType acceptable) {
+    for (MediaType writable : writableErrorTypes) {
+      if (acceptable.isCompatibleWith(writable)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The question Spring's write path actually asks, asked with the same argument.
+   *
+   * <p>The quality value is removed first because Spring removes it before calling {@code canWrite},
+   * and asking a different question than the one that will be asked is how this method came to be
+   * wrong in the first place.
+   */
+  private boolean someConverterCanWrite(MediaType acceptable) {
+    MediaType asked = acceptable.removeQualityValue();
+    for (HttpMessageConverter<?> converter : converters) {
+      if (converter.canWrite(ApiError.class, asked)) {
+        return true;
+      }
+    }
+    return false;
   }
 }
