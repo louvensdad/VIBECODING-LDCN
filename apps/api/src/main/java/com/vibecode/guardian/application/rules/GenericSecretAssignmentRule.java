@@ -20,9 +20,32 @@ import org.springframework.stereotype.Component;
 public class GenericSecretAssignmentRule implements SecurityRule {
 
   private static final RuleId ID = RuleId.of("SEC-002");
+
+  /**
+   * The key half is {@link SensitiveDataRedactor#SENSITIVE_KEY_REGEX} rather than a copy of it.
+   *
+   * <p>What was here was a verbatim copy of the expression the redactor carried before
+   * CTX-09B-1 — {@code \b(API_KEY|SECRET|TOKEN|PASSWORD|…)} — and it had inherited that finding's
+   * root cause: {@code _} is a word character, so {@code \b} cannot fire before {@code PASSWORD}
+   * in {@code VIBECODE_DB_PASSWORD} and the whole assignment was invisible to this rule. The
+   * redactor was fixed; this copy was not, and the two definitions of "a sensitive key" drifted.
+   *
+   * <p>Two independent reviews established that this was a <b>detection gap and not a leak
+   * path</b>: whatever this rule does or does not report, its evidence is passed through
+   * {@link SensitiveDataRedactor#redact(String)} before it is stored, and 439,416 fuzzed evidence
+   * paths produced no escape. What was lost was the finding — the operator was not told to go and
+   * rotate the credential.
+   *
+   * <p>Only the vocabulary is shared. This rule still decides for itself what counts as a finding:
+   * it keeps its own separator, its own quote handling, its own minimum length and its own
+   * placeholder exemption, and the redactor consults no rule at all. Detection and redaction are
+   * different jobs and redaction does not depend on this class existing.
+   */
   private static final Pattern PATTERN =
       Pattern.compile(
-          "(?i)\\b(API_KEY|SECRET|TOKEN|PASSWORD|CLIENT_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|PRIVATE_KEY)\\s*(=|:)\\s*([\"']?)([^\\s,;\"'\\r\\n]+)([\"']?)");
+          "(?i)\\b("
+              + SensitiveDataRedactor.SENSITIVE_KEY_REGEX
+              + ")\\s*(=|:)\\s*([\"']?)([^\\s,;\"'\\r\\n]+)([\"']?)");
 
   @Override
   public RuleId id() {

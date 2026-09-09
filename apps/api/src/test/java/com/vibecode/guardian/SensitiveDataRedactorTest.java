@@ -3,6 +3,9 @@ package com.vibecode.guardian;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.vibecode.guardian.domain.SensitiveDataRedactor;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -76,6 +79,230 @@ class SensitiveDataRedactorTest {
     // And the redactor's own markers still survive a second pass, so redaction stays idempotent.
     String marked = "PASSWORD=[REDACTED]\nOPENAI_API_KEY=sk-****REDACTED****";
     assertThat(SensitiveDataRedactor.redact(marked)).isEqualTo(marked);
+  }
+
+  /**
+   * <b>The invariant, as an executable statement rather than a claim in a comment.</b>
+   *
+   * <p><em>When a sensitive assignment is redacted, the count of the original plaintext is zero.</em>
+   * There is no acceptable outcome of the form "mangled text plus surviving plaintext". Every leak
+   * this redactor has had has been exactly that shape: FINDING J1 emitted
+   * {@code {"password": [REDACTED], SECRET]}}, which is a broken document with the secret still in
+   * it, and the two failures before it were the same thing under different punctuation.
+   *
+   * <p>This runs a cross-product rather than a list, because a list only ever contains the forms
+   * somebody already thought of, and J1 was reachable by six key spellings that a per-spelling test
+   * would have had to enumerate. <b>What would have to be true for this to fail:</b> the redactor
+   * would have to rewrite one of these inputs and leave the needle somewhere in the output. That
+   * was checked rather than assumed: making {@code valueExtent} return {@code plainExtent}
+   * unconditionally — the run that predates this fix — turns this test red on
+   * {@code password=[prod, Pa55phrase_zqxw_610455]}, the first bracketed value it reaches. (It
+   * reports one failure, not many: the assertion is inside the loop and AssertJ stops there. The
+   * count is not evidence of how much the mutation broke.)
+   *
+   * <p>The value shapes are restricted to the ones whose extent ends on the same line as the key,
+   * and that restriction is the honest boundary of this fix rather than a way of making the test
+   * green: {@code SecretAssignmentGrammarTest#aValueEndingAtWhitespaceStillLeaksItsTail} pins the
+   * classes that are still open, and they are open because every available fix for them publishes.
+   */
+  @Test
+  @DisplayName("INVARIANT: rewriting a same-line assignment always removes all of the plaintext")
+  void aRewrittenAssignmentNeverKeepsThePlaintext() {
+    String needle = "Pa55phrase_zqxw_610455";
+    String[] keys = {
+      "password", "PASSWORD", "apiKey", "API_KEY", "api-key", "secret", "token",
+      "client_secret", "clientSecret", "access_token", "accessToken", "private_key",
+      "VIBECODE_DB_PASSWORD", "DB_PASSWORD", "dbPassword", "REFRESH_TOKEN"
+    };
+    String[] quotes = {"", "\"", "'"};
+    String[] separators = {"=", ":", " = ", " : ", "\t=\t"};
+    String[] values0 = {
+      needle,
+      "$" + needle,
+      "$2b$12$" + needle,
+      "[" + needle + "]",
+      "[prod, " + needle + "]",
+      "[a, [b, " + needle + "]]",
+      "[\"" + needle + "\"]",
+      "[{\"k\": \"" + needle + "\"}]",
+      "{inner: " + needle + "}",
+      "(" + needle + ")",
+      "[REDACTED]" + needle,
+      "[" + needle,
+      "{" + needle,
+      needle + "}evil",
+      "\"" + needle + "\"",
+      // G2's shapes.
+      "{\"inner\": \"" + needle + "\"}",
+      "(\"" + needle + "\")",
+      "{\"a\": {\"b\": \"" + needle + "\"}}",
+    };
+    String[] documents = {"%s", "{%s}", "{%s, \"user\": \"bob\"}", "- %s", "prefix %s"};
+
+    // FINDING R1-test. THE ALPHABET ABOVE WAS THE DEFECT, NOT THE ASSERTION.
+    //
+    // The assertion is real — reverting valueExtent reddens it — but it only ever saw the value
+    // shapes someone had thought of, and the shapes that leaked were not among them. Replayed with
+    // four more, this same generator produced 2,880 violations, 1,280 of them introduced at
+    // 43517ff. The shipped alphabet reported zero. That is a measurement that was true about the
+    // population it sampled and false about the code, and it is the second time in this task and
+    // the eighth time in this project that a green has meant the former.
+    //
+    // So the family is now GENERATED rather than listed. Every character outside the old inner
+    // lookahead class [A-Za-z0-9$_.+~%@-] is a character the widening newly admitted after "[",
+    // and each one reaches the scan differently: some make it return -1, and some — "]" above all
+    // — make it SUCCEED with an extent that is simply too short. {"password": []prod, SECRET]}
+    // balances at depth 0 and stops at the comma, so a guard that only checked for -1 passed it
+    // straight through. A list of spellings could not have covered that; a sweep does.
+    List<String> swept = new ArrayList<>();
+    for (char c : "\"'[]{}()<>,;:!*&|#=\\/ \t".toCharArray()) {
+      swept.add("[" + c + "prod, " + needle + "]");
+      swept.add("[" + c + needle + "]");
+      swept.add("[" + c + needle);
+    }
+    // Escaped quotes: ordinary valid JSON, and a password that contains a quotation mark. The
+    // quote count is odd because one is escaped, so a scan that skips to the next quote lands in
+    // the wrong place and the extent collapses to one character.
+    swept.add("[\"a\\\"b\", " + needle + "]");
+    swept.add("{\"k\": \"a\\\"b\", \"v\": \"" + needle + "\"}");
+    swept.add("[\"" + needle + "\\\"tail\"]");
+    // Depth, because the nesting stack used to be a fixed 32 and exceeding it changed the answer.
+    swept.add("[".repeat(33) + needle + "]".repeat(33));
+    swept.add("[".repeat(64) + needle + "]".repeat(64));
+
+    // FINDING F1-pinning. A COMPLETE CONTAINER FOLLOWED BY A TAIL, which every value above lacks:
+    // each of them is [c…needle…] or [c…needle, so the needle is always INSIDE the container the
+    // scan measures. Put the needle after it and the container is redacted while the needle
+    // survives — the redactor's oldest rule, "a value ends at the first depth-0 terminator", newly
+    // reachable on the widened axis rather than newly invented.
+    //
+    // These go in the pinned list rather than the strict one, because the strict assertion would
+    // fail on them and that failure is the point: the family exists, it is known, and it is named
+    // in SecretAssignmentGrammarTest#aValueEndingAtWhitespaceStillLeaksItsTail. Leaving them out
+    // of the generator entirely is what made the previous sweep report zero.
+    List<String> pinnedTailFamily =
+        List.of(
+            "[\"a\"] " + needle,
+            "[a] [b, " + needle + "]",
+            "({[a]}) " + needle,
+            "{\"a\": 1} " + needle);
+
+    // THE SWEEP RUNS UNDER QUOTED KEYS, and that is a statement about which axis it tests, not a
+    // filter that makes it pass. The widening this sweep exists to police —
+    // \[(?=[A-Za-z0-9$_.+~%@-]) becoming [\[{(] — lives in the whitelist that ONLY the
+    // quoted-key-with-unquoted-value alternative consults. An unquoted key never had a whitelist:
+    // it matched every one of these shapes at 5b07bb1 and mangled some of them then, byte for
+    // byte, and refusing there would publish. That class is pinned with its exact output in
+    // unbalancedContainersUnderAnUnquotedKeyStillMangle rather than hidden here.
+    String[] quotedOnly = {"\"", "'"};
+
+    int rewritten = 0;
+    for (String key : keys) {
+      for (String quote : quotedOnly) {
+        for (String value : swept) {
+          for (String document : documents) {
+            String input = String.format(document, quote + key + quote + ": " + value);
+            String output = SensitiveDataRedactor.redact(input);
+            if (output.equals(input)) {
+              continue;
+            }
+            rewritten++;
+            assertThat(output)
+                .as("the widened axis rewrote [%s] and kept the plaintext", input)
+                .doesNotContain(needle);
+          }
+        }
+      }
+    }
+
+    // The pinned family, asserted rather than tolerated: the container goes, the tail stays. This
+    // is a positive assertion on both halves, so a change in either direction fails here — if the
+    // tail stopped surviving this test would go red and someone would have to come and delete it
+    // on purpose, which is the only way a known-open family stays known.
+    int tailFamilyHits = 0;
+    for (String value : pinnedTailFamily) {
+      String input = "{\"password\": " + value + "}";
+      String output = SensitiveDataRedactor.redact(input);
+      tailFamilyHits++;
+      assertThat(output).as("the container should still be redacted in [%s]", input)
+          .contains("[REDACTED]");
+      assertThat(output).as("KNOWN OPEN: the tail after the container survives in [%s]", input)
+          .contains(needle);
+    }
+    assertThat(tailFamilyHits).isEqualTo(4);
+
+    String[] values = values0;
+    for (String key : keys) {
+      for (String quote : quotes) {
+        for (String separator : separators) {
+          for (String value : values) {
+            for (String document : documents) {
+              String input = String.format(document, quote + key + quote + separator + value);
+              String output = SensitiveDataRedactor.redact(input);
+              if (output.equals(input)) {
+                // Left alone. The secret is still there and that is the pre-existing behaviour;
+                // this invariant is about what redaction produces, not about coverage.
+                continue;
+              }
+              rewritten++;
+              assertThat(output)
+                  .as("redacting [%s] rewrote it and kept the plaintext", input)
+                  .doesNotContain(needle);
+            }
+          }
+        }
+      }
+    }
+    // Guards the guard: if the pattern stopped matching, every input would fall into the
+    // "left alone" branch above and this test would pass without asserting anything at all.
+    assertThat(rewritten).isGreaterThan(3000);
+  }
+
+  /**
+   * <b>The boundary of the test above, pinned instead of filtered.</b>
+   *
+   * <p>The matrix covers values whose extent can be established: balanced brackets, or a plain run
+   * that reaches the end of the line. One shape is outside it and is a genuine mangle-and-leak —
+   * an <b>unbalanced</b> opener under an <b>unquoted</b> key, where the plain run stops at a quote
+   * <em>inside</em> the structure it could not close.
+   *
+   * <p><b>Byte-identical at 5b07bb1, at 43517ff and here</b> — measured across all three, not
+   * assumed. It is not this work's regression, and it is not this work's to close either, because
+   * the only available fix is to refuse, and refusing publishes: {@code PASSWORD={hunter2 more} has
+   * the same shape and the plain run removes a real password from it. A rule whose failure mode is
+   * "publish the value" must never depend on the value, so the refusal that closes G2 is confined
+   * to the quoted-key branch, where refusing is what the redactor already did.
+   *
+   * <p>The same shape under a <b>quoted</b> key is a different case and is closed: it is left
+   * exactly alone rather than mangled — see {@code SecretAssignmentGrammarTest}.
+   *
+   * <p>These three strings are in the suite permanently because leaving them out of a generator hid
+   * a real defect once: the value list at 43517ff had no unbalanced bracket-then-quote, and 43517ff
+   * introduced a mangle-and-leak for {@code {"password": ["secret} that its own fuzz reported zero
+   * of. Measured afterwards at 1,088 inputs on a three-way differential, and closed by the G2 guard.
+   */
+  @Test
+  @DisplayName("KNOWN OPEN: an unbalanced opener under an unquoted key mangles, as it always has")
+  void unbalancedContainersUnderAnUnquotedKeyStillMangle() {
+    String needle = "Pa55phrase_zqxw_610455";
+    assertThat(SensitiveDataRedactor.redact("password={\"inner\": \"" + needle))
+        .isEqualTo("password=[REDACTED]\"inner\": \"" + needle);
+    assertThat(SensitiveDataRedactor.redact("password=[\"" + needle))
+        .isEqualTo("password=[REDACTED]\"" + needle);
+    assertThat(SensitiveDataRedactor.redact("password=(\"" + needle))
+        .isEqualTo("password=[REDACTED]\"" + needle);
+    // The same class reached by a scan that SUCCEEDS too short rather than failing: "[]" balances
+    // at depth 0 and the comma stops it. Under a quoted key this is refused (FINDING R1); under an
+    // unquoted key there is no whitelist to refuse from and the plain run is what 5b07bb1 did.
+    assertThat(SensitiveDataRedactor.redact("password=[]prod, " + needle + "]"))
+        .isEqualTo("password=[REDACTED], " + needle + "]");
+    assertThat(SensitiveDataRedactor.redact("password=[\"prod, " + needle + "]"))
+        .isEqualTo("password=[REDACTED]\"prod, " + needle + "]");
+
+    // And the reason it cannot be closed by refusing: here the plain run removes the whole secret,
+    // so a refusal keyed on "the opener did not close" would publish it.
+    assertThat(SensitiveDataRedactor.redact("PASSWORD={hunter2")).isEqualTo("PASSWORD=[REDACTED]");
+    assertThat(SensitiveDataRedactor.redact("PASSWORD=[hunter2")).isEqualTo("PASSWORD=[REDACTED]");
   }
 }
 

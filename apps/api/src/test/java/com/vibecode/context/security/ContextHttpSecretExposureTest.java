@@ -180,6 +180,49 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
   private static final String QUOTED_BCRYPT = "{\"password\": " + BCRYPT_SHAPELESS + "}";
 
   /**
+   * FINDING J1: the same value again, as the second element of a <b>flow sequence</b>.
+   *
+   * <p>{@code {"password": [prod, $2b$12$…]}} was the last spelling that mangled and leaked at the
+   * same time. The redactor admitted the {@code [} because a scalar character followed it, then ran
+   * the value to the comma <em>inside</em> the brackets: the opening bracket was replaced, the
+   * document stopped parsing, and everything after the comma — the secret — stayed exactly where it
+   * was. Six quoted-key spellings reached it, and {@code apiKey: [prod, <key>]} is ordinary YAML
+   * that no adversary is needed to write.
+   *
+   * <p>Planted on the same terms as the three probes above, and that construction is the point
+   * rather than a convenience. The value <b>contains {@link #SHAPELESS}</b>, so all eight
+   * measurements this class makes — the three routes, the route with no request body, the canonical
+   * payload and digest, the logs, the audit rows and the table sweep — cover it as they stand, and
+   * it needs no assertion of its own. <b>A probe with no test of its own cannot be deleted along
+   * with its test.</b> That is not a hypothetical: closing one bypass while deleting the assertion
+   * that named it is how {@link #QUOTED_BCRYPT}'s leak survived a full green suite.
+   */
+  private static final String J1_FLOW_SEQUENCE =
+      "{\"password\": [prod, " + BCRYPT_SHAPELESS + "]}";
+
+  /**
+   * FINDING G2: the same value again, inside a <b>nested object</b> under a quoted key.
+   *
+   * <p>{@code {"password": {"inner": "…"}}} was not mangled — it was left completely alone, and
+   * left alone meant every byte of the secret stayed in the document and travelled every path this
+   * class measures. It was pinned that way on purpose: the alternative at the time was to take the
+   * {@code &#123;} as the whole value, replace it, and publish the object's contents beside a
+   * broken document, which is worse. Measuring the extent removes the choice between them — the
+   * object is replaced whole.
+   *
+   * <p>Planted on the same terms as the other four: the value <b>contains {@link #SHAPELESS}</b>,
+   * so the eight measurements cover it as they stand and it has no assertion of its own that could
+   * be deleted along with it.
+   *
+   * <p>Note what this probe would <em>not</em> have caught, because it matters for reading a green
+   * run: while G2 was open the value was returned untouched, so this probe fails loudly today if
+   * the admission is reverted, but a probe of this shape planted a month ago would have been red
+   * the whole time. It is new because the defect it covers is newly closed.
+   */
+  private static final String G2_NESTED_OBJECT =
+      "{\"password\": {\"inner\": \"" + BCRYPT_SHAPELESS + "\"}}";
+
+  /**
    * What the three planted probes are, appended to the assertions that would otherwise report only
    * a field name or a table name.
    *
@@ -190,13 +233,15 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
    * price paid back — the search needle is one string, so the failure has to carry the list itself.
    */
   private static final String PROBES_PLANTED =
-      " Four values are planted, all containing the one needle this assertion searches for, so the"
+      " Six values are planted, all containing the one needle this assertion searches for, so the"
           + " failure above cannot say which of them escaped — and on this assertion the reported"
-          + " text is a list of field or table names, with no value in it to inspect. The four are"
+          + " text is a list of field or table names, with no value in it to inspect. The six are"
           + " the constants SHAPELESS (bare, under VIBECODE_DB_PASSWORD=), BCRYPT_SHAPELESS"
           + " ($2b$12$…, under SERVICE_AUTH_TOKEN=), DOLLAR_SHAPELESS ($…, under"
           + " APP_CLIENT_SECRET=) and QUOTED_BCRYPT (the same bcrypt value under a quoted JSON key"
-          + " with no quotes on the value). To find out which, re-run"
+          + " with no quotes on the value) and J1_FLOW_SEQUENCE (that same bcrypt value as the"
+          + " second element of a JSON flow sequence) and G2_NESTED_OBJECT (that same bcrypt value"
+          + " inside a nested JSON object under a quoted key). To find out which, re-run"
           + " ContextShapelessSecretBlastRadiusTest and SecretAssignmentGrammarTest, or read the"
           + " offending row directly: SELECT content, label FROM context_pack_items. Then match"
           + " what you find against those four constants at the top of this class — each names the"
@@ -308,6 +353,26 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
         BrainEntryType.RULE,
         "Constraint " + QUOTED_BCRYPT,
         "The config we were sent reads " + QUOTED_BCRYPT,
+        "test");
+    // FINDING J1's spelling, planted on the same terms as the other three: it contains SHAPELESS,
+    // so the class's eight existing measurements catch it and it has no assertion of its own to be
+    // deleted with. Planted twice on purpose — once at the end of the text and once in the middle
+    // of it, because the value's extent runs to the end of the line and "…]} today" exercises a
+    // different path through it than "…]}" at a line end does.
+    brain.add(
+        projectId,
+        BrainEntryType.RULE,
+        "Sequence " + J1_FLOW_SEQUENCE,
+        "The environments file reads " + J1_FLOW_SEQUENCE + " today, and must be rotated.",
+        "test");
+    // FINDING G2's spelling, on the same terms again: it contains SHAPELESS, so the eight
+    // measurements catch it and it has no assertion of its own. Planted at the end of the text and
+    // in the middle of it for the same reason the J1 probe is.
+    brain.add(
+        projectId,
+        BrainEntryType.RULE,
+        "Nested " + G2_NESTED_OBJECT,
+        "The service config we were handed reads " + G2_NESTED_OBJECT + " and is still live.",
         "test");
 
     outsider = identity.createUser("http-exposure-outsider");
