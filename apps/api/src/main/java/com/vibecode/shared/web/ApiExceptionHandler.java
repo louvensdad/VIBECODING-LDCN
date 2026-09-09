@@ -6,6 +6,7 @@ import com.vibecode.identity.domain.PasswordPolicy;
 import com.vibecode.identity.ratelimit.domain.RateLimitExceededException;
 import com.vibecode.identity.web.AuthController;
 import com.vibecode.shared.domain.DomainRuleException;
+import com.vibecode.shared.logging.ExpectedHttpErrorLog;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import com.vibecode.vault.domain.VaultCryptographyException;
 import java.util.List;
@@ -17,6 +18,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -27,6 +29,19 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 public class ApiExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+  /**
+   * Where an error the caller caused is recorded instead of being traced.
+   *
+   * <p>Injected rather than instantiated so the tally is one per application, and so a test can
+   * read it. Only the branches below that have already concluded "this is the caller's mistake"
+   * touch it; the server-fault branch of {@link #unexpected(Exception)} does not, and must not.
+   */
+  private final ExpectedHttpErrorLog expectedErrors;
+
+  ApiExceptionHandler(ExpectedHttpErrorLog expectedErrors) {
+    this.expectedErrors = expectedErrors;
+  }
 
   @ExceptionHandler({ResourceNotFoundException.class, NoSuchElementException.class})
   ResponseEntity<ApiError> notFound(RuntimeException exception) {
@@ -156,18 +171,63 @@ public class ApiExceptionHandler {
   }
 
   /**
-   * Last-resort handler.
+   * An {@code Accept} header naming nothing this API can produce.
    *
-   * <p>Spring's own web exceptions (unknown route, wrong method, unsupported media type) already
-   * carry the right status and are reported with it — collapsing them into 500 would hide an
-   * ordinary client mistake behind a server error. Anything else is genuinely unexpected: the cause
-   * goes to the log and the client gets a generic message, so internal detail never leaks through
-   * the API.
+   * <p>The status was always right; getting to it was not. Without this branch the exception
+   * reached {@link #unexpected(Exception)}, which built an {@code ApiError} body — and Spring then
+   * could not serialise that body either, for the same reason it could not serialise the original
+   * response, so the error handler itself failed. Spring reports a failing {@code @ExceptionHandler}
+   * at WARN with the throwable attached: 189 frames in the log, on every request, triggered by a
+   * header the caller chooses. Measured on this codebase before this branch existed, not estimated.
+   *
+   * <p>The fix is to answer with no body at all, which is the only honest answer available: the
+   * caller has said which representations they accept and this API produces none of them, so there
+   * is nothing left to write. Nothing is serialised, nothing fails, and what the caller sees does
+   * not move — the 406 already arrived with an empty body and no content type, because the
+   * {@code ApiError} that {@link #unexpected(Exception)} built was never successfully written. That
+   * was measured against the running application before this branch was added; this is a logging
+   * fix and not a change to the error contract.
+   *
+   * <p>Declared explicitly rather than folded into the {@code ErrorResponse} branch below, because
+   * that branch answers with a JSON body and a JSON body is exactly what cannot be produced here.
+   */
+  @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+  ResponseEntity<Void> notAcceptable(HttpMediaTypeNotAcceptableException exception) {
+    expectedErrors.record(HttpStatus.NOT_ACCEPTABLE.value(), exception.getClass().getSimpleName());
+    return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE).build();
+  }
+
+  /**
+   * Last-resort handler, and the one place in this class where the two kinds of failure are told
+   * apart. The distinction is the point, so it is written out rather than left to a filter that
+   * happens to match:
+   *
+   * <ul>
+   *   <li><b>Expected.</b> Spring's own web exceptions carrying a 4xx — unknown route, wrong
+   *       method, unsupported media type — are client mistakes. They keep their status and their
+   *       body, and they are now <em>counted</em> by {@link ExpectedHttpErrorLog} rather than
+   *       passing in silence. That is more signal than before, not less: this branch previously
+   *       returned without logging anything at all.
+   *   <li><b>Unexpected.</b> Everything else is a fault in this application. It keeps exactly the
+   *       logging it always had — {@code log.error} with the throwable attached, so the stack
+   *       trace reaches the log in full — while the caller still gets a generic message, so
+   *       internal detail never leaves through the API. A 5xx {@code ErrorResponse} is treated the
+   *       same way, and is the one case that gains a stack trace it did not have before.
+   * </ul>
+   *
+   * <p>What must stay true here: no condition in this method quiets an exception this application
+   * did not expect. The counted branch is reachable only for an {@code ErrorResponse} whose status
+   * Spring itself has already decided is a 4xx.
    */
   @ExceptionHandler(Exception.class)
   ResponseEntity<ApiError> unexpected(Exception exception) {
     if (exception instanceof ErrorResponse errorResponse) {
       HttpStatusCode status = errorResponse.getStatusCode();
+      if (status.is4xxClientError()) {
+        expectedErrors.record(status.value(), exception.getClass().getSimpleName());
+      } else {
+        log.error("Unhandled exception while serving a request", exception);
+      }
       return ResponseEntity.status(status)
           .body(
               ApiError.of(
