@@ -17,7 +17,9 @@ import com.vibecode.project.application.ProjectService;
 import com.vibecode.project.domain.Project;
 import com.vibecode.support.TestIdentity;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +30,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 /**
@@ -584,5 +587,221 @@ class ContextPackApiTest {
         body(get("/api/projects/" + aliceProject + "/context/" + packId).with(TestIdentity.as(alice)));
     assertThat(json.readTree(realRoute).get("packId").asText()).isEqualTo(packId);
     assertThat(json.readTree(realRoute).get("items").size()).isGreaterThan(0);
+  }
+
+  // ---------------------------------------------------------------- the limit contract
+
+  /**
+   * More packs than the default page, so "the default was applied" and "everything was returned"
+   * are different numbers. With twenty packs and a default of twenty they would be the same number,
+   * and every assertion below about a defaulted page would pass just as well against a route that
+   * had stopped bounding anything at all.
+   */
+  private static final int PACKS_FOR_THE_CENSUS = ContextPackController.DEFAULT_LIST_LIMIT + 2;
+
+  /** Compiles {@link #PACKS_FOR_THE_CENSUS} packs into Alice's project and returns how many. */
+  private int fillTheProject() throws Exception {
+    for (int i = 0; i < PACKS_FOR_THE_CENSUS; i++) {
+      compile(alice, aliceProject, "TASK-limit-" + i);
+    }
+    return PACKS_FOR_THE_CENSUS;
+  }
+
+  /**
+   * What one spelling of {@code limit} produced: the status, and enough of the body to tell two
+   * answers apart.
+   *
+   * <p>A served page is summarised by HOW MANY packs came back, not merely by being a 200 — the
+   * whole defect was a 200 carrying a page size the caller never named, and a status-only summary
+   * is structurally incapable of seeing that. A refusal is summarised by what a client branches on:
+   * the {@code code}, and the field each violation names.
+   */
+  private String answerFor(String limit) throws Exception {
+    MockHttpServletRequestBuilder request =
+        get("/api/projects/" + aliceProject + "/context").with(TestIdentity.as(alice));
+    if (limit != null) {
+      // .param, deliberately, rather than pasting the value into the query string. A value put
+      // through URLEncoder and into the URI is then decoded by MockMvc on its own terms: measured
+      // on this suite, "+7" arrives at the route as the literal "%2B7" and a fullwidth digit
+      // arrives mangled. A census built that way pins the harness's encoding rather than the
+      // route's contract, and both of those spellings were being recorded as refusals while the
+      // running route accepted them as seven and as two.
+      request = request.param("limit", limit);
+    }
+    MvcResult result = mvc.perform(request).andReturn();
+    int status = result.getResponse().getStatus();
+    String content = result.getResponse().getContentAsString();
+    if (status == 200) {
+      return "200 packs=" + json.readTree(content).size();
+    }
+    JsonNode error = json.readTree(content);
+    List<String> fields = new ArrayList<>();
+    error.get("violations").forEach(violation -> fields.add(violation.get("field").asText()));
+    return status + " " + error.get("code").asText() + " violations=" + fields;
+  }
+
+  /** The sentence a refused spelling carried, inside the one shape every refusal has. */
+  private String violationMessage(String limit) throws Exception {
+    String content =
+        body(
+            get("/api/projects/" + aliceProject + "/context")
+                .with(TestIdentity.as(alice))
+                .param("limit", limit));
+    return json.readTree(content).get("violations").get(0).get("message").asText();
+  }
+
+  @Test
+  @DisplayName("Every spelling of limit answers in one contract: a page the caller named, or a 400")
+  void theLimitParameterAnswersInOneContract() throws Exception {
+    int available = fillTheProject();
+
+    // The required matrix first, then the spellings a reviewer reaches for: a leading sign,
+    // surrounding whitespace, both ends of int overflow, a value longer than a long, Unicode digits
+    // that Integer.parseInt would accept quite happily, and the notations of other languages.
+    Map<String, String> expected = new LinkedHashMap<>();
+    String refused = "400 VALIDATION_ERROR violations=[limit]";
+    expected.put(null, "200 packs=" + ContextPackController.DEFAULT_LIST_LIMIT);
+    expected.put("", refused);
+    expected.put("abc", refused);
+    expected.put("0x10", refused);
+    expected.put("0", refused);
+    expected.put("-1", refused);
+    expected.put("1", "200 packs=1");
+    expected.put("20", "200 packs=20");
+    expected.put(String.valueOf(ContextPackController.MAX_LIST_LIMIT), "200 packs=" + available);
+    expected.put(String.valueOf(ContextPackController.MAX_LIST_LIMIT + 1), refused);
+    expected.put("+7", refused);
+    expected.put(" 5", refused);
+    expected.put("5 ", refused);
+    expected.put(" 5 ", refused);
+    expected.put("2147483648", refused);
+    expected.put("-2147483649", refused);
+    expected.put("9".repeat(30), refused);
+    expected.put("２", refused); // fullwidth two
+    expected.put("٥", refused); // Arabic-Indic five
+    expected.put("1_000", refused);
+    expected.put("1e2", refused);
+    expected.put("5.5", refused);
+    expected.put("1,2", refused);
+    expected.put("1;DROP TABLE context_packs", refused);
+    // A leading zero is read as decimal and never as octal: 020 is twenty, not sixteen. Pinned
+    // because Integer.decode — the obvious parser to reach for, and the one behind the old
+    // behaviour — answers sixteen here, and answers sixteen for 0x10 above.
+    expected.put("01", "200 packs=1");
+    expected.put("020", "200 packs=20");
+
+    Map<String, String> census = new LinkedHashMap<>();
+    for (String spelling : expected.keySet()) {
+      census.put(spelling, answerFor(spelling));
+    }
+
+    assertThat(census)
+        .as("one parameter, one contract: a page of the size named, or a 400 naming the field")
+        .containsExactlyInAnyOrderEntriesOf(expected);
+
+    // The property, stated apart from the table. The table can be edited to admit a new shape one
+    // entry at a time; this cannot, and it is the actual promise — a caller never has to know WHICH
+    // kind of wrong their input was in order to parse the answer.
+    assertThat(
+            census.values().stream()
+                .filter(answer -> !answer.startsWith("200"))
+                .distinct()
+                .toList())
+        .as("every refusal is one status, one code and one named field")
+        .containsExactly(refused);
+
+    assertThat(census.values())
+        .as("no spelling of a query parameter may be a server fault")
+        .allSatisfy(answer -> assertThat(answer).doesNotStartWith("5"));
+
+    // The range sentences are reachable, which is the other half of the defect: they were dead
+    // strings on annotations whose exception no handler claimed, and no client ever saw them.
+    assertThat(violationMessage("0")).isEqualTo("limit must be at least 1");
+    assertThat(violationMessage("-1")).isEqualTo("limit must be at least 1");
+    assertThat(violationMessage("101")).isEqualTo("limit may not exceed 100");
+    assertThat(violationMessage("2147483648"))
+        .as("a value past int is a range refusal, not a parse failure and not an overflow")
+        .isEqualTo("limit may not exceed 100");
+    assertThat(violationMessage("-2147483649")).isEqualTo("limit must be at least 1");
+    assertThat(violationMessage("abc"))
+        .isEqualTo("limit must be a decimal integer between 1 and 100");
+
+    // AND THE GUARD AGAINST THIS TEST'S OWN DECAY. Every "200 packs=n" above is only meaningful
+    // while the project holds more packs than the largest page it asserts. If the fixture shrank to
+    // twenty, "packs=20" would be equally true of a defaulted page, of an explicit twenty, and of a
+    // route that had stopped bounding anything.
+    assertThat(available)
+        .as("the fixture must hold more packs than the default page, or those sizes are the same")
+        .isGreaterThan(ContextPackController.DEFAULT_LIST_LIMIT);
+  }
+
+  @Test
+  @DisplayName("An empty limit is refused, not quietly served as though the caller had named none")
+  void anEmptyLimitIsNotSilentlyTheDefault() throws Exception {
+    fillTheProject();
+
+    // THE DEFECT, ISOLATED. ?limit= was served with the default page size, so a client whose
+    // variable interpolated to empty read a page of twenty as the whole list — the exact failure
+    // this route's own contract refuses to create for an out-of-range number, arriving by a
+    // spelling nobody had enumerated. The two requests must not agree.
+    String omitted =
+        body(get("/api/projects/" + aliceProject + "/context").with(TestIdentity.as(alice)));
+    MvcResult empty =
+        mvc.perform(
+                get("/api/projects/" + aliceProject + "/context")
+                    .with(TestIdentity.as(alice))
+                    .param("limit", ""))
+            .andReturn();
+
+    assertThat(empty.getResponse().getStatus()).isEqualTo(400);
+    assertThat(empty.getResponse().getContentAsString()).isNotEqualTo(omitted);
+    assertThat(json.readTree(omitted).size())
+        .as("the omitted case still works, so the refusal above is about the empty value")
+        .isEqualTo(ContextPackController.DEFAULT_LIST_LIMIT);
+  }
+
+  @Test
+  @DisplayName("No refused limit is ever converted into the default, which is the worse failure")
+  void aRefusedLimitNeverBecomesADefaultedPage() throws Exception {
+    fillTheProject();
+
+    // Written as a loop over refusals rather than as one example, because this failure mode is
+    // silent by construction: a route that fell back to the default for a value it could not read
+    // would answer 200 with twenty packs and be indistinguishable from a caller who asked for
+    // nothing.
+    for (String bad : new String[] {"", " ", "abc", "0", "-1", "101", "0x10", "+7", "1e2"}) {
+      MvcResult result =
+          mvc.perform(
+                  get("/api/projects/" + aliceProject + "/context")
+                      .with(TestIdentity.as(alice))
+                      .param("limit", bad))
+              .andReturn();
+      assertThat(result.getResponse().getStatus())
+          .as("limit=%s must be refused, never answered with a page the caller did not name", bad)
+          .isEqualTo(400);
+      assertThat(result.getResponse().getContentAsString())
+          .as("a refusal carries no packs at all")
+          .doesNotContain("contentFingerprint");
+    }
+  }
+
+  @Test
+  @DisplayName("A refused limit on an unreadable project is still 404, never 400")
+  void ownershipIsDecidedBeforeTheLimitIs() throws Exception {
+    // The ordering the annotations decided for us, and decided backwards: parameter validation runs
+    // before the method body, so under the old route a stranger learned 400 from ?limit=0 and 404
+    // from ?limit=20 — the answer depended on the query string. The gate is now unconditional.
+    // Asserted for a project that exists and is not the caller's AND for one that does not exist,
+    // because the property is "404 in every shape", not "404 for a stranger".
+    for (UUID project : new UUID[] {bobProject, UUID.randomUUID()}) {
+      for (String spelling : new String[] {"0", "-1", "101", "", "abc", "0x10", "20"}) {
+        mvc.perform(
+                get("/api/projects/" + project + "/context")
+                    .with(TestIdentity.as(alice))
+                    .param("limit", spelling))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+      }
+    }
   }
 }

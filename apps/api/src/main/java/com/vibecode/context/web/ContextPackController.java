@@ -8,18 +8,21 @@ import com.vibecode.context.web.ContextDtos.AssembleContextRequest;
 import com.vibecode.context.web.ContextDtos.ContextPackResponse;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.shared.domain.ResourceNotFoundException;
+import com.vibecode.shared.web.ApiError;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,6 +30,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
  * The HTTP surface for context packs.
@@ -83,11 +87,12 @@ public class ContextPackController {
   public static final int DEFAULT_LIST_LIMIT = 20;
 
   /**
-   * The literal {@link #DEFAULT_LIST_LIMIT} must be duplicated for the annotation, which takes only
-   * a constant expression of type {@code String}. The two are kept adjacent so a change to one is
-   * visibly a change to the other, and a test asserts the default the route actually applies.
+   * The smallest page a caller may ask for.
+   *
+   * <p>Zero is not a smaller page, it is a different request — "tell me nothing" — and answering it
+   * with an empty array would be indistinguishable from a project with no packs.
    */
-  private static final String DEFAULT_LIST_LIMIT_TEXT = "20";
+  public static final int MIN_LIST_LIMIT = 1;
 
   /**
    * The most packs one request may ask for.
@@ -96,6 +101,14 @@ public class ContextPackController {
    * page this API is willing to assemble in one response.
    */
   public static final int MAX_LIST_LIMIT = 100;
+
+  /**
+   * The only spelling of {@code limit} this route reads: an optional minus and one to ten ASCII
+   * digits. Ten is chosen so that everything the pattern admits fits a {@code long} — see
+   * {@link #resolveLimit(String)} for why that turns overflow into a range refusal rather than an
+   * exception.
+   */
+  private static final Pattern DECIMAL = Pattern.compile("-?[0-9]{1,10}");
 
   private final ProjectService projects;
   private final ContextPackAssembler assembler;
@@ -183,36 +196,31 @@ public class ContextPackController {
    * unauthorized read would itself confirm the id was real. The limit does not change that: it is
    * applied after the gate, never instead of it.
    *
-   * @param limit how many packs to return, newest first. Out of range is refused rather than
-   *     clamped — a caller who asked for a thousand and silently received a hundred would have no
-   *     way to know the answer had been narrowed, and would read a partial list as a complete one.
-   *     <p><b>The two range messages below are currently unreachable, and that is recorded rather
-   *     than fixed.</b> A violated {@code @Min}/{@code @Max} on a <em>method parameter</em> raises
-   *     {@code HandlerMethodValidationException}, which no handler in {@code ApiExceptionHandler}
-   *     claims; it implements {@code ErrorResponse}, so the last-resort branch answers 400 with
-   *     {@code code: "BAD_REQUEST"} and an empty {@code violations} array, and the sentences here
-   *     never reach a client. A limit that is not a number takes the other path and answers 400
-   *     with {@code code: "VALIDATION_ERROR"} and a populated {@code violations} — so one parameter
-   *     yields two body shapes. Both statuses are right, which is why this is debt and not a
-   *     defect. {@code limit} is the first constrained method parameter in the application; every
-   *     other {@code @Min}/{@code @Max} is on a request-body field and takes the good path. The fix
-   *     is a shared handler for that exception, which changes the error contract for every module
-   *     and needs tests across all of them — deliberately not done here. The messages are left in
-   *     place because they are correct and will start being delivered the moment that handler
-   *     exists; this note is here so nobody reads them as evidence of what a client sees.
+   * @param limit how many packs to return, newest first, as the caller literally spelled it. Out
+   *     of range is refused rather than clamped — a caller who asked for a thousand and silently
+   *     received a hundred would have no way to know the answer had been narrowed, and would read a
+   *     partial list as a complete one. Absent is the one spelling that means "no number named" and
+   *     is answered with {@link #DEFAULT_LIST_LIMIT}; every other spelling this route will not
+   *     honour exactly is refused. See {@link #resolveLimit(String)} for the grammar and for why
+   *     the parameter is a {@code String}.
    */
   @GetMapping
   @Transactional(readOnly = true)
   public List<ContextPackResponse> list(
       @PathVariable UUID projectId,
-      @RequestParam(defaultValue = DEFAULT_LIST_LIMIT_TEXT)
-          @Min(value = 1, message = "limit must be at least 1")
-          @Max(value = MAX_LIST_LIMIT, message = "limit may not exceed 100")
-          int limit) {
+      @RequestParam(name = "limit", required = false) String limit) {
+    // Ownership first, and before the limit is looked at. Under the old annotations the order was
+    // the reverse and not by choice: parameter validation runs before the method body, so a caller
+    // with no access to this project learned 400 from a bad limit and 404 from a good one. Neither
+    // answer leaks anything on its own, but "the answer depends on the query string" is the shape an
+    // oracle grows out of. The gate is now unconditional: an unreadable project is 404 for every
+    // spelling of limit, valid or not.
     projects.requireReadable(projectId);
 
+    int resolved = resolveLimit(limit);
+
     List<UUID> page =
-        packs.findPackIdsByProjectNewestFirst(projectId, PageRequest.of(0, limit));
+        packs.findPackIdsByProjectNewestFirst(projectId, PageRequest.of(0, resolved));
     if (page.isEmpty()) {
       return List.of();
     }
@@ -227,5 +235,120 @@ public class ContextPackController {
         .map(ContextPackEntity::toCompiled)
         .map(ContextPackResponse::from)
         .toList();
+  }
+
+  /**
+   * The caller's {@code limit} as an integer, or a refusal.
+   *
+   * <p><b>Why this parameter is a {@code String}.</b> Declared as an {@code int} with
+   * {@code @Min}/{@code @Max}, one parameter answered in three contracts and one of them was a 200.
+   * Spring's converter accepted spellings nobody enumerated — {@code 0x10} became sixteen,
+   * {@code +7} became seven, {@code " 5 "} was trimmed to five, the fullwidth digit U+FF12 and the
+   * Arabic-Indic U+0665 became two and five — and {@code ?limit=} fell through to the
+   * declared {@code defaultValue}, serving a page of twenty to a caller whose variable had
+   * interpolated to nothing. Meanwhile a violated {@code @Min}/{@code @Max} on a method parameter
+   * raises {@code HandlerMethodValidationException}, which no handler claims, so an out-of-range
+   * number rendered as a generic {@code BAD_REQUEST} with an empty {@code violations} array while
+   * an unparseable one rendered as {@code VALIDATION_ERROR} with a populated one.
+   *
+   * <p>Taking the raw text and deciding here is what makes those one contract. It also keeps the
+   * fix inside {@code context.web}: a handler for {@code HandlerMethodValidationException} in the
+   * shared advice would change the error contract of every module in the application.
+   *
+   * <p><b>The grammar, chosen rather than inherited.</b> An optional {@code -} followed by one to
+   * ten ASCII digits, and nothing else. In particular:
+   *
+   * <ul>
+   *   <li>{@code Integer.decode} is deliberately not used: it reads {@code 0x10} as sixteen and a
+   *       leading zero as octal. Neither is a spelling of "how many packs" that this API will
+   *       silently honour.
+   *   <li>{@code Integer.parseInt} is deliberately not used as the gate either. It accepts any
+   *       character {@code Character.digit} recognises, so U+0665 parses as five — the
+   *       pattern is what excludes non-ASCII digits, not the parser.
+   *   <li>A leading zero is accepted and read as decimal: {@code 01} is one and {@code 020} is
+   *       twenty, never sixteen. Rejecting it would refuse a zero-padded value that means exactly
+   *       what it looks like.
+   *   <li>No sign but {@code -}, no whitespace, no {@code .}, {@code e} or {@code _}. A repeated
+   *       {@code ?limit=1&limit=2} arrives here as {@code "1,2"} and is refused rather than one of
+   *       the two being picked for the caller.
+   *   <li>Ten digits is past {@code Integer.MAX_VALUE} but well within a {@code long}, so
+   *       {@code Long.parseLong} cannot overflow on anything the pattern admits and
+   *       {@code 2147483648} is a range refusal rather than a parse failure. Anything longer is a
+   *       format refusal, which is why a value longer than a {@code long} is not an exception.
+   * </ul>
+   *
+   * <p>Absent — and only absent — means the caller named no number, and is answered with
+   * {@link #DEFAULT_LIST_LIMIT}. An empty value is not absent: it is a caller who wrote the
+   * parameter and got the value wrong. <b>No invalid spelling is ever converted into the
+   * default</b>, which is the whole point: a wrong answer the caller cannot detect is worse than an
+   * error.
+   *
+   * <p>Every refusal is one 400 with one {@code code}, differing only in the violation's sentence.
+   * A caller must not have to know which kind of wrong their input was to parse the response.
+   */
+  static int resolveLimit(String limit) {
+    if (limit == null) {
+      return DEFAULT_LIST_LIMIT;
+    }
+    if (!DECIMAL.matcher(limit).matches()) {
+      throw new InvalidLimitException(
+          "limit must be a decimal integer between "
+              + MIN_LIST_LIMIT
+              + " and "
+              + MAX_LIST_LIMIT);
+    }
+    long value = Long.parseLong(limit);
+    if (value < MIN_LIST_LIMIT) {
+      throw new InvalidLimitException("limit must be at least " + MIN_LIST_LIMIT);
+    }
+    if (value > MAX_LIST_LIMIT) {
+      throw new InvalidLimitException("limit may not exceed " + MAX_LIST_LIMIT);
+    }
+    return (int) value;
+  }
+
+  /**
+   * A {@code limit} this route will not honour.
+   *
+   * <p>Deliberately not an {@link IllegalArgumentException}: the shared advice maps that to 422
+   * {@code INVALID_STATE}, which is the wrong status for a malformed query parameter and the wrong
+   * body for this contract.
+   */
+  static final class InvalidLimitException extends RuntimeException {
+
+    InvalidLimitException(String message) {
+      super(message);
+    }
+  }
+
+  /**
+   * The one body every refused {@code limit} produces.
+   *
+   * <p>Scoped to this controller by {@code assignableTypes}, so it changes nothing for any other
+   * module — which is the constraint this whole approach exists to respect. It is ordered ahead of
+   * the shared advice because that advice's last-resort {@code @ExceptionHandler(Exception.class)}
+   * would otherwise be free to claim {@link InvalidLimitException} first, depending on the order
+   * two unordered advice beans happen to be discovered in. A contract that depends on bean
+   * discovery order is not a contract.
+   *
+   * <p>The shape is the API's existing {@code VALIDATION_ERROR}: same {@code code}, same populated
+   * {@code violations}, the field named. The sentence is the only thing that varies between one
+   * refused spelling and another, and it is inside the violation where a client parses it, not in
+   * the status and not in the {@code code}.
+   */
+  @RestControllerAdvice(assignableTypes = ContextPackController.class)
+  @Order(Ordered.HIGHEST_PRECEDENCE)
+  static class InvalidLimitAdvice {
+
+    @ExceptionHandler(InvalidLimitException.class)
+    ResponseEntity<ApiError> invalidLimit(InvalidLimitException exception) {
+      return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+          .body(
+              ApiError.of(
+                  HttpStatus.BAD_REQUEST.value(),
+                  "VALIDATION_ERROR",
+                  "The request could not be read.",
+                  List.of(new ApiError.FieldViolation("limit", exception.getMessage()))));
+    }
   }
 }
