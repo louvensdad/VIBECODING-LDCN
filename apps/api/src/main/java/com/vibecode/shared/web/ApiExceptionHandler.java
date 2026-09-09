@@ -6,20 +6,30 @@ import com.vibecode.identity.domain.PasswordPolicy;
 import com.vibecode.identity.ratelimit.domain.RateLimitExceededException;
 import com.vibecode.identity.web.AuthController;
 import com.vibecode.shared.domain.DomainRuleException;
+import com.vibecode.shared.logging.ExpectedHttpErrorLog;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import com.vibecode.vault.domain.VaultCryptographyException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.boot.autoconfigure.http.HttpMessageConverters;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /** Produces one consistent error body for the whole API. */
@@ -27,6 +37,71 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 public class ApiExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+  /**
+   * The tally key for an error body dropped because the caller accepts none of our media types.
+   *
+   * <p>A fixed string, like every other kind this class records. A caller chooses whether it is
+   * reached; they do not get to choose what it says.
+   */
+  private static final String BODY_OMITTED = "BodyOmittedForAcceptHeader";
+
+  /**
+   * Where an error the caller caused is recorded instead of being traced.
+   *
+   * <p>Injected rather than instantiated so the tally is one per application, and so a test can
+   * read it. Only the branches below that have already concluded "this is the caller's mistake"
+   * touch it; the server-fault branch of {@link #unexpected(Exception)} does not, and must not.
+   */
+  private final ExpectedHttpErrorLog expectedErrors;
+
+  /**
+   * The media types some converter in this application can actually write an {@link ApiError} as.
+   *
+   * <p>Asked of the converters rather than written down as a literal, and that is the whole point
+   * of this field. The first version of the {@code Accept} check compared against
+   * {@code application/json} alone, which is not what Jackson advertises: it also writes
+   * {@code application/*+json}, so Spring had always been serving {@code application/problem+json}
+   * — RFC 7807, the header an error-aware client is most likely to send — along with
+   * {@code application/hal+json} and every vendor {@code +json} type. Comparing against the one
+   * literal silently dropped the body for all of them. That was a narrowing of the error contract
+   * nobody declared, found in review, and the reason this is now derived rather than asserted.
+   *
+   * <p>Derived once at construction because the converter list is fixed after the context is built,
+   * and derived from {@code canWrite(ApiError.class, null)} so that a converter added, replaced or
+   * reconfigured later is followed automatically instead of being missed. If a converter for
+   * another representation is ever added, error bodies start being written in it without this class
+   * being touched — which is the correct behaviour and the reason not to hard-code a list.
+   *
+   * <p>{@code ApiExceptionHandlerTest} pins what this resolves to today, so that a converter change
+   * which widened it to a wildcard — quietly turning the guard below into a no-op and bringing
+   * back the defect this task exists to fix — fails the build rather than passing unnoticed.
+   */
+  private final List<MediaType> writableErrorTypes;
+
+  ApiExceptionHandler(ExpectedHttpErrorLog expectedErrors, HttpMessageConverters converters) {
+    this.expectedErrors = expectedErrors;
+    this.writableErrorTypes = writableErrorTypesOf(converters);
+  }
+
+  private static List<MediaType> writableErrorTypesOf(HttpMessageConverters converters) {
+    List<MediaType> types = new ArrayList<>();
+    for (HttpMessageConverter<?> converter : converters.getConverters()) {
+      if (converter.canWrite(ApiError.class, null)) {
+        for (MediaType supported : converter.getSupportedMediaTypes(ApiError.class)) {
+          if (!types.contains(supported)) {
+            types.add(supported);
+          }
+        }
+      }
+    }
+    return List.copyOf(types);
+  }
+
+  /** What this instance decided it can write. Package-private so a test can pin it. */
+  List<MediaType> writableErrorTypes() {
+    return writableErrorTypes;
+  }
 
   @ExceptionHandler({ResourceNotFoundException.class, NoSuchElementException.class})
   ResponseEntity<ApiError> notFound(RuntimeException exception) {
@@ -112,13 +187,13 @@ public class ApiExceptionHandler {
         exception.getBindingResult().getFieldErrors().stream()
             .map(error -> new ApiError.FieldViolation(error.getField(), error.getDefaultMessage()))
             .toList();
-    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-        .body(
-            ApiError.of(
-                HttpStatus.BAD_REQUEST.value(),
-                "VALIDATION_ERROR",
-                "The request body is invalid.",
-                violations));
+    return respond(
+        HttpStatus.BAD_REQUEST,
+        ApiError.of(
+            HttpStatus.BAD_REQUEST.value(),
+            "VALIDATION_ERROR",
+            "The request body is invalid.",
+            violations));
   }
 
   @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -144,42 +219,185 @@ public class ApiExceptionHandler {
    */
   @ExceptionHandler(MethodArgumentTypeMismatchException.class)
   ResponseEntity<ApiError> typeMismatch(MethodArgumentTypeMismatchException exception) {
-    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-        .body(
-            ApiError.of(
-                HttpStatus.BAD_REQUEST.value(),
-                "VALIDATION_ERROR",
-                "The request could not be read.",
-                List.of(
-                    new ApiError.FieldViolation(
-                        exception.getName(), "is not a valid value for this parameter"))));
+    return respond(
+        HttpStatus.BAD_REQUEST,
+        ApiError.of(
+            HttpStatus.BAD_REQUEST.value(),
+            "VALIDATION_ERROR",
+            "The request could not be read.",
+            List.of(
+                new ApiError.FieldViolation(
+                    exception.getName(), "is not a valid value for this parameter"))));
   }
 
   /**
-   * Last-resort handler.
+   * An {@code Accept} header naming nothing this API can produce — and the case that looks like
+   * it and is not.
    *
-   * <p>Spring's own web exceptions (unknown route, wrong method, unsupported media type) already
-   * carry the right status and are reported with it — collapsing them into 500 would hide an
-   * ordinary client mistake behind a server error. Anything else is genuinely unexpected: the cause
-   * goes to the log and the client gets a generic message, so internal detail never leaks through
-   * the API.
+   * <p>Spring raises one exception type for two situations that are opposites, and the first
+   * version of this branch treated them as one. Review found that, and it was the more serious of
+   * the two findings against it.
+   *
+   * <ul>
+   *   <li><b>The caller accepts none of our types.</b> Their mistake, entirely under their control,
+   *       and there is no body we could send that they would take. Counted, answered with the
+   *       status alone, no trace.
+   *   <li><b>The caller accepts JSON and we still could not write a representation.</b> Then the
+   *       fault is ours — a return type no converter claims, or a {@code produces} clause that
+   *       contradicts what the route can build. Nothing about that is the caller's doing, and
+   *       filing it as an expected client error would be exactly the mislabelling this task was
+   *       written to avoid: a server fault tallied at DEBUG as somebody else's problem. It keeps
+   *       the body it had before this task touched the class — read from the exception's own
+   *       {@code ErrorResponse} title, so it is the same string rather than a copy of it — and
+   *       it now also writes an ERROR with the throwable, which it never had.
+   * </ul>
+   *
+   * <p>The ERROR side is not caller-reachable, which is what makes it safe to trace in full: a
+   * caller cannot choose a controller's return type. The one route in from outside would be a
+   * mapping declaring {@code produces} for a type it cannot build, and no route in this API
+   * declares {@code produces} at all. If one ever does, this branch will trace on a request the
+   * caller controls, and that is the condition to re-examine — recorded here rather than
+   * guarded against, because guarding against it today would mean inventing a distinction with
+   * nothing on either side of it.
+   */
+  @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+  ResponseEntity<ApiError> notAcceptable(HttpMediaTypeNotAcceptableException exception) {
+    if (!callerAcceptsOurRepresentation()) {
+      expectedErrors.record(HttpStatus.NOT_ACCEPTABLE.value(), exception.getClass().getSimpleName());
+      return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE).build();
+    }
+    log.error(
+        "No representation could be written for a caller that accepts this API's media type",
+        exception);
+    return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE)
+        .body(
+            ApiError.of(
+                HttpStatus.NOT_ACCEPTABLE.value(), "BAD_REQUEST", exception.getBody().getTitle()));
+  }
+
+  /**
+   * Last-resort handler, and the one place in this class where the two kinds of failure are told
+   * apart. The distinction is the point, so it is written out rather than left to a filter that
+   * happens to match:
+   *
+   * <ul>
+   *   <li><b>Expected.</b> Spring's own web exceptions carrying a 4xx — unknown route, wrong
+   *       method, unsupported media type — are client mistakes. They keep their status and their
+   *       body, and they are now <em>counted</em> by {@link ExpectedHttpErrorLog} rather than
+   *       passing in silence. That is more signal than before, not less: this branch previously
+   *       returned without logging anything at all.
+   *   <li><b>Unexpected.</b> Everything else is a fault in this application. It keeps exactly the
+   *       logging it always had — {@code log.error} with the throwable attached, so the stack
+   *       trace reaches the log in full — while the caller still gets a generic message, so
+   *       internal detail never leaves through the API. A 5xx {@code ErrorResponse} is treated the
+   *       same way, and is the one case that gains a stack trace it did not have before.
+   * </ul>
+   *
+   * <p>What must stay true here: no condition in this method quiets an exception this application
+   * did not expect. The counted branch is reachable only for an {@code ErrorResponse} whose status
+   * Spring itself has already decided is a 4xx.
    */
   @ExceptionHandler(Exception.class)
   ResponseEntity<ApiError> unexpected(Exception exception) {
     if (exception instanceof ErrorResponse errorResponse) {
       HttpStatusCode status = errorResponse.getStatusCode();
-      return ResponseEntity.status(status)
-          .body(
-              ApiError.of(
-                  status.value(),
-                  status.is4xxClientError() ? "BAD_REQUEST" : "INTERNAL_ERROR",
-                  errorResponse.getBody().getTitle()));
+      if (status.is4xxClientError()) {
+        expectedErrors.record(status.value(), exception.getClass().getSimpleName());
+      } else {
+        log.error("Unhandled exception while serving a request", exception);
+      }
+      return respond(
+          status,
+          ApiError.of(
+              status.value(),
+              status.is4xxClientError() ? "BAD_REQUEST" : "INTERNAL_ERROR",
+              errorResponse.getBody().getTitle()));
     }
     log.error("Unhandled exception while serving a request", exception);
     return build(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Unexpected internal error.");
   }
 
   private ResponseEntity<ApiError> build(HttpStatus status, String code, String message) {
-    return ResponseEntity.status(status).body(ApiError.of(status.value(), code, message));
+    return respond(status, ApiError.of(status.value(), code, message));
+  }
+
+  /**
+   * Every error body in this class leaves through here, and it leaves without the body when the
+   * caller cannot read it.
+   *
+   * <p>This is the half of the {@code Accept} defect that the branch above does not reach, and it
+   * is the more damaging half. Spring does not re-dispatch an exception thrown while writing an
+   * {@code @ExceptionHandler}'s own return value: it logs {@code Failure in @ExceptionHandler} at
+   * WARN with the throwable and returns null, and the original exception then falls through to
+   * whatever else will take it. So a mapped error whose {@code ApiError} could not be serialised
+   * cost 190 WARN frames <em>and</em> lost its own response.
+   *
+   * <p>Measured on a real Tomcat rather than reasoned about, because the consequence is not a
+   * logging one. {@code GET /api/projects/<unknown id>} with {@code Accept: application/xml}
+   * answered <b>500 with no body</b>, where the same request answered 404 with the documented
+   * {@code NOT_FOUND} body under any other Accept header. A header the caller chooses was changing
+   * the status this API reports. That was already true before this task began and is not a
+   * regression; it is the reason this helper exists rather than another {@code @ExceptionHandler}
+   * chasing one more exception type.
+   *
+   * <p>What it does is refuse to hand Spring a body Spring cannot write. The status is kept,
+   * because the status is the true answer and a caller's {@code Accept} header is a statement
+   * about representations rather than about what happened; answering 406 instead would throw away
+   * the fact that the request was also, say, unauthorised. The omission is recorded as an expected
+   * client error, so an operator can see that bodies are being dropped and why.
+   */
+  private ResponseEntity<ApiError> respond(HttpStatusCode status, ApiError body) {
+    if (callerAcceptsOurRepresentation()) {
+      return ResponseEntity.status(status).body(body);
+    }
+    if (status.is4xxClientError()) {
+      expectedErrors.record(status.value(), BODY_OMITTED);
+    } else {
+      // A 5xx whose body could not be written is not an expected client error, and calling it one
+      // would repeat — one level down — the exact mislabelling the branch above was corrected
+      // for. The fault itself has already been logged at ERROR with its throwable by whichever
+      // handler produced this status; all that is left to say is that the body went unsent, and
+      // that is a DEBUG line rather than a tally of somebody else's mistake.
+      log.debug("Error body omitted for an unacceptable Accept header on a {} response", status.value());
+    }
+    return ResponseEntity.status(status).build();
+  }
+
+  /**
+   * Whether the caller will accept the one representation this API produces.
+   *
+   * <p>"Our representation" is whatever the converters say they can write an {@link ApiError} as,
+   * not the string {@code application/json}. Today that resolves to {@code application/json} and
+   * {@code application/*+json}, so {@code application/problem+json}, {@code application/hal+json}
+   * and any vendor {@code +json} type keep their body — as they did before this task, and as
+   * review found they had stopped doing when this compared against one literal. A missing or blank
+   * header states no preference, and no preference accepts everything.
+   *
+   * <p>An unparseable header answers false. Spring's own negotiation cannot use it either, so the
+   * choice is between omitting the body deliberately and letting the write fail — and the
+   * write failing is the defect being fixed.
+   */
+  private boolean callerAcceptsOurRepresentation() {
+    if (!(RequestContextHolder.getRequestAttributes()
+        instanceof ServletRequestAttributes attributes)) {
+      // Not a servlet dispatch at all. Nothing is being negotiated, so nothing is being refused.
+      return true;
+    }
+    String accept = attributes.getRequest().getHeader(HttpHeaders.ACCEPT);
+    if (accept == null || accept.isBlank()) {
+      return true;
+    }
+    try {
+      for (MediaType acceptable : MediaType.parseMediaTypes(accept)) {
+        for (MediaType writable : writableErrorTypes) {
+          if (acceptable.isCompatibleWith(writable)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    } catch (InvalidMediaTypeException malformed) {
+      return false;
+    }
   }
 }
