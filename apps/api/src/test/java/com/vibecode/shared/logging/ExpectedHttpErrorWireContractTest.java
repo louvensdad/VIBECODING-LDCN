@@ -83,6 +83,16 @@ class ExpectedHttpErrorWireContractTest {
         .as("there is no representation this caller would accept, so there is no body to send")
         .isEmpty();
 
+    // R2-A on a real socket rather than through MockMvc, because review measured that finding
+    // through MockMvc and said so. application/problem+json is a representation Jackson writes, so
+    // this caller is owed the whole body and got it before this task; a check comparing against the
+    // single literal application/json had stopped sending it.
+    HttpResponse<String> problemJson = get(unknownProject, "application/problem+json");
+    assertThat(problemJson.statusCode()).isEqualTo(404);
+    assertThat(withoutTimestamp(problemJson.body()))
+        .as("a +json caller accepts something we can write and must receive it in full")
+        .isEqualTo(withoutTimestamp(json.body()));
+
     // The control that makes the assertion above mean something. If the route were simply broken,
     // or the id were somehow valid, both halves would agree for reasons that have nothing to do
     // with content negotiation. A real project answers 200 to the same client in the same session.
@@ -93,6 +103,11 @@ class ExpectedHttpErrorWireContractTest {
             .body();
     String id = created.replaceAll(".*\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1");
     assertThat(get("/api/projects/" + id, "application/json").statusCode()).isEqualTo(200);
+  }
+
+  /** The one field two identical error bodies legitimately disagree on. */
+  private static String withoutTimestamp(String body) {
+    return body.replaceAll("\"timestamp\":\"[^\"]+\"", "\"timestamp\":\"<t>\"");
   }
 
   private void refreshCsrf() throws Exception {

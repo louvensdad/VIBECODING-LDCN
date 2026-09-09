@@ -9,6 +9,7 @@ import com.vibecode.shared.domain.DomainRuleException;
 import com.vibecode.shared.logging.ExpectedHttpErrorLog;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import com.vibecode.vault.domain.VaultCryptographyException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
 import org.slf4j.Logger;
@@ -16,9 +17,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.boot.autoconfigure.http.HttpMessageConverters;
 import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
@@ -52,8 +55,52 @@ public class ApiExceptionHandler {
    */
   private final ExpectedHttpErrorLog expectedErrors;
 
-  ApiExceptionHandler(ExpectedHttpErrorLog expectedErrors) {
+  /**
+   * The media types some converter in this application can actually write an {@link ApiError} as.
+   *
+   * <p>Asked of the converters rather than written down as a literal, and that is the whole point
+   * of this field. The first version of the {@code Accept} check compared against
+   * {@code application/json} alone, which is not what Jackson advertises: it also writes
+   * {@code application/*+json}, so Spring had always been serving {@code application/problem+json}
+   * — RFC 7807, the header an error-aware client is most likely to send — along with
+   * {@code application/hal+json} and every vendor {@code +json} type. Comparing against the one
+   * literal silently dropped the body for all of them. That was a narrowing of the error contract
+   * nobody declared, found in review, and the reason this is now derived rather than asserted.
+   *
+   * <p>Derived once at construction because the converter list is fixed after the context is built,
+   * and derived from {@code canWrite(ApiError.class, null)} so that a converter added, replaced or
+   * reconfigured later is followed automatically instead of being missed. If a converter for
+   * another representation is ever added, error bodies start being written in it without this class
+   * being touched — which is the correct behaviour and the reason not to hard-code a list.
+   *
+   * <p>{@code ApiExceptionHandlerTest} pins what this resolves to today, so that a converter change
+   * which widened it to a wildcard — quietly turning the guard below into a no-op and bringing
+   * back the defect this task exists to fix — fails the build rather than passing unnoticed.
+   */
+  private final List<MediaType> writableErrorTypes;
+
+  ApiExceptionHandler(ExpectedHttpErrorLog expectedErrors, HttpMessageConverters converters) {
     this.expectedErrors = expectedErrors;
+    this.writableErrorTypes = writableErrorTypesOf(converters);
+  }
+
+  private static List<MediaType> writableErrorTypesOf(HttpMessageConverters converters) {
+    List<MediaType> types = new ArrayList<>();
+    for (HttpMessageConverter<?> converter : converters.getConverters()) {
+      if (converter.canWrite(ApiError.class, null)) {
+        for (MediaType supported : converter.getSupportedMediaTypes(ApiError.class)) {
+          if (!types.contains(supported)) {
+            types.add(supported);
+          }
+        }
+      }
+    }
+    return List.copyOf(types);
+  }
+
+  /** What this instance decided it can write. Package-private so a test can pin it. */
+  List<MediaType> writableErrorTypes() {
+    return writableErrorTypes;
   }
 
   @ExceptionHandler({ResourceNotFoundException.class, NoSuchElementException.class})
@@ -303,23 +350,34 @@ public class ApiExceptionHandler {
     if (callerAcceptsOurRepresentation()) {
       return ResponseEntity.status(status).body(body);
     }
-    expectedErrors.record(status.value(), BODY_OMITTED);
+    if (status.is4xxClientError()) {
+      expectedErrors.record(status.value(), BODY_OMITTED);
+    } else {
+      // A 5xx whose body could not be written is not an expected client error, and calling it one
+      // would repeat — one level down — the exact mislabelling the branch above was corrected
+      // for. The fault itself has already been logged at ERROR with its throwable by whichever
+      // handler produced this status; all that is left to say is that the body went unsent, and
+      // that is a DEBUG line rather than a tally of somebody else's mistake.
+      log.debug("Error body omitted for an unacceptable Accept header on a {} response", status.value());
+    }
     return ResponseEntity.status(status).build();
   }
 
   /**
    * Whether the caller will accept the one representation this API produces.
    *
-   * <p>{@code application/json} is that representation everywhere: no route declares
-   * {@code produces}, and no converter for any other type is on the classpath — which is
-   * precisely why {@code Accept: application/xml} fails at all. A missing or blank header states no
-   * preference, and no preference accepts everything.
+   * <p>"Our representation" is whatever the converters say they can write an {@link ApiError} as,
+   * not the string {@code application/json}. Today that resolves to {@code application/json} and
+   * {@code application/*+json}, so {@code application/problem+json}, {@code application/hal+json}
+   * and any vendor {@code +json} type keep their body — as they did before this task, and as
+   * review found they had stopped doing when this compared against one literal. A missing or blank
+   * header states no preference, and no preference accepts everything.
    *
    * <p>An unparseable header answers false. Spring's own negotiation cannot use it either, so the
    * choice is between omitting the body deliberately and letting the write fail — and the
    * write failing is the defect being fixed.
    */
-  private static boolean callerAcceptsOurRepresentation() {
+  private boolean callerAcceptsOurRepresentation() {
     if (!(RequestContextHolder.getRequestAttributes()
         instanceof ServletRequestAttributes attributes)) {
       // Not a servlet dispatch at all. Nothing is being negotiated, so nothing is being refused.
@@ -331,8 +389,10 @@ public class ApiExceptionHandler {
     }
     try {
       for (MediaType acceptable : MediaType.parseMediaTypes(accept)) {
-        if (acceptable.isCompatibleWith(MediaType.APPLICATION_JSON)) {
-          return true;
+        for (MediaType writable : writableErrorTypes) {
+          if (acceptable.isCompatibleWith(writable)) {
+            return true;
+          }
         }
       }
       return false;

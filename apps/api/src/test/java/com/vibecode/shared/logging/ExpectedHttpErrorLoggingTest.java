@@ -203,19 +203,31 @@ class ExpectedHttpErrorLoggingTest {
    * perfectly well lost their body too. A contract that depends on the {@code Accept} header has to
    * be pinned once per header, or the pin is stating something narrower than it appears to.
    *
-   * <p>So both censuses run over the same six situations. For a caller who accepts JSON, every
-   * status and every code is exactly what it was before this task began. For a caller who accepts
-   * none of our media types, the status is the same and the body is absent — <b>which is a
-   * declared change</b>. What those requests produced before was not a body: 190 WARN frames, and
-   * then either a container 500 in place of the mapped status or the status with an empty body,
-   * depending on whether some other resolver happened to claim the exception. Both measured; the
-   * 500 is pinned on the wire in {@link ExpectedHttpErrorWireContractTest}.
+   * <p>Two headers were not enough either, and review found the gap: {@code application/json} and
+   * {@code application/xml} say nothing about {@code application/problem+json}, which Jackson
+   * writes, which Spring had always served, and which a check comparing against one literal media
+   * type silently stopped serving. So the census now runs four headers over the same six
+   * situations, and the two that must keep their bodies are asserted to be identical to each other
+   * rather than merely non-empty.
+   *
+   * <ul>
+   *   <li>{@code application/json} and {@code application/problem+json} — the body and code are
+   *       exactly what they were before this task began.
+   *   <li>{@code application/xml} and {@code text/html} — the status is the same and the body is
+   *       absent, <b>which is the declared change</b>. What those requests produced before was not
+   *       a body: 190 WARN frames, and then either a container 500 in place of the mapped status or
+   *       the status with an empty body, depending on whether some other resolver happened to claim
+   *       the exception. Both measured; the 500 is pinned on the wire in
+   *       {@link ExpectedHttpErrorWireContractTest}, and so is the {@code +json} case.
+   * </ul>
    */
   @Test
-  @DisplayName("The error contract, pinned once for a JSON caller and once for an XML one")
+  @DisplayName("The error contract, pinned once per Accept header a caller might realistically send")
   void theClientErrorContractIsUnchanged() throws Exception {
     Map<String, String> jsonCaller = census(MediaType.APPLICATION_JSON);
+    Map<String, String> problemJsonCaller = census(MediaType.APPLICATION_PROBLEM_JSON);
     Map<String, String> xmlCaller = census(MediaType.APPLICATION_XML);
+    Map<String, String> htmlCaller = census(MediaType.TEXT_HTML);
 
     Map<String, String> expectedForJson = new LinkedHashMap<>();
     expectedForJson.put("400 malformed body", "400 MALFORMED_REQUEST");
@@ -228,6 +240,14 @@ class ExpectedHttpErrorLoggingTest {
         .as("a caller who accepts JSON must see exactly the contract that existed before")
         .containsExactlyInAnyOrderEntriesOf(expectedForJson);
 
+    // RFC 7807, the header an error-aware client is most likely to send. Jackson advertises
+    // application/*+json, so Spring served this in full before this task, and the first version of
+    // the Accept check stopped it doing so. Asserted against the JSON census rather than against a
+    // second copy of the literals, so the two cannot drift apart.
+    assertThat(problemJsonCaller)
+        .as("a +json caller accepts a representation we can write, and must get the whole body")
+        .containsExactlyInAnyOrderEntriesOf(jsonCaller);
+
     Map<String, String> expectedForXml = new LinkedHashMap<>();
     expectedForXml.put("400 malformed body", "400 <empty body>");
     expectedForXml.put("400 validation", "400 <empty body>");
@@ -237,6 +257,9 @@ class ExpectedHttpErrorLoggingTest {
     expectedForXml.put("422 domain guard", "422 <empty body>");
     assertThat(xmlCaller)
         .as("a caller who accepts none of our types keeps the status and loses the body")
+        .containsExactlyInAnyOrderEntriesOf(expectedForXml);
+    assertThat(htmlCaller)
+        .as("and text/html is no more writable than XML, so it is treated the same way")
         .containsExactlyInAnyOrderEntriesOf(expectedForXml);
 
     // The status is the part that must not move between the two, and it is asserted as such
@@ -251,12 +274,12 @@ class ExpectedHttpErrorLoggingTest {
     assertThat(shapeOf(echo(MediaType.APPLICATION_XML))).isEqualTo("406 <empty body>");
     assertThat(shapeOf(echo(MediaType.APPLICATION_JSON))).startsWith("200 ");
 
-    jsonCaller.forEach(
-        (label, shape) ->
-            assertThat(shape).as("%s must not be a server fault", label).doesNotStartWith("5"));
-    xmlCaller.forEach(
-        (label, shape) ->
-            assertThat(shape).as("%s must not be a server fault", label).doesNotStartWith("5"));
+    for (Map<String, String> census :
+        List.of(jsonCaller, problemJsonCaller, xmlCaller, htmlCaller)) {
+      census.forEach(
+          (label, shape) ->
+              assertThat(shape).as("%s must not be a server fault", label).doesNotStartWith("5"));
+    }
   }
 
   /** The same six situations, driven with one {@code Accept} header, reduced to their contract. */
@@ -482,9 +505,17 @@ class ExpectedHttpErrorLoggingTest {
         .as("a body in an unsupported media type is counted too")
         .isEqualTo(1);
 
-    // And the boundary: a server fault is not in this population, at any status.
+    // And the boundary: a server fault is not in this population, at any status and by any key.
+    // The second assertion is review's R2-B: respond() drops the body of a 5xx too when the caller
+    // accepts nothing, and recording that as an expected client error would have written the line
+    // "Expected client error 500 BodyOmittedForAcceptHeader" — the same mislabelling as F2, one
+    // level down, and it would have made this test's own name false.
     boom();
+    perform(post("/api/logging-probe/boom"), MediaType.APPLICATION_XML);
     assertThat(expectedErrors.countOf(500, "UnsupportedOperationException")).isZero();
+    assertThat(expectedErrors.countOf(500, "BodyOmittedForAcceptHeader"))
+        .as("a 500 whose body was dropped is still a server fault, not an expected client error")
+        .isZero();
   }
 
   @Test

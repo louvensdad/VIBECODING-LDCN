@@ -16,12 +16,14 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @AutoConfigureMockMvc
 class ApiExceptionHandlerTest {
 
   @Autowired MockMvc mvc;
+  @Autowired ApiExceptionHandler handler;
   @Autowired TestIdentity identity;
 
   private User caller;
@@ -36,6 +38,27 @@ class ApiExceptionHandlerTest {
   private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder postAs(
       String url) {
     return post(url).with(TestIdentity.as(caller)).with(csrf());
+  }
+
+  /**
+   * What the handler decided it can write error bodies as.
+   *
+   * <p>Pinned because the {@code Accept} check is only as correct as this list. It is derived from
+   * the message converters rather than written down, which is what makes it follow a converter
+   * being added or replaced — and also what makes it worth pinning: a converter that claimed a
+   * wildcard would widen this to everything, quietly turn the check into a no-op and bring back the
+   * unbounded stack trace this whole task removed, without a single other test changing colour.
+   *
+   * <p>The current value is Jackson's two: comparing against only the first of them is the defect
+   * review found, and it cost every {@code application/problem+json} caller their error body.
+   */
+  @Test
+  void theHandlerWritesErrorBodiesAsExactlyWhatTheConvertersAdvertise() {
+    assertThat(handler.writableErrorTypes())
+        .containsExactly(MediaType.APPLICATION_JSON, MediaType.parseMediaType("application/*+json"));
+    assertThat(handler.writableErrorTypes())
+        .as("a wildcard here would silently disable the Accept check entirely")
+        .noneMatch(MediaType::isWildcardType);
   }
 
   @Test
