@@ -112,6 +112,29 @@ public class ApiErrorResponder {
    * neither: it calls {@code canWrite(valueType, selectedMediaType)} with the caller's full media
    * type. So the list is the right thing to ask "is this type in the family we produce" and the
    * wrong thing to ask "will this actually get written" — see {@link #callerAcceptsOurRepresentation()}.
+   *
+   * <p><b>Review finding R4-B: whose converters these are.</b> They are the {@code
+   * HttpMessageConverters} bean's, and that is <em>not</em> byte-for-byte the list {@code
+   * RequestMappingHandlerAdapter} writes with. Measured: the adapter holds ten, this holds nine. The
+   * extra one is {@code ProjectingJackson2HttpMessageConverter}, contributed by
+   * {@code spring-data-commons}' own {@code WebMvcConfigurer} and prepended ahead of everything the
+   * bean knows about. It answers {@code canWrite(ApiError, …)} false in every form, so the two lists
+   * agree on the only question this class asks — today. A future {@code WebMvcConfigurer} adding a
+   * <em>writing</em> converter through {@code extendMessageConverters} would be visible to Spring
+   * and invisible here, which is R3-A's shape one layer out: the argument would be identical and the
+   * receiver would not.
+   *
+   * <p>Injecting the adapter's list instead was tried and is not available. It is a hard circular
+   * reference — {@code apiErrorResponder → requestMappingHandlerAdapter → apiExceptionHandler →
+   * apiErrorResponder}, a {@code BeanCurrentlyInCreationException} that Boot prohibits by default —
+   * because the adapter's construction reaches the advice that holds this class. Breaking it would
+   * mean resolving the converters lazily on the request path, which trades a structural guarantee
+   * for a timing one.
+   *
+   * <p>So the difference is stated rather than removed, and it is stated in a test rather than only
+   * here: {@code ApiErrorResponderNegotiationTest} asserts that every converter in the adapter's
+   * list which can write an {@link ApiError} is also in this one. That is the sentence with an
+   * assertion under it, and it fails on exactly the future change described above.
    */
   private final List<HttpMessageConverter<?>> converters;
 
@@ -223,6 +246,16 @@ public class ApiErrorResponder {
    * <p>The cost is a deliberate false negative on a mixed header Spring might have written: the body
    * is dropped and the status is untouched. Dropping a body is recoverable and recorded; an escaped
    * exception is neither.
+   *
+   * <p>Review sized that cost rather than leaving it as a shrug: <b>69 of 370 header shapes</b>,
+   * 18.6%, every one of them in the safe direction, and in three families — a charset on a wildcard
+   * media <em>range</em> (which means nothing, since a range names no representation to encode),
+   * quality reordering that puts the writable entry second, and a preferred-charset-first pair. None
+   * is a header a real client sends. A browser's own {@code Accept}, a plain {@code
+   * application/json}, {@code &#42;/&#42;}, {@code application/*}, an absent header, a blank one and
+   * {@code q=0} all keep their full body. Being wrong 18.6% of the time in the direction of "send
+   * the status without a body" is the trade that was chosen; being wrong once in the direction of
+   * "escape the resolver" is the one that was not.
    */
   public boolean callerAcceptsOurRepresentation() {
     if (!(RequestContextHolder.getRequestAttributes()
@@ -240,17 +273,49 @@ public class ApiErrorResponder {
     } catch (InvalidMediaTypeException malformed) {
       return false;
     }
-    boolean anyCandidate = false;
-    for (MediaType type : acceptable) {
-      if (!isCandidate(type)) {
-        continue;
+    try {
+      boolean anyCandidate = false;
+      for (MediaType type : acceptable) {
+        if (!isCandidate(type)) {
+          continue;
+        }
+        anyCandidate = true;
+        if (!someConverterCanWrite(type)) {
+          return false;
+        }
       }
-      anyCandidate = true;
-      if (!someConverterCanWrite(type)) {
-        return false;
-      }
+      return anyCandidate;
+    } catch (RuntimeException converterFailed) {
+      // Review finding R4-A, and it is the one thing this defence itself introduced.
+      //
+      // Asking the converters is what made this check correct, but it also put third-party code on
+      // the request path *inside an @ExceptionHandler* — the one place Spring will not re-dispatch.
+      // Before this, no converter code ran here at all: the derivation happened once, in the
+      // constructor. A converter whose canWrite throws would therefore have thrown out of the
+      // handler and escaped the resolver, which is precisely the failure every line of this class
+      // exists to prevent, reintroduced by the fix for it.
+      //
+      // No converter Spring or Boot ships can reach this — they are pure predicates — so this is
+      // theoretical today. It is caught anyway, because the method two lines up already catches the
+      // other way this can throw: an unparseable Accept header. Defending against one and not the
+      // other is not a judgement about likelihood, it is an inconsistency, and an inconsistency is
+      // what the next person reads as permission.
+      //
+      // False is the only safe answer. We asked whether a body can be written and got no usable
+      // answer, so we do not promise one: the status stands and the omission is recorded, exactly
+      // as for a header we could not parse.
+      // At ERROR with the throwable, and that is not a lapse in a class built to keep traces out of
+      // the log. A converter that throws from canWrite is a fault in this application, not a
+      // caller's mistake, and this class's whole rule is that the two are told apart: an expected
+      // client error is counted, a fault of ours keeps its trace. Swallowing this one silently
+      // would hide a broken converter behind correct-looking 400s forever. It is also not
+      // caller-paced volume — a converter that throws for one caller throws for all of them.
+      log.error(
+          "A message converter failed while being asked whether an error body can be written;"
+              + " sending the status without a body",
+          converterFailed);
+      return false;
     }
-    return anyCandidate;
   }
 
   /**
