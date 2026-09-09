@@ -31,6 +31,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -193,74 +194,270 @@ class ExpectedHttpErrorLoggingTest {
 
   // ---------------------------------------------------------------- the contract, left alone
 
+  /**
+   * The error contract, pinned separately for the two kinds of caller — which is the correction
+   * review asked for.
+   *
+   * <p>The first version of this test pinned {@code 406 <empty body>} unconditionally, and that
+   * single unqualified entry is why nothing here caught the case where a caller who accepts JSON
+   * perfectly well lost their body too. A contract that depends on the {@code Accept} header has to
+   * be pinned once per header, or the pin is stating something narrower than it appears to.
+   *
+   * <p>So both censuses run over the same six situations. For a caller who accepts JSON, every
+   * status and every code is exactly what it was before this task began. For a caller who accepts
+   * none of our media types, the status is the same and the body is absent — <b>which is a
+   * declared change</b>. What those requests produced before was not a body: 190 WARN frames, and
+   * then either a container 500 in place of the mapped status or the status with an empty body,
+   * depending on whether some other resolver happened to claim the exception. Both measured; the
+   * 500 is pinned on the wire in {@link ExpectedHttpErrorWireContractTest}.
+   */
   @Test
-  @DisplayName("400, 404, 406, 415 and 422 keep their status and their body")
+  @DisplayName("The error contract, pinned once for a JSON caller and once for an XML one")
   void theClientErrorContractIsUnchanged() throws Exception {
-    Map<String, String> census = new LinkedHashMap<>();
+    Map<String, String> jsonCaller = census(MediaType.APPLICATION_JSON);
+    Map<String, String> xmlCaller = census(MediaType.APPLICATION_XML);
 
-    MvcResult malformed =
-        mvc.perform(
-                post("/api/projects")
-                    .with(TestIdentity.as(caller))
-                    .with(csrf())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content("{ not json"))
-            .andReturn();
-    census.put("400 malformed body", shapeOf(malformed));
+    Map<String, String> expectedForJson = new LinkedHashMap<>();
+    expectedForJson.put("400 malformed body", "400 MALFORMED_REQUEST");
+    expectedForJson.put("400 validation", "400 VALIDATION_ERROR");
+    expectedForJson.put("404 unknown route", "404 BAD_REQUEST");
+    expectedForJson.put("405 method not allowed", "405 BAD_REQUEST");
+    expectedForJson.put("415 unsupported media type", "415 BAD_REQUEST");
+    expectedForJson.put("422 domain guard", "422 INVALID_STATE");
+    assertThat(jsonCaller)
+        .as("a caller who accepts JSON must see exactly the contract that existed before")
+        .containsExactlyInAnyOrderEntriesOf(expectedForJson);
 
-    MvcResult validation =
-        mvc.perform(
-                post("/api/auth/register")
-                    .with(csrf())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"email\":\"not-an-email\",\"password\":\"x\",\"displayName\":\"\"}"))
-            .andReturn();
-    census.put("400 validation", shapeOf(validation));
+    Map<String, String> expectedForXml = new LinkedHashMap<>();
+    expectedForXml.put("400 malformed body", "400 <empty body>");
+    expectedForXml.put("400 validation", "400 <empty body>");
+    expectedForXml.put("404 unknown route", "404 <empty body>");
+    expectedForXml.put("405 method not allowed", "405 <empty body>");
+    expectedForXml.put("415 unsupported media type", "415 <empty body>");
+    expectedForXml.put("422 domain guard", "422 <empty body>");
+    assertThat(xmlCaller)
+        .as("a caller who accepts none of our types keeps the status and loses the body")
+        .containsExactlyInAnyOrderEntriesOf(expectedForXml);
 
-    MvcResult notFound =
-        mvc.perform(get("/api/logging-probe/does-not-exist").with(TestIdentity.as(caller)))
-            .andReturn();
-    census.put("404 unknown route", shapeOf(notFound));
+    // The status is the part that must not move between the two, and it is asserted as such
+    // rather than left to be read off the two maps above.
+    jsonCaller.forEach(
+        (label, shape) ->
+            assertThat(xmlCaller.get(label).substring(0, 3))
+                .as("%s answered a different status depending on the Accept header", label)
+                .isEqualTo(shape.substring(0, 3)));
 
-    census.put("406 unacceptable accept", shapeOf(echo(MediaType.APPLICATION_XML)));
+    // And the 406 itself, which exists only for the caller who accepts nothing we produce.
+    assertThat(shapeOf(echo(MediaType.APPLICATION_XML))).isEqualTo("406 <empty body>");
+    assertThat(shapeOf(echo(MediaType.APPLICATION_JSON))).startsWith("200 ");
 
-    MvcResult unsupported =
-        mvc.perform(
-                post("/api/logging-probe/echo")
-                    .with(TestIdentity.as(caller))
-                    .with(csrf())
-                    .contentType(MediaType.TEXT_PLAIN)
-                    .content("plain"))
-            .andReturn();
-    census.put("415 unsupported media type", shapeOf(unsupported));
-
-    MvcResult illegalState =
-        mvc.perform(
-                post("/api/logging-probe/illegal")
-                    .with(TestIdentity.as(caller))
-                    .with(csrf())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(body()))
-            .andReturn();
-    census.put("422 domain guard", shapeOf(illegalState));
-
-    Map<String, String> expected = new LinkedHashMap<>();
-    expected.put("400 malformed body", "400 MALFORMED_REQUEST");
-    expected.put("400 validation", "400 VALIDATION_ERROR");
-    expected.put("404 unknown route", "404 BAD_REQUEST");
-    // The 406 has no body, and had none before this change either: the ApiError the last-resort
-    // handler used to build could not be serialised into a type the caller accepts, so it never
-    // reached the wire. Answering with no body is the same response, arrived at without failing.
-    expected.put("406 unacceptable accept", "406 <empty body>");
-    expected.put("415 unsupported media type", "415 BAD_REQUEST");
-    expected.put("422 domain guard", "422 INVALID_STATE");
-    assertThat(census)
-        .as("the error contract this task was told not to move")
-        .containsExactlyInAnyOrderEntriesOf(expected);
-
-    census.forEach(
+    jsonCaller.forEach(
         (label, shape) ->
             assertThat(shape).as("%s must not be a server fault", label).doesNotStartWith("5"));
+    xmlCaller.forEach(
+        (label, shape) ->
+            assertThat(shape).as("%s must not be a server fault", label).doesNotStartWith("5"));
+  }
+
+  /** The same six situations, driven with one {@code Accept} header, reduced to their contract. */
+  private Map<String, String> census(MediaType accept) throws Exception {
+    Map<String, String> census = new LinkedHashMap<>();
+    census.put(
+        "400 malformed body",
+        shapeOf(
+            mvc.perform(
+                    post("/api/projects")
+                        .with(TestIdentity.as(caller))
+                        .with(csrf())
+                        .accept(accept)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ not json"))
+                .andReturn()));
+    census.put(
+        "400 validation",
+        shapeOf(
+            mvc.perform(
+                    post("/api/auth/register")
+                        .with(csrf())
+                        .accept(accept)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                            "{\"email\":\"not-an-email\",\"password\":\"x\",\"displayName\":\"\"}"))
+                .andReturn()));
+    census.put(
+        "404 unknown route",
+        shapeOf(
+            mvc.perform(
+                    get("/api/logging-probe/does-not-exist")
+                        .with(TestIdentity.as(caller))
+                        .accept(accept))
+                .andReturn()));
+    census.put(
+        "405 method not allowed",
+        shapeOf(
+            mvc.perform(
+                    get("/api/logging-probe/echo").with(TestIdentity.as(caller)).accept(accept))
+                .andReturn()));
+    census.put(
+        "415 unsupported media type",
+        shapeOf(
+            mvc.perform(
+                    post("/api/logging-probe/echo")
+                        .with(TestIdentity.as(caller))
+                        .with(csrf())
+                        .accept(accept)
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("plain"))
+                .andReturn()));
+    census.put(
+        "422 domain guard",
+        shapeOf(
+            mvc.perform(
+                    post("/api/logging-probe/illegal")
+                        .with(TestIdentity.as(caller))
+                        .with(csrf())
+                        .accept(accept)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body()))
+                .andReturn()));
+    return census;
+  }
+
+  /**
+   * The finding the first version of this change left open: three of the four paths to a response
+   * still wrote the 190-frame WARN, and two of them lost the response entirely.
+   *
+   * <p>Fixing only the dispatched {@code HttpMediaTypeNotAcceptableException} fixed the path where
+   * the controller had succeeded. It did nothing for a request that was already failing when the
+   * header was applied, because Spring does not re-dispatch an exception thrown while writing an
+   * {@code @ExceptionHandler}'s return value — it logs at WARN with the throwable and gives up.
+   * So the same header, one route further along, produced the same trace and additionally threw the
+   * mapped status away.
+   *
+   * <p>Measured on all four paths, before and after, and the numbers are in the commit message. The
+   * assertion here is the property rather than the numbers: whatever the caller accepts, an
+   * expected error writes no frames, keeps its own status, and does not escape the dispatcher.
+   */
+  @Test
+  @DisplayName("Every path to a response survives an Accept header it cannot satisfy")
+  void noPathToAResponseIsLostToTheAcceptHeader() {
+    record Path(String label, int status, MvcResult result) {}
+
+    List<Path> paths = new ArrayList<>();
+    List<ILoggingEvent> events =
+        LogCapture.capturing(
+            () -> {
+              paths.add(new Path("controller succeeds", 406, echo(MediaType.APPLICATION_XML)));
+              paths.add(
+                  new Path(
+                      "mapped 422",
+                      422,
+                      perform(
+                          post("/api/logging-probe/illegal"), MediaType.APPLICATION_XML)));
+              paths.add(
+                  new Path(
+                      "unknown route 404",
+                      404,
+                      perform(
+                          get("/api/logging-probe/does-not-exist"), MediaType.APPLICATION_XML)));
+            });
+
+    for (Path path : paths) {
+      assertThat(path.result().getResponse().getStatus())
+          .as("%s lost its status to the Accept header", path.label())
+          .isEqualTo(path.status());
+    }
+    // Reaching this line at all is half the assertion: before the fix, two of these paths threw a
+    // ServletException out of mvc.perform rather than returning a result to inspect.
+    assertThat(framesAtOrAbove(events, Level.WARN))
+        .as("no expected error may write a stack frame, whatever the caller accepts")
+        .isEqualTo(0);
+
+    // The fourth path is the genuine 500, and it is the one that must still be loud. Captured
+    // separately only so the frame counts above stay about expected errors.
+    List<ILoggingEvent> serverFault =
+        LogCapture.capturing(
+            () ->
+                assertThat(
+                        perform(post("/api/logging-probe/boom"), MediaType.APPLICATION_XML)
+                            .getResponse()
+                            .getStatus())
+                    .as("a real 500 must still be a 500 on the wire, not a lost response")
+                    .isEqualTo(500));
+    assertThat(framesAtOrAbove(serverFault, Level.ERROR))
+        .as("an unacceptable Accept header must not cost a server fault its stack trace")
+        .isGreaterThan(20);
+    assertThat(framesAtOrAbove(serverFault, Level.WARN) - framesAtOrAbove(serverFault, Level.ERROR))
+        .as("and it must not add the resolver's WARN trace back on top")
+        .isEqualTo(0);
+  }
+
+  /**
+   * The other half of the review's finding: one exception type, two opposite situations.
+   *
+   * <p>{@code HttpMediaTypeNotAcceptableException} is also thrown when no converter can write a
+   * controller's return value, for a caller who accepts JSON and would have read it happily. That
+   * is a fault in this application. The first version of this change caught it with the same branch
+   * as the caller's mistake, so it lost its body and was tallied at DEBUG as an expected client
+   * error — the closest thing in the whole change to filing a server fault as somebody else's
+   * problem.
+   */
+  @Test
+  @DisplayName("An unwritable return value is a server fault, not the caller's mistake")
+  void anUnwritableReturnValueIsAServerFault() throws Exception {
+    long countedBefore = expectedErrors.countOf(406, NOT_ACCEPTABLE_KIND);
+
+    MvcResult[] result = new MvcResult[1];
+    List<ILoggingEvent> events =
+        LogCapture.capturing(
+            () -> result[0] = perform(post("/api/logging-probe/unwritable"), MediaType.APPLICATION_JSON));
+
+    // The body this caller received before this task existed, restored exactly.
+    assertThat(result[0].getResponse().getStatus()).isEqualTo(406);
+    com.fasterxml.jackson.databind.JsonNode returned =
+        json.readTree(result[0].getResponse().getContentAsString());
+    assertThat(returned.get("status").asInt()).isEqualTo(406);
+    assertThat(returned.get("code").asText()).isEqualTo("BAD_REQUEST");
+    assertThat(returned.get("message").asText()).isEqualTo("Not Acceptable");
+
+    // It is traced, because it is ours.
+    assertThat(framesAtOrAbove(events, Level.ERROR))
+        .as("a fault in this application must not be quiet just because it wears a 406")
+        .isGreaterThan(20);
+    // And it is not in the expected-client-error tally.
+    assertThat(expectedErrors.countOf(406, NOT_ACCEPTABLE_KIND) - countedBefore)
+        .as("a server fault counted as an expected client error is the failure mode to avoid")
+        .isZero();
+  }
+
+  /**
+   * The key space is capped rather than argued to be small.
+   *
+   * <p>The javadoc used to claim the map could not grow without bound because the vocabulary is
+   * fixed. That was a statement about today's callers of this class, not a property of the class:
+   * any integer is a status and any {@code ErrorResponse} may carry one. So it is enforced, and
+   * this is what enforces it.
+   */
+  @Test
+  @DisplayName("The tally cannot be grown without bound, and degrades to a bucket not to silence")
+  void theKeySpaceIsCapped() {
+    ExpectedHttpErrorLog tally = new ExpectedHttpErrorLog();
+    for (int status = 400; status < 900; status++) {
+      tally.record(status, "Kind" + status);
+    }
+
+    assertThat(tally.distinctKinds())
+        .as("five hundred distinct kinds must not become five hundred map entries")
+        .isEqualTo(ExpectedHttpErrorLog.MAX_KINDS);
+    assertThat(tally.countOf(400, "Kind400"))
+        .as("the kinds seen first keep a bucket of their own")
+        .isEqualTo(1);
+    assertThat(tally.countOf(899, "Kind899"))
+        .as("a kind invented after the cap gets no bucket of its own")
+        .isZero();
+    assertThat(tally.overflowCount())
+        .as("but it is still counted: the tally degrades to one bucket rather than to silence")
+        .isEqualTo(500 - (ExpectedHttpErrorLog.MAX_KINDS - 1));
   }
 
   @Test
@@ -335,6 +532,24 @@ class ExpectedHttpErrorLoggingTest {
     }
   }
 
+  private MvcResult perform(MockHttpServletRequestBuilder builder, MediaType accept) {
+    try {
+      return mvc.perform(
+              builder
+                  .with(TestIdentity.as(caller))
+                  .with(csrf())
+                  .accept(accept)
+                  .contentType(MediaType.APPLICATION_JSON)
+                  .content(body()))
+          .andReturn();
+    } catch (Exception e) {
+      // Before the fix two of these paths threw a ServletException out of the dispatcher rather
+      // than returning a response, so this is not dead code: it is the failure being prevented,
+      // and it is reported as such rather than as an opaque wrapped throwable.
+      throw new AssertionError("the request escaped the dispatcher instead of answering", e);
+    }
+  }
+
   private MvcResult boom() {
     try {
       return mvc.perform(
@@ -356,7 +571,10 @@ class ExpectedHttpErrorLoggingTest {
     if (content.isBlank()) {
       return status + " <empty body>";
     }
-    return status + " " + json.readTree(content).get("code").asText();
+    com.fasterxml.jackson.databind.JsonNode code = json.readTree(content).get("code");
+    // A success carries no error code, and saying so is better than a NullPointerException in a
+    // helper: this method is used to compare a 200 against the error shapes too.
+    return status + " " + (code == null ? "<no code>" : code.asText());
   }
 
   /** Every stack frame attached to an event at or above {@code threshold}, causes included. */
@@ -441,6 +659,17 @@ class ExpectedHttpErrorLoggingTest {
     @PostMapping("/illegal")
     Echo illegal(@RequestBody Echo request) {
       throw new IllegalStateException("probe: a guard inside the domain");
+    }
+
+    /**
+     * A return value no message converter claims, for a caller who accepts JSON perfectly well.
+     *
+     * <p>This is what a fault in this application looks like from the outside: the caller did
+     * everything right and we still cannot produce a representation.
+     */
+    @PostMapping("/unwritable")
+    Object unwritable(@RequestBody Echo request) {
+      return new java.io.ByteArrayInputStream(new byte[0]) {};
     }
   }
 

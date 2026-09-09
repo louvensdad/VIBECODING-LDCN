@@ -35,8 +35,8 @@ import org.springframework.stereotype.Component;
  * is the wrong one: an operator watching a 406 storm is watching a client misconfigured against
  * this API, and that is worth knowing. So every occurrence is counted, every occurrence writes one
  * line at DEBUG, and the count is announced at WARN on a logarithmic schedule — the 1st, 10th,
- * 100th, 1000th of a kind. A million bad requests produce six WARN lines and no stack trace, and
- * the first one still arrives immediately.
+ * 100th, 1000th of a kind. A million bad requests produce seven WARN lines and no stack trace — 1, 10, 100, 1000,
+ * 10000, 100000, 1000000 — and the first one still arrives immediately.
  *
  * <p><b>What is deliberately absent from every line.</b> The exception's message. Not because
  * these particular messages are known to be dangerous — "No acceptable representation" is not —
@@ -46,14 +46,36 @@ import org.springframework.stereotype.Component;
  * a password reached a log line here once already. A status and an exception type name are enough
  * to act on and cannot carry caller text. The counting key is built from those two things only.
  *
- * <p>The counter is per process and is never reset. It is a monotonic tally for the schedule above,
- * not a metric anyone should read a rate off; the map is keyed by status and exception type, both
- * drawn from a fixed vocabulary, so it cannot be grown without bound by anything a caller sends.
+ * <p>The counter is per process and is never reset. It is a monotonic tally for the schedule
+ * above, not a metric anyone should read a rate off.
+ *
+ * <p><b>The key space is capped rather than argued to be safe.</b> An earlier version of this
+ * javadoc claimed the map could not grow without bound because status and exception type are drawn
+ * from a fixed vocabulary. That was an assertion about today's {@code src/main}, not a property of
+ * this class: {@code HttpStatusCode.valueOf} accepts any integer, an {@code ErrorResponse} may
+ * carry any status, and review created nine distinct keys without difficulty. So the map now stops
+ * at {@link #MAX_KINDS} and everything after that is tallied under one overflow key. Two
+ * consequences worth stating: the tally degrades to a single bucket rather than to silence, and the
+ * cap is approximate under concurrency — the size check and the insert are not one atomic step,
+ * so several threads racing on unseen keys can leave a few entries above the cap. Bounded by the
+ * number of threads, which is what the cap is there to guarantee; exact is not needed and would
+ * cost a lock on the ordinary path.
  */
 @Component
 public class ExpectedHttpErrorLog {
 
   private static final Logger log = LoggerFactory.getLogger(ExpectedHttpErrorLog.class);
+
+  /**
+   * How many distinct kinds are tallied separately before the rest share one bucket.
+   *
+   * <p>Comfortably above the population this application can actually produce — review found
+   * nine — and far below anything that could matter for memory.
+   */
+  static final int MAX_KINDS = 64;
+
+  /** Where everything past the cap is counted, so the tally degrades rather than disappears. */
+  static final String OVERFLOWED = "(other kinds)";
 
   private final Map<String, AtomicLong> occurrences = new ConcurrentHashMap<>();
 
@@ -66,6 +88,11 @@ public class ExpectedHttpErrorLog {
    */
   public long record(int status, String kind) {
     String key = status + " " + kind;
+    // MAX_KINDS - 1, because the overflow bucket takes a slot of its own: the cap is the size of
+    // the whole map, not the number of kinds tallied separately plus one more entry nobody counted.
+    if (!occurrences.containsKey(key) && occurrences.size() >= MAX_KINDS - 1) {
+      key = OVERFLOWED;
+    }
     long count = occurrences.computeIfAbsent(key, ignored -> new AtomicLong()).incrementAndGet();
     // No throwable argument anywhere in this method: that is what keeps the stack trace out.
     log.debug("Expected client error {} (occurrence {})", key, count);
@@ -73,6 +100,17 @@ public class ExpectedHttpErrorLog {
       log.warn("Expected client error {}: {} so far in this process", key, count);
     }
     return count;
+  }
+
+  /** How many recorded past the cap, all sharing one bucket. Package-private, for the cap test. */
+  long overflowCount() {
+    AtomicLong count = occurrences.get(OVERFLOWED);
+    return count == null ? 0 : count.get();
+  }
+
+  /** How many keys are being tallied separately. Package-private: the cap has to be checkable. */
+  int distinctKinds() {
+    return occurrences.size();
   }
 
   /** How many of one kind have been recorded. For tests and for anything that wants the tally. */
