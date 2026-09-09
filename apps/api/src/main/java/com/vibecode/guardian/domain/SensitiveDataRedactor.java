@@ -316,6 +316,14 @@ public final class SensitiveDataRedactor {
     // in "2", nothing is stripped, and the value is redacted. A secret placed after the closer
     // prevents the strip that would have exempted it, so there is no way to smuggle text through by
     // wrapping it in a marker.
+    //
+    // NOTE ON REACH. This method is called from the shared replacement loop, not from the
+    // quoted-key branch that motivated it, so the strip applies to every spelling. An unquoted key
+    // is affected too: PASSWORD=sk-****REDACTED****} was rewritten to PASSWORD=[REDACTED] before
+    // the strip existed and is now passed through. That is benign in the same way and for the same
+    // reason — the more specific marker is preserved, no secret rides through, and the value must
+    // still be a marker character for character before any closer — but the reach is wider than
+    // the change that prompted it and is recorded here rather than left to be discovered.
     // Every suffix is tried, not just the fully stripped one, because "[REDACTED]" ends in a closer
     // itself: stripping greedily would leave "[REDACTED" and the marker would stop matching.
     for (int end = trimmed.length(); end > 0; end--) {

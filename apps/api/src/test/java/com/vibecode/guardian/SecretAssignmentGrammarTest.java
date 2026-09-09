@@ -450,6 +450,15 @@ class SecretAssignmentGrammarTest {
      * be exhaustive. The count is recorded because the gap between "four" and "twelve" is the
      * distance between fixing what a reviewer sends and fixing the defect.
      *
+     * <p><b>All twelve are closed and the total is not zero, and the difference between those two
+     * statements is the point.</b> An earlier version of this paragraph said "twelve mangled, zero
+     * do now". That was true when it was written and stopped being true one commit later, when
+     * {@link #aQuotedKeyWithAnUnquotedScalarIsRedacted} reopened the branch to unquoted values —
+     * the same failure as the false claim H1 corrected, a measurement carried forward as a general
+     * statement after the code moved under it. Re-derived against this commit rather than restated:
+     * of the twelve below, <b>0</b> mangle; across a thirty-form sweep, <b>7</b> do, and every one
+     * of the seven is pinned in {@link #aFlowSequenceIsMangledByTheBracketAdmission}.
+     *
      * <p>Closed by requiring the value's quote as well as the key's, which is the same kind of fix
      * as the arrow one — a rule about the document's punctuation, not about the value's text. In
      * JSON a scalar is quoted and a container is not, so the quote <em>is</em> the test for "this
@@ -578,6 +587,75 @@ class SecretAssignmentGrammarTest {
       // gained, a nicety lost, no change in what is exposed.
       assertThat(redact("'password': postgres://u:SECRET_" + VALUE + "@h/db"))
           .isEqualTo("'password': [REDACTED]");
+    }
+
+    /**
+     * <b>What the {@code [} admission costs: a flow sequence whose first element is a bare
+     * scalar.</b>
+     *
+     * <p>{@code [} is admitted when a scalar character follows it, which is what separates
+     * {@code [REDACTED]secret} — the marker-smuggling attempt, which must be redacted — from
+     * {@code ["secret"]}, which is a container and must be left alone. It does not separate it from
+     * {@code [prod, secret]}: the first element is a bare scalar, so the admission fires, the value
+     * runs to the comma, and only {@code [prod} is replaced.
+     *
+     * <p>This was predicted in the commit that introduced the admission — "a wider sweep of YAML and
+     * JSON5 will find another character that begins both a scalar and a container" — and it turned
+     * out to be one of the two already singled out rather than a new one. Six quoted-key spellings
+     * reach it, and {@code apiKey: [prod, <key>]} is ordinary YAML rather than an adversarial
+     * construction.
+     *
+     * <p><b>Left open deliberately, on three grounds, and pinned so that whoever closes it meets the
+     * trade first.</b>
+     *
+     * <ul>
+     *   <li><b>Nothing previously removed is now published.</b> {@code [prod, secret]} was redacted
+     *       at no generation of this redactor — not at 6d784fb, not at any commit since — so the
+     *       leak is pre-existing and only the mangling is new. That is the same category as the
+     *       unquoted-key forms pinned below, not the category G2 was.
+     *   <li><b>The obvious remedy is strictly worse.</b> Refusing {@code [} outright publishes
+     *       {@code [REDACTED]secret}, which is the entire reason the admission exists, and
+     *       {@code PASSWORD=[hunter2} with it.
+     *   <li><b>A correct remedy fits inside the principle already written down</b> and is a
+     *       one-condition change rather than a redesign: admit {@code [} only when the value that
+     *       follows holds no comma. {@code [REDACTED]secret} survives that test, {@code [prod,
+     *       secret]} does not, and the failure direction is still "change nothing".
+     * </ul>
+     *
+     * <p>Also pinned: the seventh and weakest of the seven, {@code "password": - SECRET}. The
+     * {@code -} is admitted as the start of a negative number and the secret is past a space, so
+     * this is F4-shaped — a value that ends at whitespace — rather than a container problem, and it
+     * is not valid single-line YAML in the first place.
+     */
+    @Test
+    @DisplayName("COST: a flow sequence starting with a bare scalar is mangled, and stays that way")
+    void aFlowSequenceIsMangledByTheBracketAdmission() {
+      // Pinned as isEqualTo on the mangled output, the way theRubyHashArrowIsNotMangled pins its
+      // case: these go green the day someone narrows the admission, and red if anyone widens it.
+      assertThat(redact("{\"password\": [prod, " + VALUE + "]}"))
+          .isEqualTo("{\"password\": [REDACTED], " + VALUE + "]}");
+      assertThat(redact("{\"apiKey\": [prod, " + VALUE + "]}"))
+          .isEqualTo("{\"apiKey\": [REDACTED], " + VALUE + "]}");
+      assertThat(redact("\"password\": [prod, " + VALUE + "]"))
+          .isEqualTo("\"password\": [REDACTED], " + VALUE + "]");
+      assertThat(redact("'password': [a, b, " + VALUE + "]"))
+          .isEqualTo("'password': [REDACTED], b, " + VALUE + "]");
+      assertThat(redact("{\"clientSecret\": [x, " + VALUE + "]}"))
+          .isEqualTo("{\"clientSecret\": [REDACTED], " + VALUE + "]}");
+      assertThat(redact("{\"accessToken\": [1, " + VALUE + "]}"))
+          .isEqualTo("{\"accessToken\": [REDACTED], " + VALUE + "]}");
+
+      // The seventh, and the reason it is weaker: a space, not a bracket.
+      assertThat(redact("\"password\": - " + VALUE))
+          .isEqualTo("\"password\": [REDACTED] " + VALUE);
+
+      // The two the admission exists for, so a narrowing cannot be made by simply removing it.
+      assertThat(redact("{\"password\": [REDACTED]" + VALUE + "}"))
+          .isEqualTo("{\"password\": [REDACTED]");
+      assertThat(redact("PASSWORD=[" + VALUE)).isEqualTo("PASSWORD=[REDACTED]");
+      // And the container spelling the admission already refuses, for contrast: no comma is needed
+      // to make this one safe, because a quote follows the bracket.
+      assertUntouched("{\"password\": [\"" + VALUE + "\"]}");
     }
 
     /**
