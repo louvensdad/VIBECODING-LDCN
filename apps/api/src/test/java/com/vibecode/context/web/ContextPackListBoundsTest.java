@@ -257,11 +257,25 @@ class ContextPackListBoundsTest {
     // Zero, negative and past the ceiling are all refused rather than clamped. Silently returning
     // a hundred packs to a caller who asked for a thousand would be the API answering a question
     // nobody asked, and the caller would have no way to know it had been narrowed.
-    for (String bad : new String[] {"0", "-1", "101", "not-a-number"}) {
+    //
+    // THE BODY IS ASSERTED, NOT ONLY THE STATUS. An earlier version of this loop checked
+    // isBadRequest() and nothing else, and was structurally incapable of noticing that these four
+    // spellings answered in two different body shapes — one with code BAD_REQUEST and an empty
+    // violations array, one with code VALIDATION_ERROR and a populated one — because a status-only
+    // assertion can only fail when the status changes. It also could not see ?limit= being served
+    // as a 200, which is why that spelling is in the loop now: the full census lives in
+    // ContextPackApiTest, and what is pinned here is that this route refuses in ONE shape.
+    for (String bad : new String[] {"0", "-1", "101", "not-a-number", "", " ", "0x10"}) {
       mvc.perform(
-              get("/api/projects/" + project + "/context?limit=" + bad)
-                  .with(TestIdentity.as(alice)))
-          .andExpect(status().isBadRequest());
+              get("/api/projects/" + project + "/context")
+                  .with(TestIdentity.as(alice))
+                  .param("limit", bad))
+          .andExpect(status().isBadRequest())
+          .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+          .andExpect(jsonPath("$.violations.length()").value(1))
+          .andExpect(jsonPath("$.violations[0].field").value("limit"))
+          .andExpect(jsonPath("$.violations[0].message").isNotEmpty())
+          .andExpect(jsonPath("$.packId").doesNotExist());
     }
   }
 
@@ -421,8 +435,23 @@ class ContextPackListBoundsTest {
   void theLimitDoesNotWidenWhatIsReadable() throws Exception {
     User bob = identity.createUser("bob");
 
-    mvc.perform(
-            get("/api/projects/" + project + "/context?limit=100").with(TestIdentity.as(bob)))
+    // Every shape of the parameter, not just a valid one. The limit is now decided inside the
+    // method, after the ownership gate, so a refused limit must not turn a 404 into a 400 — that
+    // would make the answer to "does this project exist" depend on how the query string was
+    // spelled, which is a difference an attacker can read even when neither answer names the
+    // project. The empty value is in the list because it is the spelling that used to be served.
+    for (String spelling : new String[] {"100", "", "0", "abc", "0x10"}) {
+      mvc.perform(
+              get("/api/projects/" + project + "/context")
+                  .with(TestIdentity.as(bob))
+                  .param("limit", spelling))
+          .andExpect(status().isNotFound())
+          .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+    }
+
+    // And with no parameter at all, so the loop above is known to be about the limit rather than
+    // about a route that 404s for Bob whatever he sends.
+    mvc.perform(get("/api/projects/" + project + "/context").with(TestIdentity.as(bob)))
         .andExpect(status().isNotFound())
         .andExpect(jsonPath("$.code").value("NOT_FOUND"));
   }
