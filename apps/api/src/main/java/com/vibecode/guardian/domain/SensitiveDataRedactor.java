@@ -115,11 +115,29 @@ public final class SensitiveDataRedactor {
    * where they <em>end</em>. So the extent is measured instead of guessed, and this whitelist keeps
    * only the job it can actually do: refusing the openers whose extent is on <em>other lines</em>
    * and therefore not measurable at all — {@code |} and {@code >} (block scalars), {@code &} (an
-   * anchor), {@code !} (a tag), {@code *} (an alias), {@code &#123;} and {@code (}. Refusing still
-   * means leaving the text exactly as it arrived.
+   * anchor), {@code !} (a tag), {@code *} (an alias). Refusing still means leaving the text exactly
+   * as it arrived.
+   *
+   * <p><b>FINDING G2, closed on the architect's ruling.</b> {@code &#123;} and {@code (} are now
+   * admitted for the same reason {@code [} is. {@code {"password": {"inner": "k"}}} was left
+   * untouched — and untouched means the secret stayed in the document. The mandate that kept it
+   * untouched existed because mangling it leaked: the {@code &#123;} was taken as the whole value,
+   * replaced, and everything inside the object survived after it. Measuring the extent removes that
+   * reason, so the object is replaced whole and {@code {"password": [REDACTED]}} is valid JSON with
+   * nothing of the secret left in it — better than the old output on both axes at once.
+   *
+   * <p>It also removes an asymmetry that was a defect on its own: {@code password: {inner: k}} under
+   * an unquoted key already redacted whole, because no whitelist ever applied to an unquoted key.
+   * The same secret was removed or published according to punctuation the writer chose for
+   * unrelated reasons.
+   *
+   * <p><b>The admission is not free, and the price is paid in {@link #widenedAdmissionMayFallBack}
+   * rather than here.</b> A newly admitted opener that does not close on its line must change
+   * nothing, because for that spelling "change nothing" is what the redactor did before — inheriting
+   * the fallback to the plain run would re-create the exact G2 output this is closing.
    */
   private static final String SCALAR_VALUE_START =
-      "(?:[A-Za-z0-9$_./+~%@-]|<(?!<)|\\[)";
+      "(?:[A-Za-z0-9$_./+~%@-]|<(?!<)|[\\[{(])";
 
   /**
    * A secret written as {@code key = value}, in the spellings a key is actually written in.
@@ -315,7 +333,19 @@ public final class SensitiveDataRedactor {
       String key = kvMatcher.group(1);
       String separator = kvMatcher.group(2);
       int valueStart = kvMatcher.end();
-      int valueEnd = valueExtent(result, valueStart);
+      int valueEnd = valueExtent(result, valueStart, separator);
+
+      if (valueEnd < 0) {
+        // G2's guard. The value opens a container under a quoted key, the container does not close
+        // on this line, and this spelling had no behaviour before the widening that admitted it —
+        // so there is nothing to fall back TO. Copying the text through is the pre-widening
+        // behaviour exactly. See widenedAdmissionMayFallBack for why this is the only place a
+        // refusal is sound.
+        sb.append(result, pos, valueStart);
+        pos = valueStart;
+        continue;
+      }
+
       String val = result.substring(valueStart, valueEnd);
       sb.append(result, pos, kvMatcher.start());
       if (isAlreadyRedacted(val)) {
@@ -382,9 +412,81 @@ public final class SensitiveDataRedactor {
    *       is exactly the trade already accepted for {@code {"password": $2b$12$…&#125;}.
    * </ul>
    */
-  private static int valueExtent(String text, int from) {
+  private static int valueExtent(String text, int from, String separator) {
     int balanced = bracketedExtent(text, from);
-    return balanced < 0 ? plainExtent(text, from) : balanced;
+    if (balanced >= 0) {
+      return balanced;
+    }
+    return widenedAdmissionMayFallBack(text, from, separator) ? plainExtent(text, from) : -1;
+  }
+
+  /**
+   * Whether an unmeasurable value may fall back to {@link #plainExtent}, or must be left alone.
+   *
+   * <p><b>The rule: the widening falls back to the behaviour it widened. Where there was no
+   * behaviour, there is nothing to fall back to.</b> That single sentence is what keeps
+   * {@code changedByOldOnly} at zero while G2 is closed, and both halves matter.
+   *
+   * <p>Falling back is right almost everywhere. {@code PASSWORD=[hunter2} is an unquoted key with an
+   * unbalanced bracket; the pattern matched it before this work and redacted it whole, and refusing
+   * would publish a password because the caller put a bracket in it. Same for
+   * {@code PASSWORD={hunter2}, for {@code "password": "{hunter2} where the separator took the
+   * value's opening quote, and for {@code {"password": [hunter2} — the old whitelist admitted
+   * {@code [} followed by a scalar character, so that spelling had a behaviour and keeps it.
+   *
+   * <p>It is wrong in exactly one place, and G2 is that place. {@code &#123;} after a quoted key was
+   * never admitted at all: {@code {"password": {"inner": "k"}}} produced no match and was copied
+   * through untouched. If admitting it inherited the fallback, then an <em>unbalanced</em> one —
+   * {@code {"password": {"inner": "k"} with no closer on the line — would take {@code &#123;} as
+   * the whole value and emit {@code {"password": [REDACTED]"inner": "k"}. That is the exact output
+   * the G2 mandate existed to prevent, re-created by the change that was supposed to close it, and
+   * it would be a mangle-and-leak this commit introduced rather than inherited.
+   *
+   * <p>So the widened admissions — {@code &#123;} and {@code (}, and {@code [} where the character
+   * after it is not one the old whitelist accepted — refuse instead of falling back. <b>Refusing is
+   * sound here and nowhere else</b>, because for these spellings refusing <em>is</em> the previous
+   * behaviour: no redaction was lost, because there was none. The failure direction is "change
+   * nothing", which is the only direction a value-dependent rule is allowed to fail in.
+   *
+   * <p>Note which branch this applies to. It is the quoted-key-with-unquoted-value alternative, the
+   * only one that consults a whitelist — its separator opens with a quote and does not close with
+   * one. An unquoted key never had a whitelist and always fell back; a quoted key with a quoted
+   * value took the value's opening quote into the separator and always fell back too.
+   */
+  private static boolean widenedAdmissionMayFallBack(String text, int from, String separator) {
+    if (separator.isEmpty()) {
+      return true;
+    }
+    char first = separator.charAt(0);
+    char last = separator.charAt(separator.length() - 1);
+    boolean quotedKeyUnquotedValue = (first == '"' || first == '\'') && last != '"' && last != '\'';
+    if (!quotedKeyUnquotedValue) {
+      return true;
+    }
+    return admittedBeforeTheExtentScan(text, from);
+  }
+
+  /**
+   * The scalar-start whitelist exactly as it stood at 5b07bb1, before J1 widened it.
+   *
+   * <p>Kept as running code rather than as a sentence in a comment, because it is consulted for one
+   * decision only — may an unmeasurable value fall back? — and a prose copy of a whitelist is how
+   * SEC-002 came to carry a stale regex for three commits.
+   */
+  private static boolean admittedBeforeTheExtentScan(String text, int from) {
+    char c = text.charAt(from);
+    if ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789$_./+~%@-".indexOf(c) >= 0) {
+      return true;
+    }
+    char next = from + 1 < text.length() ? text.charAt(from + 1) : '\0';
+    if (c == '<') {
+      return next != '<';
+    }
+    if (c == '[') {
+      return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789$_.+~%@-".indexOf(next)
+          >= 0;
+    }
+    return false;
   }
 
   /** The run this redactor has always used: everything up to the first terminator. */

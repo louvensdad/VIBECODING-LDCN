@@ -488,20 +488,14 @@ class SecretAssignmentGrammarTest {
      * falling back to the behaviour that existed before the widening.
      */
     @Test
-    @DisplayName("A quoted key whose value is a container is redacted whole or left alone, never mangled")
+    @DisplayName("G2 CLOSED: a container under a quoted key is redacted whole, or left exactly alone")
     void aStructuralJsonValueIsNotMangled() {
-      // Ten forms. Twelve were listed before J1; the two bracketed ones moved below, where they
-      // are now redacted whole rather than left alone. Every one mangled and leaked when the
-      // quoted-key branch accepted any value. The whitelist covers them without enumerating them,
-      // because it is structural rather than a list of spellings, so the YAML and nesting cases
-      // below were closed without ever being tested for.
+      // Five forms. TWELVE WERE LISTED BEFORE J1 AND G2, and the other seven moved below, where
+      // they are redacted whole instead of left alone. What is left here is the set whose value
+      // does not end on the key's line: a block scalar, an anchor, a tag and the merge key. Those
+      // are still refused by the scalar-start whitelist, because nothing on this line says where
+      // they stop and finding out needs a YAML parser rather than a redactor.
       String[] containers = {
-        // JSON objects, including one the reviewer supplied and one nested two deep.
-        "{\"password\": {\"inner\": \"" + VALUE + "\"}}",
-        "{\"config\": {\"apiKey\": {\"v\": \"" + VALUE + "\"}}}",
-        "\"password\": {inner: \"" + VALUE + "\"}",
-        "- \"password\": {\"x\": \"" + VALUE + "\"}",
-        "{\"clientSecret\": (\"" + VALUE + "\")}",
         // YAML block scalars: the value is on the following lines, so replacing the introducer
         // rewrites the document and leaves every byte of the secret behind it.
         "\"password\": |\n  " + VALUE,
@@ -516,21 +510,49 @@ class SecretAssignmentGrammarTest {
         assertUntouched(container);
       }
 
-      // J1 SPLIT THIS LIST IN TWO. Two of the twelve forms this test used to enumerate are
-      // bracketed, and a bracketed value's extent is now measured rather than guessed, so they are
-      // no longer left alone — they are redacted whole. That is a strict improvement on being left
-      // alone, because being left alone left the secret in the document; here it is gone and the
-      // document is intact.
+      // FINDING G2, CLOSED ON THE ARCHITECT'S RULING, and this is the assertion that used to say
+      // the opposite. {"password": {"inner": "…"}} was pinned as "left alone rather than mangled",
+      // and left alone meant the secret stayed in the document. The mandate existed because
+      // mangling it leaked — the "{" was taken as the whole value, replaced, and everything inside
+      // the object survived after it. Measuring the extent removes that reason: the object is
+      // replaced whole, and what comes out contains none of it.
       //
-      // The ten above stay untouched, and the dividing line is not arbitrary: a bracketed value
-      // ends on the same line, at a character this file can find by counting. A block scalar, an
-      // anchor, a tag and a merge key end somewhere on the following lines, and finding that needs
-      // a YAML parser rather than a redactor. Whitelist, same as before: what is not measurable is
-      // not touched.
+      // It also removes an asymmetry that was a defect by itself. password: {inner: k} under an
+      // UNQUOTED key already redacted whole, because no whitelist ever applied to an unquoted key,
+      // so the same secret was removed or published according to punctuation the writer chose for
+      // unrelated reasons.
+      assertThat(redact("{\"password\": {\"inner\": \"" + VALUE + "\"}}"))
+          .isEqualTo("{\"password\": [REDACTED]");
+      assertThat(redact("\"password\": {inner: \"" + VALUE + "\"}"))
+          .isEqualTo("\"password\": [REDACTED]");
+      assertThat(redact("- \"password\": {\"x\": \"" + VALUE + "\"}"))
+          .isEqualTo("- \"password\": [REDACTED]");
+      assertThat(redact("{\"clientSecret\": (\"" + VALUE + "\")}"))
+          .isEqualTo("{\"clientSecret\": [REDACTED]");
+      // Nested two deep, and note WHICH key wins: the innermost sensitive one. "config" is not a
+      // secret's key, so the match is on apiKey and it takes its own value. The needle is gone
+      // either way, which is the only thing the invariant asks.
+      assertThat(redact("{\"config\": {\"apiKey\": {\"v\": \"" + VALUE + "\"}}}"))
+          .isEqualTo("{\"config\": {\"apiKey\": [REDACTED]");
+
+      // J1's half of the same split: bracketed values, measured rather than guessed.
       assertThat(redact("{\"password\": [\"" + VALUE + "\"]}"))
           .isEqualTo("{\"password\": [REDACTED]");
       assertThat(redact("{\"password\": [{\"k\": \"" + VALUE + "\"}]}"))
           .isEqualTo("{\"password\": [REDACTED]");
+
+      // THE PRICE OF THE G2 ADMISSION, PAID HERE. A newly admitted opener that does NOT close on
+      // its line must change nothing. It must not fall back to the plain run the way an unbalanced
+      // value under an unquoted key does, because for this spelling the plain run is exactly the
+      // output the G2 mandate existed to prevent — "{" replaced, the object's contents surviving
+      // after it. Refusing is sound here and only here: refusing IS the previous behaviour, so no
+      // redaction is lost, and changedByOldOnly stays at zero.
+      assertUntouched("{\"password\": {\"inner\": \"" + VALUE);
+      assertUntouched("{\"password\": (\"" + VALUE);
+      // The same rule, and the case that shows it is about the WIDENING and not about brackets:
+      // "[" followed by a quote was never admitted either, so it refuses too. "[" followed by a
+      // scalar WAS admitted, so it still falls back — see the counterexamples further down.
+      assertUntouched("{\"password\": [\"" + VALUE);
 
       // Not bought at the price of the spelling the branch exists for, at any depth.
       assertThat(redact("{\"password\": \"" + VALUE + "\"}"))

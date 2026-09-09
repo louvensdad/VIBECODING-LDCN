@@ -129,6 +129,10 @@ class SensitiveDataRedactorTest {
       "{" + needle,
       needle + "}evil",
       "\"" + needle + "\"",
+      // G2's shapes.
+      "{\"inner\": \"" + needle + "\"}",
+      "(\"" + needle + "\")",
+      "{\"a\": {\"b\": \"" + needle + "\"}}",
     };
     String[] documents = {"%s", "{%s}", "{%s, \"user\": \"bob\"}", "- %s", "prefix %s"};
 
@@ -157,6 +161,46 @@ class SensitiveDataRedactorTest {
     // Guards the guard: if the pattern stopped matching, every input would fall into the
     // "left alone" branch above and this test would pass without asserting anything at all.
     assertThat(rewritten).isGreaterThan(3000);
+  }
+
+  /**
+   * <b>The boundary of the test above, pinned instead of filtered.</b>
+   *
+   * <p>The matrix covers values whose extent can be established: balanced brackets, or a plain run
+   * that reaches the end of the line. One shape is outside it and is a genuine mangle-and-leak —
+   * an <b>unbalanced</b> opener under an <b>unquoted</b> key, where the plain run stops at a quote
+   * <em>inside</em> the structure it could not close.
+   *
+   * <p><b>Byte-identical at 5b07bb1, at 43517ff and here</b> — measured across all three, not
+   * assumed. It is not this work's regression, and it is not this work's to close either, because
+   * the only available fix is to refuse, and refusing publishes: {@code PASSWORD={hunter2 more} has
+   * the same shape and the plain run removes a real password from it. A rule whose failure mode is
+   * "publish the value" must never depend on the value, so the refusal that closes G2 is confined
+   * to the quoted-key branch, where refusing is what the redactor already did.
+   *
+   * <p>The same shape under a <b>quoted</b> key is a different case and is closed: it is left
+   * exactly alone rather than mangled — see {@code SecretAssignmentGrammarTest}.
+   *
+   * <p>These three strings are in the suite permanently because leaving them out of a generator hid
+   * a real defect once: the value list at 43517ff had no unbalanced bracket-then-quote, and 43517ff
+   * introduced a mangle-and-leak for {@code {"password": ["secret} that its own fuzz reported zero
+   * of. Measured afterwards at 1,088 inputs on a three-way differential, and closed by the G2 guard.
+   */
+  @Test
+  @DisplayName("KNOWN OPEN: an unbalanced opener under an unquoted key mangles, as it always has")
+  void unbalancedContainersUnderAnUnquotedKeyStillMangle() {
+    String needle = "Pa55phrase_zqxw_610455";
+    assertThat(SensitiveDataRedactor.redact("password={\"inner\": \"" + needle))
+        .isEqualTo("password=[REDACTED]\"inner\": \"" + needle);
+    assertThat(SensitiveDataRedactor.redact("password=[\"" + needle))
+        .isEqualTo("password=[REDACTED]\"" + needle);
+    assertThat(SensitiveDataRedactor.redact("password=(\"" + needle))
+        .isEqualTo("password=[REDACTED]\"" + needle);
+
+    // And the reason it cannot be closed by refusing: here the plain run removes the whole secret,
+    // so a refusal keyed on "the opener did not close" would publish it.
+    assertThat(SensitiveDataRedactor.redact("PASSWORD={hunter2")).isEqualTo("PASSWORD=[REDACTED]");
+    assertThat(SensitiveDataRedactor.redact("PASSWORD=[hunter2")).isEqualTo("PASSWORD=[REDACTED]");
   }
 }
 
