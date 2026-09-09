@@ -9,27 +9,20 @@ import com.vibecode.shared.domain.DomainRuleException;
 import com.vibecode.shared.logging.ExpectedHttpErrorLog;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import com.vibecode.vault.domain.VaultCryptographyException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
-import org.springframework.boot.autoconfigure.http.HttpMessageConverters;
-import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /** Produces one consistent error body for the whole API. */
@@ -37,14 +30,6 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 public class ApiExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
-
-  /**
-   * The tally key for an error body dropped because the caller accepts none of our media types.
-   *
-   * <p>A fixed string, like every other kind this class records. A caller chooses whether it is
-   * reached; they do not get to choose what it says.
-   */
-  private static final String BODY_OMITTED = "BodyOmittedForAcceptHeader";
 
   /**
    * Where an error the caller caused is recorded instead of being traced.
@@ -56,51 +41,34 @@ public class ApiExceptionHandler {
   private final ExpectedHttpErrorLog expectedErrors;
 
   /**
-   * The media types some converter in this application can actually write an {@link ApiError} as.
+   * The content-negotiation boundary — the one place that decides whether an {@link ApiError} can
+   * be written for this caller, and what to send when it cannot.
    *
-   * <p>Asked of the converters rather than written down as a literal, and that is the whole point
-   * of this field. The first version of the {@code Accept} check compared against
-   * {@code application/json} alone, which is not what Jackson advertises: it also writes
-   * {@code application/*+json}, so Spring had always been serving {@code application/problem+json}
-   * — RFC 7807, the header an error-aware client is most likely to send — along with
-   * {@code application/hal+json} and every vendor {@code +json} type. Comparing against the one
-   * literal silently dropped the body for all of them. That was a narrowing of the error contract
-   * nobody declared, found in review, and the reason this is now derived rather than asserted.
-   *
-   * <p>Derived once at construction because the converter list is fixed after the context is built,
-   * and derived from {@code canWrite(ApiError.class, null)} so that a converter added, replaced or
-   * reconfigured later is followed automatically instead of being missed. If a converter for
-   * another representation is ever added, error bodies start being written in it without this class
-   * being touched — which is the correct behaviour and the reason not to hard-code a list.
-   *
-   * <p>{@code ApiExceptionHandlerTest} pins what this resolves to today, so that a converter change
-   * which widened it to a wildcard — quietly turning the guard below into a no-op and bringing
-   * back the defect this task exists to fix — fails the build rather than passing unnoticed.
+   * <p>It used to be two private members of this class, {@code respond(...)} and the list of
+   * writable types. Being private is what made FINDING CTX-09B-3b possible: {@code
+   * ContextPackController.InvalidLimitAdvice} is a second, controller-scoped advice that could not
+   * reach the decision, built its own {@code ResponseEntity} with a body, and reproduced under
+   * {@code Accept: application/xml} exactly the escape this class had just been fixed to stop. The
+   * decision moved out to {@link ApiErrorResponder} so that both advices can hold it; it did not
+   * change, and it did not become two decisions. See that class for what it decides and why.
    */
-  private final List<MediaType> writableErrorTypes;
+  private final ApiErrorResponder responder;
 
-  ApiExceptionHandler(ExpectedHttpErrorLog expectedErrors, HttpMessageConverters converters) {
+  ApiExceptionHandler(ExpectedHttpErrorLog expectedErrors, ApiErrorResponder responder) {
     this.expectedErrors = expectedErrors;
-    this.writableErrorTypes = writableErrorTypesOf(converters);
+    this.responder = responder;
   }
 
-  private static List<MediaType> writableErrorTypesOf(HttpMessageConverters converters) {
-    List<MediaType> types = new ArrayList<>();
-    for (HttpMessageConverter<?> converter : converters.getConverters()) {
-      if (converter.canWrite(ApiError.class, null)) {
-        for (MediaType supported : converter.getSupportedMediaTypes(ApiError.class)) {
-          if (!types.contains(supported)) {
-            types.add(supported);
-          }
-        }
-      }
-    }
-    return List.copyOf(types);
-  }
-
-  /** What this instance decided it can write. Package-private so a test can pin it. */
+  /**
+   * What the negotiation boundary decided it can write.
+   *
+   * <p>Kept here, delegating, because {@code ApiExceptionHandlerTest} pins it against a converter
+   * advertising a wildcard — which would turn the {@code Accept} check into a no-op — and that pin
+   * is one of LOG-HTTP-R1's guarantees. Moving the derivation should not cost the guarantee its
+   * test.
+   */
   List<MediaType> writableErrorTypes() {
-    return writableErrorTypes;
+    return responder.writableErrorTypes();
   }
 
   @ExceptionHandler({ResourceNotFoundException.class, NoSuchElementException.class})
@@ -269,10 +237,15 @@ public class ApiExceptionHandler {
     log.error(
         "No representation could be written for a caller that accepts this API's media type",
         exception);
-    return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE)
-        .body(
-            ApiError.of(
-                HttpStatus.NOT_ACCEPTABLE.value(), "BAD_REQUEST", exception.getBody().getTitle()));
+    // Through respond() rather than .body() directly, though this branch has already established
+    // that the caller accepts what we write and the two are therefore identical here. The point is
+    // that they stay identical: an @ExceptionHandler in this application that builds its own body
+    // is exactly the shape of FINDING CTX-09B-3b, and OneErrorResponseBoundaryTest fails the build
+    // on any method that does. A rule with an exemption is a rule the next person copies.
+    return respond(
+        HttpStatus.NOT_ACCEPTABLE,
+        ApiError.of(
+            HttpStatus.NOT_ACCEPTABLE.value(), "BAD_REQUEST", exception.getBody().getTitle()));
   }
 
   /**
@@ -322,82 +295,26 @@ public class ApiExceptionHandler {
   }
 
   /**
-   * Every error body in this class leaves through here, and it leaves without the body when the
-   * caller cannot read it.
+   * Every error body in this class leaves through here, and it leaves through {@link
+   * ApiErrorResponder} rather than being built by this class.
    *
-   * <p>This is the half of the {@code Accept} defect that the branch above does not reach, and it
-   * is the more damaging half. Spring does not re-dispatch an exception thrown while writing an
-   * {@code @ExceptionHandler}'s own return value: it logs {@code Failure in @ExceptionHandler} at
-   * WARN with the throwable and returns null, and the original exception then falls through to
-   * whatever else will take it. So a mapped error whose {@code ApiError} could not be serialised
-   * cost 190 WARN frames <em>and</em> lost its own response.
+   * <p>One line, and the line is the point. The negotiation decision lives in exactly one place, so
+   * that the second advice in this application — {@code
+   * ContextPackController.InvalidLimitAdvice}, which cannot be folded into this class without
+   * changing every module's error contract — makes the same decision by calling the same object
+   * instead of by being written the same way twice. It was written the same way twice, once, and
+   * the copy was wrong: it built its body directly and a refused {@code limit} under {@code Accept:
+   * application/xml} escaped the resolver as a 500.
    *
-   * <p>Measured on a real Tomcat rather than reasoned about, because the consequence is not a
-   * logging one. {@code GET /api/projects/<unknown id>} with {@code Accept: application/xml}
-   * answered <b>500 with no body</b>, where the same request answered 404 with the documented
-   * {@code NOT_FOUND} body under any other Accept header. A header the caller chooses was changing
-   * the status this API reports. That was already true before this task began and is not a
-   * regression; it is the reason this helper exists rather than another {@code @ExceptionHandler}
-   * chasing one more exception type.
-   *
-   * <p>What it does is refuse to hand Spring a body Spring cannot write. The status is kept,
-   * because the status is the true answer and a caller's {@code Accept} header is a statement
-   * about representations rather than about what happened; answering 406 instead would throw away
-   * the fact that the request was also, say, unauthorised. The omission is recorded as an expected
-   * client error, so an operator can see that bodies are being dropped and why.
+   * <p>What must stay true: no {@code @ExceptionHandler} in this application builds a
+   * {@code ResponseEntity} with an {@link ApiError} body without going through the responder.
    */
   private ResponseEntity<ApiError> respond(HttpStatusCode status, ApiError body) {
-    if (callerAcceptsOurRepresentation()) {
-      return ResponseEntity.status(status).body(body);
-    }
-    if (status.is4xxClientError()) {
-      expectedErrors.record(status.value(), BODY_OMITTED);
-    } else {
-      // A 5xx whose body could not be written is not an expected client error, and calling it one
-      // would repeat — one level down — the exact mislabelling the branch above was corrected
-      // for. The fault itself has already been logged at ERROR with its throwable by whichever
-      // handler produced this status; all that is left to say is that the body went unsent, and
-      // that is a DEBUG line rather than a tally of somebody else's mistake.
-      log.debug("Error body omitted for an unacceptable Accept header on a {} response", status.value());
-    }
-    return ResponseEntity.status(status).build();
+    return responder.respond(status, body);
   }
 
-  /**
-   * Whether the caller will accept the one representation this API produces.
-   *
-   * <p>"Our representation" is whatever the converters say they can write an {@link ApiError} as,
-   * not the string {@code application/json}. Today that resolves to {@code application/json} and
-   * {@code application/*+json}, so {@code application/problem+json}, {@code application/hal+json}
-   * and any vendor {@code +json} type keep their body — as they did before this task, and as
-   * review found they had stopped doing when this compared against one literal. A missing or blank
-   * header states no preference, and no preference accepts everything.
-   *
-   * <p>An unparseable header answers false. Spring's own negotiation cannot use it either, so the
-   * choice is between omitting the body deliberately and letting the write fail — and the
-   * write failing is the defect being fixed.
-   */
+  /** Delegated for the same reason as {@link #respond}: one decision, one place that makes it. */
   private boolean callerAcceptsOurRepresentation() {
-    if (!(RequestContextHolder.getRequestAttributes()
-        instanceof ServletRequestAttributes attributes)) {
-      // Not a servlet dispatch at all. Nothing is being negotiated, so nothing is being refused.
-      return true;
-    }
-    String accept = attributes.getRequest().getHeader(HttpHeaders.ACCEPT);
-    if (accept == null || accept.isBlank()) {
-      return true;
-    }
-    try {
-      for (MediaType acceptable : MediaType.parseMediaTypes(accept)) {
-        for (MediaType writable : writableErrorTypes) {
-          if (acceptable.isCompatibleWith(writable)) {
-            return true;
-          }
-        }
-      }
-      return false;
-    } catch (InvalidMediaTypeException malformed) {
-      return false;
-    }
+    return responder.callerAcceptsOurRepresentation();
   }
 }

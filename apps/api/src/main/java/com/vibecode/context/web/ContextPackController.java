@@ -9,6 +9,7 @@ import com.vibecode.context.web.ContextDtos.ContextPackResponse;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.shared.domain.ResourceNotFoundException;
 import com.vibecode.shared.web.ApiError;
+import com.vibecode.shared.web.ApiErrorResponder;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
@@ -343,20 +344,45 @@ public class ContextPackController {
    * {@code violations}, the field named. The sentence is the only thing that varies between one
    * refused spelling and another, and it is inside the violation where a client parses it, not in
    * the status and not in the {@code code}.
+   *
+   * <p><b>FINDING CTX-09B-3b, and why this class holds a collaborator it did not used to.</b> The
+   * first version of this advice built its response as {@code
+   * ResponseEntity.status(BAD_REQUEST).body(...)}. That is the one thing an {@code
+   * @ExceptionHandler} in this application may not do. {@code ApiExceptionHandler} had just been
+   * fixed to stop handing Spring a body Spring cannot write — because when the write fails inside
+   * an exception handler, Spring does not re-dispatch: it logs {@code Failure in @ExceptionHandler}
+   * at WARN with a 190-frame trace, returns null, and the original exception escapes the resolver.
+   * On a real container that is a <b>500 for a client error</b>. Building the body here bypassed
+   * that fix entirely, so {@code GET /api/projects/{id}/context?limit=0} with {@code Accept:
+   * application/xml} was a 500, while the identical request under {@code application/json} or
+   * {@code application/problem+json} was the documented 400.
+   *
+   * <p>The refusal is still decided here — that is CTX-API-R2's contract and it has not changed —
+   * but whether the decided body can be <em>written</em> for this caller is not a question this
+   * controller gets to answer. {@link ApiErrorResponder} answers it, for this advice and for the
+   * shared one, with one implementation and one behaviour: keep the status, omit the body the
+   * caller could not read, record the omission. An {@code Accept} header the caller chose does not
+   * cost this route its 400.
    */
   @RestControllerAdvice(assignableTypes = ContextPackController.class)
   @Order(Ordered.HIGHEST_PRECEDENCE)
   static class InvalidLimitAdvice {
 
+    private final ApiErrorResponder responder;
+
+    InvalidLimitAdvice(ApiErrorResponder responder) {
+      this.responder = responder;
+    }
+
     @ExceptionHandler(InvalidLimitException.class)
     ResponseEntity<ApiError> invalidLimit(InvalidLimitException exception) {
-      return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-          .body(
-              ApiError.of(
-                  HttpStatus.BAD_REQUEST.value(),
-                  "VALIDATION_ERROR",
-                  "The request could not be read.",
-                  List.of(new ApiError.FieldViolation("limit", exception.getMessage()))));
+      return responder.respond(
+          HttpStatus.BAD_REQUEST,
+          ApiError.of(
+              HttpStatus.BAD_REQUEST.value(),
+              "VALIDATION_ERROR",
+              "The request could not be read.",
+              List.of(new ApiError.FieldViolation("limit", exception.getMessage()))));
     }
   }
 }

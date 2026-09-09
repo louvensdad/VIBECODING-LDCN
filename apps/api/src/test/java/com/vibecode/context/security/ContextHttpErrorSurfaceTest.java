@@ -22,6 +22,7 @@ import com.vibecode.support.TestIdentity;
 import com.vibecode.support.logging.LoggerLevelIsolation;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +35,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -43,7 +45,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
  * The Context API's error surface, attacked with the inputs a client sends by accident and an
  * attacker sends on purpose.
  *
- * <p>Four properties are pinned, and they are different claims that a single test would blur.
+ * <p>Five properties are pinned, and they are different claims that a single test would blur.
  *
  * <ol>
  *   <li><b>Nothing here is a 500.</b> A malformed request parameter, a method the route does not
@@ -66,6 +68,18 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
  *       It used to: an error body that could not be serialised took the response down with it, and
  *       the status the caller read was not the status the route produced. See
  *       {@link #anUnacceptableAcceptHeaderIsCountedNotTraced}.
+ *   <li><b>And that is true of the {@code limit} refusal too, which is where it stopped being
+ *       true.</b> Properties 3 and 4 were closed by two separate pieces of work, and the seam
+ *       between them was a hole: {@code limit} got its single contract from an advice of its own,
+ *       which built its body without the {@code Accept} check the shared handler had just been
+ *       given, so {@code ?limit=0} with {@code Accept: application/xml} escaped the resolver and
+ *       answered 500 on a real container. That was FINDING CTX-09B-3b, this class asserted it as an
+ *       open defect for as long as it was one, and
+ *       {@link #aRefusedLimitKeepsItsStatusUnderAnUnacceptableAccept} is the same attack now
+ *       asserting the fix. The cross-product behind it is
+ *       {@link #theLimitContractHoldsAcrossEveryAcceptHeader}: eight spellings of {@code limit}
+ *       against four {@code Accept} headers, pinned as status <em>and</em> body, because a
+ *       status-only matrix is what let property 3 be broken in three different ways at once.
  * </ol>
  *
  * <p>The census is asserted as an exact map rather than as a count of distinct shapes. A count
@@ -571,43 +585,49 @@ class ContextHttpErrorSurfaceTest extends ContextProbeFixture {
   }
 
   /**
-   * <b>FINDING CTX-09B-3b: the same escape is still open on the one path that does not use the
-   * shared helper.</b> Open in {@code src/main}; reported, not fixed, because {@code src/main} is
-   * not this task's to change.
+   * <b>CTX-09B-3b closed: a refused {@code limit} keeps its 400 whatever the caller accepts.</b>
    *
-   * <p>{@code ContextPackController.InvalidLimitAdvice} — added by CTX-API-R2 to give {@code limit}
-   * its single contract — builds its {@code ResponseEntity} with a body directly, rather than
-   * through {@code ApiExceptionHandler}'s {@code respond(...)} helper, which is the thing that
-   * refuses to hand Spring a body Spring cannot write. So a refused {@code limit} under an
-   * {@code Accept} header naming no {@code +json} type reproduces the original defect exactly: the
-   * {@code ApiError} cannot be serialised, the write fails inside the handler, and the exception
-   * escapes the resolver. Under MockMvc that surfaces as the escape itself:
+   * <p>This is the same attack that found the defect, inverted in place. Same three requests, same
+   * order, same two-header control; only the assertion about the third one changed, because what
+   * the third one does changed. It was called
+   * {@code aRefusedLimitStillEscapesTheResolverUnderAnUnacceptableAccept} while it asserted the
+   * escape, and it is renamed rather than replaced — a method whose name says "still escapes" while
+   * asserting that it does not is the kind of sentence that stops the next reader checking.
+   *
+   * <p><b>What the defect was.</b> {@code ContextPackController.InvalidLimitAdvice} — added by
+   * CTX-API-R2 to give {@code limit} its single contract — built its {@code ResponseEntity} with a
+   * body directly, rather than through the boundary that refuses to hand Spring a body Spring
+   * cannot write. That boundary was a <em>private</em> method on {@code ApiExceptionHandler}, so a
+   * second advice could not reach it even to try. So a refused {@code limit} under an {@code Accept}
+   * header naming no {@code +json} type reproduced the original defect exactly: the {@code ApiError}
+   * could not be serialised, the write failed inside the handler, Spring did not re-dispatch, and
+   * the exception escaped the resolver — which under MockMvc surfaced as
    *
    * <pre>
    *   jakarta.servlet.ServletException: Request processing failed:
    *     com.vibecode.context.web.ContextPackController$InvalidLimitException: limit must be at least 1
    * </pre>
    *
-   * <p>Under a real container the same escape is what
-   * {@code ApiExceptionHandler#respond}'s own javadoc records measuring: 500 with no body, for a
-   * request whose true answer is 400. The fix is one line — route that advice's response through
-   * the same helper, or omit the body when the caller accepts nothing we write — and it belongs to
-   * whoever owns {@code context.web}.
+   * and under a real container as <b>500 with no body, for a request whose true answer is 400</b>.
+   * Two tasks that were each correct alone; the defect lived only in the seam between them, and
+   * neither could see it before both were merged.
    *
-   * <p>This test asserts the defect rather than the fix, deliberately and with a stated exit: the
-   * alternative is leaving a known hole unmeasured until someone rediscovers it. When it is fixed
-   * this test goes red on the {@code assertThatThrownBy}, and the correct response is to replace
-   * the body of this method with the four-line status comparison used in
-   * {@link #anUnacceptableAcceptHeaderIsCountedNotTraced} and delete this paragraph.
+   * <p><b>What closed it.</b> The negotiation decision moved out of {@code ApiExceptionHandler} into
+   * {@code ApiErrorResponder}, a collaborator both advices hold. Not a second mechanism for this
+   * endpoint — the <em>same</em> one, made reachable. So the answer here is the answer the shared
+   * boundary was already giving on every other error path: <b>keep the status, omit the body the
+   * caller could not have read, record the omission.</b> That is what the three assertions below
+   * check, and the tally assertion is the one that distinguishes "the body was deliberately
+   * withheld" from "the body silently went missing".
    *
-   * <p>The control that makes it a finding rather than a typo: the identical request under
-   * {@code Accept: application/json} answers 400 with the documented body, and under
-   * {@code application/problem+json} — a type Jackson writes — it answers 400 as well. Only the
-   * header the caller chose is different.
+   * <p><b>What would have to be true for this to fail.</b> The advice would have to build its own
+   * body again — {@code ResponseEntity.status(BAD_REQUEST).body(...)}, one line, the shape of an
+   * ordinary refactor. That mutation was applied and this test failed on the {@code
+   * assertThatCode(...).doesNotThrowAnyException()} before the fix was restored.
    */
   @Test
-  @DisplayName("FINDING CTX-09B-3b: a refused limit still escapes the resolver under Accept: xml")
-  void aRefusedLimitStillEscapesTheResolverUnderAnUnacceptableAccept() throws Exception {
+  @DisplayName("CTX-09B-3b closed: a refused limit keeps its 400 under an unacceptable Accept")
+  void aRefusedLimitKeepsItsStatusUnderAnUnacceptableAccept() throws Exception {
     MvcResult asJson =
         mvc.perform(
                 get(url(aliceProject))
@@ -619,6 +639,7 @@ class ContextHttpErrorSurfaceTest extends ContextProbeFixture {
         .as("the control: this is a 400 for every caller who accepts something we can write")
         .isEqualTo(400);
     assertBodyIsClean("refused limit under Accept: application/json", asJson);
+    assertThat(shapeOf(asJson)).isEqualTo(ONE_LIMIT_CONTRACT);
 
     MvcResult asProblemJson =
         mvc.perform(
@@ -630,20 +651,321 @@ class ContextHttpErrorSurfaceTest extends ContextProbeFixture {
     assertThat(asProblemJson.getResponse().getStatus())
         .as("and for a +json caller, which Jackson writes")
         .isEqualTo(400);
+    // Stronger than the status alone, and stronger than this control used to be: a +json caller is
+    // owed the whole body, not merely the same number. R2-A was a body quietly stopping, not a
+    // status moving, so a status-only control could not have seen it.
+    assertThat(normaliseTimestamp(asProblemJson.getResponse().getContentAsString()))
+        .as("a +json caller accepts something we can write and must receive it in full")
+        .isEqualTo(normaliseTimestamp(asJson.getResponse().getContentAsString()));
 
-    org.assertj.core.api.Assertions.assertThatThrownBy(
+    // The attack. It threw before the fix; the first assertion is that it no longer does, made
+    // explicitly rather than by letting the next line fail with a confusing message.
+    long omittedBefore = expectedErrors.countOf(400, "BodyOmittedForAcceptHeader");
+    int linesBefore = captured.list.size();
+    MvcResult[] asXml = new MvcResult[1];
+    org.assertj.core.api.Assertions.assertThatCode(
             () ->
-                mvc.perform(
-                    get(url(aliceProject))
-                        .param("limit", "0")
-                        .with(TestIdentity.as(alice))
-                        .accept(MediaType.APPLICATION_XML)))
+                asXml[0] =
+                    mvc.perform(
+                            get(url(aliceProject))
+                                .param("limit", "0")
+                                .with(TestIdentity.as(alice))
+                                .accept(MediaType.APPLICATION_XML))
+                        .andReturn())
         .as(
-            "FINDING CTX-09B-3b: InvalidLimitAdvice builds its body outside respond(), so the"
-                + " write fails and the exception escapes the resolver. On a real container this"
-                + " is the 500-for-a-400 the shared handler was fixed to stop producing.")
-        .isInstanceOf(jakarta.servlet.ServletException.class)
-        .hasMessageContaining("InvalidLimitException");
+            "CTX-09B-3b: InvalidLimitAdvice now answers through the shared boundary, so the write"
+                + " is never attempted in a type nothing here can produce and nothing escapes the"
+                + " resolver. On a real container this is what stops the 400 becoming a 500.")
+        .doesNotThrowAnyException();
+
+    assertThat(asXml[0].getResponse().getStatus())
+        .as("a header the caller sets is a statement about representations, not about what happened")
+        .isEqualTo(400);
+    assertBodyIsAbsent("refused limit under Accept: application/xml", asXml[0]);
+
+    // Withheld, not lost. Without this the empty body above would be satisfied by a response that
+    // fell over quietly, which is the failure this whole task is about.
+    assertThat(expectedErrors.countOf(400, "BodyOmittedForAcceptHeader"))
+        .as("the omission is a decision the boundary recorded, not a body that went missing")
+        .isEqualTo(omittedBefore + 1);
+
+    // And it cost the operator no stack frames. LOG-HTTP-R1's guarantee, on the path that used to
+    // bypass it: the escape it replaced wrote a 190-frame WARN from the resolver.
+    assertThat(
+            captured.list.stream()
+                .skip(linesBefore)
+                .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+                .filter(event -> event.getThrowableProxy() != null)
+                .map(LogCapture::lineOf)
+                .toList())
+        .as("a refused limit is the caller's mistake and does not write a trace for an operator")
+        .isEmpty();
+  }
+
+  /**
+   * The required matrix: every behaviour class of {@code limit} crossed with every {@code Accept}
+   * header a caller realistically sends, pinned as an exact map of <b>status and body</b>.
+   *
+   * <p>Status alone is what let the original three-contract defect hide — {@code ?limit=} answered
+   * 200 with a page nobody asked for, and a test that only read statuses would have called that
+   * fine. So every cell below carries what the body was: how many packs a 200 returned, which
+   * {@code code} and how many violations a 400 named, or the fact that there was no body at all.
+   *
+   * <p>Three behaviour classes, and the third is the one this task exists for:
+   *
+   * <ul>
+   *   <li><b>A limit this route honours</b> (absent, {@code 20}) is a 200 with the page — except
+   *       under {@code application/xml}, where the <em>successful</em> representation genuinely
+   *       cannot be written and 406 is the right and only answer. That is the case where the
+   *       {@code Accept} header legitimately decides, and it stays.
+   *   <li><b>A limit this route refuses</b> ({@code ""}, {@code abc}, {@code 0x10}, {@code 0},
+   *       {@code -1}, {@code 101}) is one 400 with one shape, for every caller who accepts
+   *       something we can write.
+   *   <li><b>The same refusal under {@code application/xml}</b> is still 400, with no body. Not
+   *       406: the caller's header did not make the limit valid. Not 500: their header is not a
+   *       fault of ours. This row is the defect, and every one of its six cells used to be an
+   *       exception escaping the resolver.
+   * </ul>
+   *
+   * <p>{@code &#42;/&#42;} and a missing header are in the matrix because they are the two spellings of
+   * "no preference", and a check that treated either as a refusal would drop bodies from the
+   * ordinary caller — the failure in the opposite direction, which a matrix of only {@code xml}
+   * and {@code json} could not see.
+   */
+  @Test
+  @DisplayName("Eight spellings of limit crossed with four Accept headers: status and body, pinned")
+  void theLimitContractHoldsAcrossEveryAcceptHeader() throws Exception {
+    compileForAlice("ALICE-MATRIX-1");
+    compileForAlice("ALICE-MATRIX-2");
+
+    // null is the absent parameter, which is the one spelling that means "no number named".
+    List<String> limits =
+        new ArrayList<>(Arrays.asList(null, "20", "", "abc", "0x10", "0", "-1", "101"));
+    Map<String, MediaType> accepts = new LinkedHashMap<>();
+    accepts.put("<no Accept>", null);
+    accepts.put("application/json", MediaType.APPLICATION_JSON);
+    accepts.put("application/xml", MediaType.APPLICATION_XML);
+    accepts.put("*/*", MediaType.ALL);
+
+    int linesBefore = captured.list.size();
+    Map<String, String> matrix = new LinkedHashMap<>();
+    for (String limit : limits) {
+      for (Map.Entry<String, MediaType> accept : accepts.entrySet()) {
+        String cell = "limit=" + (limit == null ? "<absent>" : "'" + limit + "'")
+            + " accept=" + accept.getKey();
+        MockHttpServletRequestBuilder request = get(url(aliceProject)).with(TestIdentity.as(alice));
+        if (limit != null) {
+          request = request.param("limit", limit);
+        }
+        if (accept.getValue() != null) {
+          request = request.accept(accept.getValue());
+        }
+        MvcResult[] result = new MvcResult[1];
+        MockHttpServletRequestBuilder built = request;
+        // The escape is a thrown exception, not a status, so it has to be asserted as one. Every
+        // xml cell in the refusal rows threw here before the fix.
+        org.assertj.core.api.Assertions.assertThatCode(() -> result[0] = mvc.perform(built).andReturn())
+            .as("%s must produce a response, not an exception out of the dispatcher", cell)
+            .doesNotThrowAnyException();
+        matrix.put(cell, listShapeOf(result[0]));
+        if (result[0].getResponse().getContentAsString().isEmpty()) {
+          assertBodyIsAbsent(cell, result[0]);
+        } else {
+          assertBodyIsClean(cell, result[0]);
+        }
+      }
+    }
+
+    // Property first, before the exact map: not one cell of thirty-two may be a server fault.
+    matrix.forEach(
+        (cell, shape) ->
+            assertThat(shape).as("%s must never be a server fault", cell).doesNotStartWith("5"));
+
+    Map<String, String> expected = new LinkedHashMap<>();
+    for (String limit : limits) {
+      boolean honoured = limit == null || limit.equals("20");
+      String label = limit == null ? "<absent>" : "'" + limit + "'";
+      String written = honoured ? "200 packs=2" : ONE_LIMIT_CONTRACT;
+      expected.put("limit=" + label + " accept=<no Accept>", written);
+      expected.put("limit=" + label + " accept=application/json", written);
+      expected.put("limit=" + label + " accept=*/*", written);
+      // The one column where the two classes diverge. A successful page really has no
+      // representation this caller would take, so 406 is correct; a refusal's status is not a
+      // representation and is kept.
+      expected.put(
+          "limit=" + label + " accept=application/xml",
+          honoured ? "406 <empty body>" : "400 <empty body>");
+    }
+    assertThat(matrix)
+        .as(
+            "CTX-09B-3b closed: no combination of limit and Accept turns a client error into a"
+                + " server fault, and the semantic status is the same in every column")
+        .containsExactlyInAnyOrderEntriesOf(expected);
+
+    // Not one of the thirty-two wrote a stack frame an operator has to read.
+    assertThat(
+            captured.list.stream()
+                .skip(linesBefore)
+                .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+                .filter(event -> event.getThrowableProxy() != null)
+                .map(LogCapture::lineOf)
+                .toList())
+        .as("thirty-two client requests, none of them a fault of ours, none of them traced")
+        .isEmpty();
+  }
+
+  /**
+   * The {@code Accept} header itself, attacked — because "any {@code Accept} header" is the claim,
+   * and four well-formed values are not "any".
+   *
+   * <p>One refused {@code limit}, thirteen headers. The status must be 400 in every row; the body
+   * is present exactly when some listed type is one this API can write, and absent otherwise.
+   * Nothing here may throw, and nothing here may be a 406 — the caller's header did not make
+   * {@code limit=0} a valid page size.
+   *
+   * <p>The rows are chosen from what actually breaks a negotiation check: a type list rather than a
+   * single type, wildcards at both levels, quality parameters including {@code q=0}, whitespace and
+   * casing, a charset parameter, an empty header, and two headers that are not media types at all.
+   * The last two are the ones a check written with {@code contains("json")} would pass and a check
+   * written with {@code MediaType.parseMediaTypes} must survive: an unparseable header makes
+   * Spring's own negotiation impossible too, so the only safe reading of it is "send no body", and
+   * the status still stands.
+   */
+  @Test
+  @DisplayName("A refused limit stays a 400 under every Accept header, well-formed or not")
+  void theRefusalSurvivesEveryShapeOfAcceptHeader() throws Exception {
+    // header -> whether some type in it is one this API can write an ApiError as
+    Map<String, Boolean> headers = new LinkedHashMap<>();
+    headers.put("application/json", true);
+    headers.put("application/problem+json", true);
+    headers.put("application/vnd.vibecode.v1+json", true);
+    headers.put("*/*", true);
+    headers.put("application/*", true);
+    headers.put("APPLICATION/JSON", true);
+    headers.put("  application/json  ", true);
+    headers.put("application/json;charset=UTF-8", true);
+    headers.put("application/xml, application/json;q=0.9", true);
+    // q=0 says "I would rather have nothing", and this API has nothing else to offer. Measured
+    // rather than reasoned about: Spring's own negotiation does not drop a q=0 candidate before
+    // selecting a converter, so the body is written and the two sides of the check agree. They have
+    // to agree — this class's check and Spring's are the same comparison over the same producible
+    // list, which is exactly why the list is derived from the converters instead of written down.
+    headers.put("application/json;q=0", true);
+    headers.put("application/xml;q=1, application/json;q=0", true);
+    headers.put("application/xml", false);
+    headers.put("text/*", false);
+    headers.put("application/xml, text/csv;q=0.8, image/png", false);
+    headers.put("this is not a media type", false);
+
+    int linesBefore = captured.list.size();
+    Map<String, String> answers = new LinkedHashMap<>();
+    for (String header : headers.keySet()) {
+      MvcResult[] result = new MvcResult[1];
+      org.assertj.core.api.Assertions.assertThatCode(
+              () ->
+                  result[0] =
+                      mvc.perform(
+                              get(url(aliceProject))
+                                  .param("limit", "0")
+                                  .with(TestIdentity.as(alice))
+                                  .header(HttpHeaders.ACCEPT, header))
+                          .andReturn())
+          .as("Accept: %s must produce a response, not an exception", header)
+          .doesNotThrowAnyException();
+      answers.put(header, listShapeOf(result[0]));
+      if (result[0].getResponse().getContentAsString().isEmpty()) {
+        assertBodyIsAbsent("Accept: " + header, result[0]);
+      } else {
+        assertBodyIsClean("Accept: " + header, result[0]);
+      }
+    }
+
+    Map<String, String> expected = new LinkedHashMap<>();
+    headers.forEach(
+        (header, writable) ->
+            expected.put(header, writable ? ONE_LIMIT_CONTRACT : "400 <empty body>"));
+    assertThat(answers)
+        .as(
+            "the status is the route's answer and the header only decides whether a body can be"
+                + " carried; no header of any shape may move it off 400")
+        .containsExactlyInAnyOrderEntriesOf(expected);
+
+    assertThat(
+            captured.list.stream()
+                .skip(linesBefore)
+                .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+                .filter(event -> event.getThrowableProxy() != null)
+                .map(LogCapture::lineOf)
+                .toList())
+        .as("thirteen client mistakes, no stack frames")
+        .isEmpty();
+  }
+
+  /**
+   * A hundred refused limits under an unacceptable {@code Accept}, and what they cost an operator.
+   *
+   * <p>LOG-HTTP-R1 measured this for the 406 path and pinned it at zero frames. The {@code limit}
+   * path was not going through that boundary, so it was not covered by that measurement: each of
+   * these hundred requests wrote a 190-frame WARN from {@code ExceptionHandlerExceptionResolver}
+   * and lost its response. This is the same measurement, on the path that used to bypass it.
+   *
+   * <p>The zero carries its own positive control, because zero is a number this project has
+   * manufactured before: a throwable is logged deliberately through the same root logger and the
+   * same predicate is required to find it. Without that, the filter could be reporting zero for a
+   * detached appender or a level that never reached WARN and would look identical.
+   */
+  @Test
+  @DisplayName("A hundred refused limits under Accept: xml cost a hundred 400s and no stack frame")
+  void aHundredRefusedLimitsUnderAnUnacceptableAcceptCostNoStackTrace() throws Exception {
+    int linesBefore = captured.list.size();
+    long omittedBefore = expectedErrors.countOf(400, "BodyOmittedForAcceptHeader");
+    List<Integer> statuses = new ArrayList<>();
+
+    for (int i = 0; i < 100; i++) {
+      statuses.add(
+          mvc.perform(
+                  get(url(aliceProject))
+                      .param("limit", "0")
+                      .with(TestIdentity.as(alice))
+                      .accept(MediaType.APPLICATION_XML))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+    }
+
+    assertThat(statuses).hasSize(100).containsOnly(400);
+
+    List<String> traces =
+        captured.list.stream()
+            .skip(linesBefore)
+            .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+            .filter(event -> event.getThrowableProxy() != null)
+            .map(event -> event.getLoggerName() + " @" + event.getLevel() + ": "
+                + LogCapture.lineOf(event))
+            .toList();
+    assertThat(traces)
+        .as("a hundred requests a caller chose to send, and not one frame for an operator to read")
+        .isEmpty();
+
+    // The signal that replaced them: one recorded omission per request, none of them silent.
+    assertThat(expectedErrors.countOf(400, "BodyOmittedForAcceptHeader") - omittedBefore)
+        .as("counted, not silenced — an operator can still see that bodies are being dropped")
+        .isEqualTo(100);
+
+    // The positive control for the zero above.
+    int beforeControl = captured.list.size();
+    LoggerFactory.getLogger(ContextHttpErrorSurfaceTest.class)
+        .warn("limit-storm-control", new IllegalStateException("limit-control-zqxw-660418"));
+    assertThat(
+            captured.list.stream()
+                .skip(beforeControl)
+                .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+                .filter(event -> event.getThrowableProxy() != null)
+                .map(LogCapture::lineOf)
+                .toList())
+        .as("the filter that reported zero above must be able to report one")
+        .hasSize(1)
+        .allSatisfy(line -> assertThat(line).contains("limit-control-zqxw-660418"));
   }
 
   // ------------------------------------------------------------------ the unreadable body
@@ -960,6 +1282,32 @@ class ContextHttpErrorSurfaceTest extends ContextProbeFixture {
     assertThat(result.getResponse().getContentAsString())
         .as("%s: there is no representation this caller accepts, so there is nothing to send", label)
         .isEmpty();
+  }
+
+  /**
+   * The same reduction as {@link #shapeOf}, widened to the one route in this class that answers a
+   * success with an array rather than an error with an object.
+   *
+   * <p>It exists so that the {@code limit} matrix can assert <b>status and body</b> in one cell.
+   * Status alone is what let CTX-09B-2 hide: {@code ?limit=} answered 200, and only the body said
+   * that the page had a size the caller never named. A matrix that compared statuses would have
+   * called that row correct.
+   */
+  private String listShapeOf(MvcResult result) throws Exception {
+    String content = result.getResponse().getContentAsString();
+    if (content.isEmpty()) {
+      return result.getResponse().getStatus() + " <empty body>";
+    }
+    JsonNode body = json.readTree(content);
+    if (body.isArray()) {
+      return result.getResponse().getStatus() + " packs=" + body.size();
+    }
+    return shapeOf(result);
+  }
+
+  /** The one field two otherwise identical error bodies legitimately disagree on. */
+  private static String normaliseTimestamp(String body) {
+    return body.replaceAll("\"timestamp\":\"[^\"]+\"", "\"timestamp\":\"<t>\"");
   }
 
   /**
