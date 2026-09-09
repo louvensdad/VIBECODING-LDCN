@@ -1265,4 +1265,67 @@ class SecretAssignmentGrammarTest {
     // finish inside this at 200k characters.
     assertThat(elapsedMillis).as("redacting 400k characters of non-secret text").isLessThan(5_000L);
   }
+
+  /**
+   * FINDING G1: <b>the two performance guards were pinned in the tightening direction only.</b>
+   *
+   * <p>Ten assertions catch a guard that redacts too little. Nothing caught a guard that was simply
+   * removed: disabling the scan budget, or disabling the line-horizon cache, each left the whole
+   * suite green. A future refactor could reintroduce the exact 31-second quadratic and no test
+   * would say so.
+   *
+   * <p>{@link #theKeyRunDoesNotBacktrackQuadratically} above cannot cover it and never could — its
+   * input contains no sensitive assignment, so it never enters the extent scan at all. It would not
+   * have caught R3, F2 or F3.
+   *
+   * <p><b>The shape, and why it is measured as a ratio.</b> The cost being pinned is
+   * O(matches x line length), so it appears only when many matches share one line. The control is
+   * the identical bytes and the identical match count with newlines between them — the only
+   * difference is the line structure, which is what isolated the cause in the first place. An
+   * absolute ceiling would have to be loose enough for a slow machine and would then be too loose
+   * to catch a regression on a fast one; a ratio moves with the machine. At 520 KB the defect was
+   * 31,027 ms against 79 ms for the control, a factor of 390. The bound below is 20, so it has two
+   * orders of magnitude of headroom and still fails the moment the quadratic returns.
+   *
+   * <p>The floor on the control's own time is what keeps the ratio meaningful: if the control were
+   * timed as 0 ms the division would be arbitrary, so both sides are given a millisecond of slack
+   * and the assertion is on the ratio of the padded values.
+   *
+   * <p><b>Proved to bite.</b> With {@code ScanBudget.step()} stubbed to {@code return true} — the
+   * budget removed, everything else untouched — this fails at a measured ratio of about 400. The
+   * guard is not being trusted here; it is being mutated.
+   */
+  @Test
+  @DisplayName("G1: many assignments on ONE line cost the same as the same assignments on many")
+  void theExtentScanIsLinearInTheNumberOfAssignmentsOnALine() {
+    // Each unit opens a bracket that never closes, so every scan would run to the end of the line
+    // if nothing bounded it. This is the F2 reproduction, at the size it was reported at.
+    String unit = "PASSWORD=[\"a ";
+    int repeats = 40_000;
+    String oneLine = unit.repeat(repeats);
+    String manyLines = (unit + "\n").repeat(repeats);
+    assertThat(oneLine.length()).isGreaterThan(500_000);
+
+    long oneLineMillis = timeRedaction(oneLine);
+    long manyLinesMillis = timeRedaction(manyLines);
+
+    // Both must actually have done the work, or this measures nothing: the redactor must have
+    // rewritten the input rather than returning it untouched.
+    assertThat(redact(oneLine)).isNotEqualTo(oneLine);
+    assertThat(redact(manyLines)).isNotEqualTo(manyLines);
+
+    double ratio = (oneLineMillis + 1.0) / (manyLinesMillis + 1.0);
+    assertThat(ratio)
+        .as(
+            "putting %d assignments on one line took %d ms against %d ms for the same assignments"
+                + " on separate lines — the extent scan is quadratic in matches per line again",
+            repeats, oneLineMillis, manyLinesMillis)
+        .isLessThan(20.0);
+  }
+
+  private static long timeRedaction(String input) {
+    long start = System.nanoTime();
+    redact(input);
+    return (System.nanoTime() - start) / 1_000_000;
+  }
 }
