@@ -167,6 +167,19 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
   private static final String PREFIXED_DOLLAR = "APP_CLIENT_SECRET=" + DOLLAR_SHAPELESS;
 
   /**
+   * The bcrypt value again, under a <b>quoted</b> key with an unquoted value — the spelling this
+   * API's own responses are written in.
+   *
+   * <p>This is the coverage gap the two probes above did not close, and it let a real leak through:
+   * both of them are planted under an unquoted key with {@code =}, so when the redactor's quoted-key
+   * branch started requiring the value's quote, {@code {"password": $2b$12$…&#125;} was published
+   * whole and every test in this class stayed green. The lesson is the one the other two already
+   * carry, applied to the other axis: a probe covers the spelling it is written in and nothing else,
+   * so the spelling has to be planted, not reasoned about.
+   */
+  private static final String QUOTED_BCRYPT = "{\"password\": " + BCRYPT_SHAPELESS + "}";
+
+  /**
    * What the three planted probes are, appended to the assertions that would otherwise report only
    * a field name or a table name.
    *
@@ -177,13 +190,18 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
    * price paid back — the search needle is one string, so the failure has to carry the list itself.
    */
   private static final String PROBES_PLANTED =
-      " Three values are planted and all three end with the needle, so this failure names none of"
-          + " them: the bare secret Pa55phrase_zqxw_610455 under VIBECODE_DB_PASSWORD=, the same"
-          + " value bcrypt-prefixed as $2b$12$… under SERVICE_AUTH_TOKEN=, and the same value"
-          + " dollar-prefixed as $… under APP_CLIENT_SECRET=. Grep the failing text for '$2b$' and"
-          + " for '=$' to tell which one escaped: a hit on neither is the plain key pattern, a hit"
-          + " on the first is the placeholder exemption returning, a hit on the second is the"
-          + " interpolation exemption returning.";
+      " Four values are planted, all containing the one needle this assertion searches for, so the"
+          + " failure above cannot say which of them escaped — and on this assertion the reported"
+          + " text is a list of field or table names, with no value in it to inspect. The four are"
+          + " the constants SHAPELESS (bare, under VIBECODE_DB_PASSWORD=), BCRYPT_SHAPELESS"
+          + " ($2b$12$…, under SERVICE_AUTH_TOKEN=), DOLLAR_SHAPELESS ($…, under"
+          + " APP_CLIENT_SECRET=) and QUOTED_BCRYPT (the same bcrypt value under a quoted JSON key"
+          + " with no quotes on the value). To find out which, re-run"
+          + " ContextShapelessSecretBlastRadiusTest and SecretAssignmentGrammarTest, or read the"
+          + " offending row directly: SELECT content, label FROM context_pack_items. Then match"
+          + " what you find against those four constants at the top of this class — each names the"
+          + " rule that would have to have regressed for it, and only it, to be the one that got"
+          + " out.";
 
   /**
    * The tables that are the project's own records: the user wrote the secret into these and the
@@ -281,6 +299,15 @@ class ContextHttpSecretExposureTest extends ContextProbeFixture {
         BrainEntryType.DECISION,
         "Decision " + PREFIXED_DOLLAR,
         "We settled on " + PREFIXED_DOLLAR + " for the client",
+        "test");
+    // The quoted-key spelling, planted on the same terms as the other two. Three of the four probes
+    // now have no assertion naming them and are caught only because the class's existing
+    // measurements search for a needle they all contain.
+    brain.add(
+        projectId,
+        BrainEntryType.RULE,
+        "Constraint " + QUOTED_BCRYPT,
+        "The config we were sent reads " + QUOTED_BCRYPT,
         "test");
 
     outsider = identity.createUser("http-exposure-outsider");

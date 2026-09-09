@@ -51,6 +51,39 @@ public final class SensitiveDataRedactor {
           + "|SECRET|TOKEN|PASSWORD";
 
   /**
+   * The characters that may begin an unquoted value after a quoted key.
+   *
+   * <p><b>A whitelist, and that direction is deliberate.</b> Anything not listed falls out of the
+   * alternative that uses it and the text is left exactly as it arrived — the behaviour before that
+   * alternative existed. A blacklist would have the opposite failure mode: a structural opener
+   * nobody thought of would be accepted, its opener replaced, and the secret behind it published
+   * along with a broken document.
+   *
+   * <p>So this is the set of characters a scalar starts with: letters, digits, and the punctuation
+   * that begins a path, a number, a version, a URL, an interpolation or an angle-bracket
+   * placeholder. Excluded by omission and worth naming, because each one is a leak this way round:
+   * {@code &#123;} and {@code (} open a container; {@code |} and {@code >} open a YAML block scalar
+   * whose text is on the following lines; {@code &} opens an anchor whose value follows it on the
+   * same line; {@code !} opens a tag; {@code *} opens an alias.
+   *
+   * <p>Two characters are admitted conditionally, because each one begins both a scalar and a
+   * container and only the character after it says which.
+   *
+   * <ul>
+   *   <li>{@code <} begins the {@code <YOUR_KEY>} placeholder, which precedence says to redact. It
+   *       also begins YAML's merge key {@code <<:}, where the value is the merged mapping and the
+   *       secret is behind it. So {@code <} is admitted unless another {@code <} follows.
+   *   <li>{@code [} begins this redactor's own {@code [REDACTED]} marker — and therefore the
+   *       {@code [REDACTED]secret} smuggling attempt, which must be redacted rather than passed
+   *       through. It also opens a JSON array. So {@code [} is admitted only when what follows it
+   *       could start a scalar: {@code ["secret"]} and {@code [{…}]} are containers and are
+   *       refused, {@code [REDACTED]secret} is not.
+   * </ul>
+   */
+  private static final String SCALAR_VALUE_START =
+      "(?:[A-Za-z0-9$_./+~%@-]|<(?!<)|\\[(?=[A-Za-z0-9$_.+~%@-]))";
+
+  /**
    * A secret written as {@code key = value}, in the spellings a key is actually written in.
    *
    * <p><b>Group 1 is the whole key, prefix included</b> — {@code VIBECODE_DB_PASSWORD}, not
@@ -81,14 +114,15 @@ public final class SensitiveDataRedactor {
    * And it means redaction substitutes the value and edits nothing else, so {@code PASSWORD  =  x}
    * keeps its spacing instead of being silently reformatted to {@code PASSWORD=x}.
    *
-   * <p><b>A quoted key is a different spelling with different rules, and it gets its own branch.</b>
-   * The first alternative is the JSON one: a quote closing the key, a colon, and <b>a quote opening
-   * the value</b> — both quotes required. The second is everything else: no quote on the key, a
-   * {@code =} or a {@code :}, and an optional quote on the value.
+   * <p><b>A quoted key is a different spelling with different rules, and it gets two alternatives of
+   * its own.</b> A quote closing the key and a colon, then either a quote opening the value — the
+   * JSON string case — or an unquoted value <em>whose first character can begin a scalar</em>. The
+   * third alternative is everything else: no quote on the key, a {@code =} or a {@code :}, and an
+   * optional quote on the value.
    *
-   * <p>Two failures are why the branch is shaped like that, and they are the same failure twice.
-   * <b>A match that rewrites the text and leaves the secret in it is strictly worse than not
-   * matching at all</b> — the leak is unchanged and the document is now broken as well.
+   * <p><b>The failure all of this is shaped around.</b> A match that rewrites the text and leaves
+   * the secret in it is strictly worse than not matching at all: the leak is unchanged and the
+   * document is broken as well. It happened twice.
    *
    * <ul>
    *   <li>Allowing a quote before {@code =} made {@code 'password' => 'secret'} match the {@code =}
@@ -96,27 +130,41 @@ public final class SensitiveDataRedactor {
    *       {@code 'password' =[REDACTED] 'secret'}. So the quote goes with the colon only. (TOML
    *       does write {@code "key" = "value"}, so that spelling is given up here rather than being
    *       unrepresentable; it was not matched at 6d784fb either.)
-   *   <li>Requiring only the key's quote made {@code {"password": {"inner": "secret"}}} match, take
-   *       the {@code &#123;} as the whole value, and emit
-   *       {@code {"password": [REDACTED]"inner": "secret"}}: the secret still there and an opening
-   *       brace deleted, so the JSON no longer parses. Requiring the value's quote too is what
-   *       fixes it — in JSON a scalar is quoted and a container is not, so demanding the quote is
-   *       exactly the test for "this value is a string and I can replace it".
+   *   <li>Accepting <em>any</em> unquoted value after a quoted key made
+   *       {@code {"password": {"inner": "secret"}}} take the {@code &#123;} as the whole value and
+   *       emit {@code {"password": [REDACTED]"inner": "secret"}}: the secret still there and an
+   *       opening brace deleted, so the JSON no longer parses. The value terminator set stops at a
+   *       quote, so a container's opener is all that gets replaced and everything inside it
+   *       survives.
    * </ul>
    *
-   * <p><b>Why this is a rule about the quotes and not about the value.</b> The obvious alternative
-   * is to refuse a value that begins with {@code &#123;} or {@code [}. That is not safe: refusing to
-   * match means the value is published, the value is the half a caller controls, and so every
-   * refusal keyed on the value's own text is a bypass waiting to be written — {@code PASSWORD=[hunter2}
-   * and {@code PASSWORD=&#123;hunter2} would both walk straight out, and both are redacted today.
-   * The quoting of the <em>key</em> is a property of the surrounding document rather than of the
-   * secret, so tightening on it cannot be gamed from inside the value.
+   * <p><b>Mangling without leaking is a different category, and it is accepted.</b> An unquoted
+   * <em>scalar</em> is consumed whole — {@code {"password": $2b$12$…&#125;} becomes
+   * {@code {"password": [REDACTED]}, losing the closing brace and taking the secret with it. That
+   * trade is the precedence rule already in force below: a recognised sensitive key redacts its
+   * whole right-hand side. Without this alternative, a bcrypt hash under a quoted key — the
+   * spelling this API's own responses are written in — reaches the wire intact.
    *
-   * <p>What this branch gives up, deliberately: {@code {"password": 12345}} and
-   * {@code "password": bare} are not matched, because an unquoted JSON value is a container, a
-   * number or a keyword rather than a string. Unquoted keys are untouched by this and keep their
-   * pre-existing behaviour, mangling included — see {@code SecretAssignmentGrammarTest}, which pins
-   * the forms that predate this work rather than quietly fixing some of them.
+   * <p><b>Why consulting the value's first character here is not the mistake it would be
+   * elsewhere.</b> A refusal keyed on the value is unsafe when refusing is the only thing between
+   * the secret and the wire, because refusing to match means publishing and the caller writes the
+   * value: {@code PASSWORD=[hunter2} and {@code PASSWORD=&#123;hunter2} are redacted today and any
+   * such rule would let both out. Here the test is a <b>guard on a widening, not a defence</b>. Its
+   * failure direction is the point: refusing a structural opener falls back to leaving the text
+   * exactly as it arrived, which is what happened before this alternative existed, while accepting
+   * one would be strictly worse than that. A rule whose failure mode is "publish" must never depend
+   * on the value; a rule whose failure mode is "change nothing" may.
+   *
+   * <p>The same distinction is why the <em>quote</em> tests above are sound, and it is not the
+   * reason an earlier version of this comment gave. That version said the key's quoting is a
+   * property of the surrounding document and therefore out of the caller's reach. It is not: every
+   * caller of {@link #redact(String)} passes a single caller-authored string — a brain entry, a task
+   * objective, a piece of evidence — so the caller writes the key's quotes too. What makes these
+   * rules safe is direction of failure, not reachability.
+   *
+   * <p>Unquoted keys are untouched by all of this and keep their pre-existing behaviour, mangling
+   * included — see {@code SecretAssignmentGrammarTest}, which pins the forms that predate this work
+   * rather than quietly fixing some of them.
    *
    * <p>Group 3 is the value, ending at whitespace, comma, semicolon or quote. Unchanged — and see
    * {@code SecretAssignmentGrammarTest} for what that costs on a passphrase.
@@ -125,7 +173,11 @@ public final class SensitiveDataRedactor {
       Pattern.compile(
           "(?i)\\b([A-Za-z0-9_]*(?:"
               + SENSITIVE_KEY_WORDS
-              + "))((?:[\"']\\s*:\\s*[\"']|\\s*[=:]\\s*[\"']?))([^\\s,;\"'\\r\\n]+)");
+              + "))((?:[\"']\\s*:\\s*[\"']"
+              + "|[\"']\\s*:\\s*(?="
+              + SCALAR_VALUE_START
+              + ")"
+              + "|\\s*[=:]\\s*[\"']?))([^\\s,;\"'\\r\\n]+)");
 
   private SensitiveDataRedactor() {}
 
@@ -255,9 +307,29 @@ public final class SensitiveDataRedactor {
       return false;
     }
     String trimmed = value.trim();
-    return trimmed.equals("[REDACTED]")
-        || trimmed.equals("sk-****REDACTED****")
-        || trimmed.equals("ghp_****REDACTED****");
+    // Trailing closers only. An unquoted value after a quoted key runs to the next quote or space,
+    // so it swallows the "}" or "]" that ended the object it sat in: {"apiKey": sk-****REDACTED****}
+    // arrives here as sk-****REDACTED****} and would otherwise be overwritten with the generic
+    // marker, losing which kind of credential an earlier pass removed.
+    //
+    // Only from the end, and this is the whole of why it is safe: PASSWORD=[REDACTED]}hunter2 ends
+    // in "2", nothing is stripped, and the value is redacted. A secret placed after the closer
+    // prevents the strip that would have exempted it, so there is no way to smuggle text through by
+    // wrapping it in a marker.
+    // Every suffix is tried, not just the fully stripped one, because "[REDACTED]" ends in a closer
+    // itself: stripping greedily would leave "[REDACTED" and the marker would stop matching.
+    for (int end = trimmed.length(); end > 0; end--) {
+      String core = trimmed.substring(0, end);
+      if (core.equals("[REDACTED]")
+          || core.equals("sk-****REDACTED****")
+          || core.equals("ghp_****REDACTED****")) {
+        return true;
+      }
+      if ("}])".indexOf(trimmed.charAt(end - 1)) < 0) {
+        return false;
+      }
+    }
+    return false;
   }
 
   /**
