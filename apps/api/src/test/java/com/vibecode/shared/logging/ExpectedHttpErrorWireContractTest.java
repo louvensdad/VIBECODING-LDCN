@@ -7,6 +7,9 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -103,6 +106,170 @@ class ExpectedHttpErrorWireContractTest {
             .body();
     String id = created.replaceAll(".*\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1");
     assertThat(get("/api/projects/" + id, "application/json").statusCode()).isEqualTo(200);
+  }
+
+  /**
+   * The same question asked of the one route that was still answering it wrongly, on the same
+   * Tomcat.
+   *
+   * <p>FINDING CTX-09B-3b. {@code ContextPackController.InvalidLimitAdvice} gives {@code limit} its
+   * single 400 contract, and it built that response with a body of its own rather than through the
+   * boundary the test above exists to protect — because that boundary was a private method on
+   * {@code ApiExceptionHandler} and a second advice could not reach it. So the fix above covered
+   * every error path in the application except this one, and on this one the identical measurement
+   * came back:
+   *
+   * <pre>
+   *   GET /api/projects/&lt;id&gt;/context?limit=0   Accept: application/json  -&gt;  400 + VALIDATION_ERROR
+   *   GET /api/projects/&lt;id&gt;/context?limit=0   Accept: application/xml   -&gt;  500, no body
+   * </pre>
+   *
+   * <p>This costs no extra container — it is the Tomcat already running for the test above — and it
+   * is the only place the defect can be observed as what it actually is. Through MockMvc the escape
+   * surfaces as a {@code ServletException} out of {@code perform}, which is a different observation:
+   * it says the dispatcher gave up, not that a caller was told the server had failed. The
+   * difference between those two sentences is the whole reason this class exists.
+   *
+   * <p>The control is the same shape as above and is what makes the 400 mean something: the same
+   * request under {@code application/json} carries the documented body, and a <em>valid</em> limit
+   * on the same route answers 200 to the same client in the same session. Without the last one, a
+   * route that refused everything would satisfy the assertion.
+   */
+  @Test
+  @DisplayName("A refused limit is a 400 on the wire under an Accept header naming no +json type")
+  void aRefusedLimitKeepsItsStatusOnTheWire() throws Exception {
+    String project =
+        post(
+                "/api/projects",
+                "{\"name\":\"Wire limit\",\"description\":\"\",\"originalIdea\":\"Ship a tool\"}")
+            .body();
+    String id = project.replaceAll(".*\"id\"\s*:\s*\"([^\"]+)\".*", "$1");
+    String refused = "/api/projects/" + id + "/context?limit=0";
+
+    HttpResponse<String> json = get(refused, "application/json");
+    assertThat(json.statusCode()).isEqualTo(400);
+    assertThat(json.body()).contains("\"code\":\"VALIDATION_ERROR\"").contains("\"field\":\"limit\"");
+
+    HttpResponse<String> xml = get(refused, "application/xml");
+    assertThat(xml.statusCode())
+        .as(
+            "FINDING CTX-09B-3b: this exact request answered 500 with no body before the advice was"
+                + " routed through the shared boundary. An Accept header the caller chose must not"
+                + " cost this route the 400 it decided on.")
+        .isEqualTo(400);
+    assertThat(xml.body())
+        .as("there is no representation this caller would accept, so there is no body to send")
+        .isEmpty();
+
+    // A +json caller is owed the whole body, on this route as on every other.
+    HttpResponse<String> problemJson = get(refused, "application/problem+json");
+    assertThat(problemJson.statusCode()).isEqualTo(400);
+    assertThat(withoutTimestamp(problemJson.body()))
+        .isEqualTo(withoutTimestamp(json.body()));
+
+    // The control. If the route simply refused everything, every assertion above would hold for
+    // reasons that have nothing to do with content negotiation.
+    assertThat(get("/api/projects/" + id + "/context?limit=20", "application/json").statusCode())
+        .as("a limit this route honours still answers 200 to the same client")
+        .isEqualTo(200);
+  }
+
+  /**
+   * <b>Review finding R3-A/R3-B on the wire: a charset the encoder cannot use was the same 500.</b>
+   *
+   * <p>The {@code Accept} check was built from a writable-type list derived with a parameterless
+   * {@code canWrite}, compared using {@code isCompatibleWith} — and both of those discard
+   * media-type parameters. Spring's write path does not: it asks {@code canWrite} with the caller's
+   * full type, and Jackson refuses any charset it has no {@code JsonEncoding} for. So the check
+   * promised a body the converters would not write, the write threw inside the
+   * {@code @ExceptionHandler}, and the exception escaped. Both advices, identically:
+   *
+   * <pre>
+   *   GET …/context?limit=0                 Accept: application/json;charset=UTF-16      -&gt; 500
+   *   GET …/context?limit=0                 Accept: application/json;charset=ISO-8859-1  -&gt; 500
+   *   GET /api/projects/&lt;unknown&gt;/context   Accept: application/json;charset=UTF-16      -&gt; 500
+   *   GET /api/projects/&lt;unknown&gt;           Accept: application/json;charset=ISO-8859-1  -&gt; 500
+   * </pre>
+   *
+   * <p>{@code ISO-8859-1} is HTTP's own historical default text charset. This was true at the
+   * parent commit too — the relocation that made the boundary shareable was token-identical — so it
+   * is a hole in the check as first written rather than a regression, and one fix closes it for the
+   * shared advice and the controller-scoped one at once.
+   *
+   * <p>Asserted here rather than only through MockMvc for the reason this whole class exists: an
+   * escape reaches MockMvc as a {@code ServletException} out of {@code perform}, which says the
+   * dispatcher gave up. Only a real container says what the caller was told.
+   *
+   * <p>The control is the charset one letter away: {@code UTF-8} is one of the five Jackson can
+   * encode, and the same request under it carries the whole documented body. If both halves agreed,
+   * the assertion would be about the route rather than about negotiation.
+   */
+  @Test
+  @DisplayName("A charset Jackson cannot encode does not turn a client error into a 500 either")
+  void anUnencodableCharsetDoesNotChangeTheStatusOnTheWire() throws Exception {
+    String project =
+        post(
+                "/api/projects",
+                "{\"name\":\"Wire charset\",\"description\":\"\",\"originalIdea\":\"Ship a tool\"}")
+            .body();
+    String id = project.replaceAll(".*\"id\"\s*:\s*\"([^\"]+)\".*", "$1");
+
+    // Two routes, two advices: the controller-scoped InvalidLimitAdvice and the shared handler.
+    Map<String, String> onTheWire = new LinkedHashMap<>();
+    Map<String, Integer> expectedStatus = new LinkedHashMap<>();
+    expectedStatus.put("limit=0", 400);
+    expectedStatus.put("unknown project", 404);
+    Map<String, String> paths = new LinkedHashMap<>();
+    paths.put("limit=0", "/api/projects/" + id + "/context?limit=0");
+    paths.put("unknown project", "/api/projects/" + UUID.randomUUID());
+
+    for (Map.Entry<String, String> path : paths.entrySet()) {
+      for (String charset : List.of("UTF-16", "ISO-8859-1", "windows-1252", "Shift_JIS")) {
+        HttpResponse<String> response =
+            get(path.getValue(), "application/json;charset=" + charset);
+        onTheWire.put(
+            path.getKey() + " charset=" + charset,
+            response.statusCode() + (response.body().isEmpty() ? " <empty body>" : " <body>"));
+      }
+    }
+
+    Map<String, String> expected = new LinkedHashMap<>();
+    paths.keySet()
+        .forEach(
+            label ->
+                List.of("UTF-16", "ISO-8859-1", "windows-1252", "Shift_JIS")
+                    .forEach(
+                        charset ->
+                            expected.put(
+                                label + " charset=" + charset,
+                                expectedStatus.get(label) + " <empty body>")));
+
+    assertThat(onTheWire)
+        .as(
+            "R3-A/R3-B: every one of these answered 500 with no body before the negotiation"
+                + " decision was taken from the converters instead of approximated with"
+                + " isCompatibleWith. The status is the route's answer; a charset the caller named"
+                + " decides only whether a body can be carried.")
+        .containsExactlyInAnyOrderEntriesOf(expected);
+
+    // The control, one charset away. UTF-8 is one of the five Jackson can encode, so this caller is
+    // owed the whole body — and gets it, on both routes.
+    HttpResponse<String> refusedInUtf8 =
+        get("/api/projects/" + id + "/context?limit=0", "application/json;charset=UTF-8");
+    assertThat(refusedInUtf8.statusCode()).isEqualTo(400);
+    assertThat(refusedInUtf8.body())
+        .contains("\"code\":\"VALIDATION_ERROR\"")
+        .contains("\"field\":\"limit\"");
+
+    HttpResponse<String> missingInUtf8 =
+        get("/api/projects/" + UUID.randomUUID(), "application/json;charset=UTF-8");
+    assertThat(missingInUtf8.statusCode()).isEqualTo(404);
+    assertThat(missingInUtf8.body()).contains("\"code\":\"NOT_FOUND\"");
+
+    // And the route still serves a real request to the same client in the same session, so none of
+    // the above is the assertion a broken route would also satisfy.
+    assertThat(get("/api/projects/" + id + "/context?limit=20", "application/json").statusCode())
+        .isEqualTo(200);
   }
 
   /** The one field two identical error bodies legitimately disagree on. */
