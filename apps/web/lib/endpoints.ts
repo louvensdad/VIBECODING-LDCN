@@ -1,6 +1,8 @@
 import type {
   AnalyzeOutputRequest,
+  AssembleContextRequest,
   AuditEventResponse,
+  ContextPackResponse,
   CreateBrainEntryRequest,
   CreateProjectRequest,
   EvidenceRecordedResponse,
@@ -45,6 +47,26 @@ export interface LoginRequest {
   email: string;
   password: string;
 }
+
+/**
+ * How many context packs the inspector asks for.
+ *
+ * A named number rather than a literal at the call site, because the API refuses a `limit` it will
+ * not honour exactly rather than clamping it — an out-of-range page is a 400, not a shorter list.
+ * The bounds are the controller's own (`ContextPackController.MIN_LIST_LIMIT` / `MAX_LIST_LIMIT`),
+ * restated here for the test that pins this constant between them.
+ *
+ * The route below takes no `limit` argument. One constant, one call site, one spelling on the wire:
+ * a `number` parameter would have admitted `1.5`, `NaN`, `1e21`, `0` and `101` — every one of them
+ * a 400 — and the type checker would have seen none of it. Making the value un-passable is the only
+ * version of this that a reader can verify. This is not a second copy of the server's parsing
+ * rules: the client sends one decimal integer and the server decides.
+ */
+export const CONTEXT_PACK_LIST_LIMIT = 20;
+
+/** The bounds the API enforces, kept here so a test can pin the constant inside them. */
+export const CONTEXT_PACK_LIST_LIMIT_MIN = 1;
+export const CONTEXT_PACK_LIST_LIMIT_MAX = 100;
 
 /**
  * Every endpoint the web app knows about, written once.
@@ -161,6 +183,27 @@ export function createApi(request: Transport) {
       del<ProviderAccountResponse>(`/api/provider-accounts/${id}/credential`),
     disableProviderAccount: (id: string) =>
       post<ProviderAccountResponse>(`/api/provider-accounts/${id}/disable`),
+
+    // --- context engine -----------------------------------------------------------------------
+    // Three routes and no fourth. There is no endpoint for a candidate before policy saw it or for
+    // content before redaction rewrote it, so the client cannot ask for one; what comes back here
+    // is the admitted, redacted pack and nothing else.
+    // Path segments are encoded, not the number: `projectId` arrives from the URL route param, and
+    // a segment containing `/`, `?` or `#` would retarget the request. The limit is a constant this
+    // module owns and cannot need escaping.
+    listContextPacks: (projectId: string) =>
+      request<ContextPackResponse[]>(
+        `/api/projects/${encodeURIComponent(projectId)}/context?limit=${CONTEXT_PACK_LIST_LIMIT}`,
+      ),
+    getContextPack: (projectId: string, packId: string) =>
+      request<ContextPackResponse>(
+        `/api/projects/${encodeURIComponent(projectId)}/context/${encodeURIComponent(packId)}`,
+      ),
+    compileContextPack: (projectId: string, body: AssembleContextRequest) =>
+      post<ContextPackResponse>(
+        `/api/projects/${encodeURIComponent(projectId)}/context/compile`,
+        body,
+      ),
 
     // --- audit --------------------------------------------------------------------------------
     listAuditEvents: (projectId: string) =>

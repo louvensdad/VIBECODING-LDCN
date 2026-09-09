@@ -12,6 +12,7 @@ export const projectNav: NavItem[] = [
   { label: "Outputs", segment: "outputs" },
   { label: "Prompts", segment: "prompts" },
   { label: "Project Brain", segment: "brain" },
+  { label: "Context", segment: "context" },
   { label: "Guide", segment: "guide" },
   { label: "Models", segment: "models" },
   { label: "Usage", segment: "usage" },
