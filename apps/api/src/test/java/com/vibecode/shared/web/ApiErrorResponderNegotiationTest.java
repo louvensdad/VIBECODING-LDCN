@@ -13,9 +13,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
 
 /**
  * The responder's answer, put next to the converters' answer, header by header.
@@ -59,6 +61,8 @@ class ApiErrorResponderNegotiationTest {
 
   @Autowired ApiErrorResponder responder;
   @Autowired HttpMessageConverters converters;
+  @Autowired RequestMappingHandlerAdapter adapter;
+  @Autowired com.vibecode.shared.logging.ExpectedHttpErrorLog tally;
 
   /**
    * Every header this test knows about, and whether some converter will actually write an
@@ -176,6 +180,144 @@ class ApiErrorResponderNegotiationTest {
     assertThat(decisionFor("application/xml, application/json"))
         .as("application/xml is not compatible with anything we produce, so it is not a candidate")
         .isTrue();
+  }
+
+  /**
+   * Review finding R4-B: the responder asks the right question of a list that is not quite Spring's.
+   *
+   * <p>The argument is now identical to the one Spring's write path uses. The <b>receiver</b> is
+   * not: this class holds the {@code HttpMessageConverters} bean's converters, and {@code
+   * RequestMappingHandlerAdapter} writes with its own list, which a {@code WebMvcConfigurer} can
+   * extend. Measured today: the adapter holds one more —
+   * {@code ProjectingJackson2HttpMessageConverter}, prepended by {@code spring-data-commons} — and
+   * it cannot write an {@link ApiError}, so the two agree on the only question asked.
+   *
+   * <p>Injecting the adapter's list would remove the difference and cannot be done: it is a hard
+   * circular reference, measured, because the adapter's construction reaches the advice that holds
+   * the responder. So the difference is pinned instead, and this is the assertion that would fail if
+   * someone added a writing converter through {@code extendMessageConverters} — R3-A's shape one
+   * layer out, and the only way this class can go wrong again in the same manner.
+   *
+   * <p>The property is deliberately one-directional. The adapter having converters the responder
+   * lacks is the dangerous direction — Spring would write in a type the responder never considered.
+   * The reverse is harmless: a converter the responder knows about and Spring does not can only make
+   * the responder more permissive about a type nothing will be asked to write, which the
+   * per-candidate check then refuses anyway.
+   */
+  @Test
+  @DisplayName("R4-B: every converter Spring would write an ApiError with is one the responder holds")
+  void theResponderSeesEveryConverterThatCouldWriteAnError() {
+    List<String> adapterCanWrite =
+        adapter.getMessageConverters().stream()
+            .filter(converter -> converter.canWrite(ApiError.class, null))
+            .map(converter -> converter.getClass().getName())
+            .sorted()
+            .toList();
+    List<String> responderHolds =
+        converters.getConverters().stream()
+            .filter(converter -> converter.canWrite(ApiError.class, null))
+            .map(converter -> converter.getClass().getName())
+            .sorted()
+            .toList();
+
+    assertThat(adapterCanWrite)
+        .as(
+            "a converter Spring will write an error body with, that this class has never been shown,"
+                + " is R3-A one layer out: the right question asked of the wrong receiver")
+        .containsExactlyElementsOf(responderHolds);
+
+    // Non-vacuity: both sides must actually contain something, or "they agree" is a statement about
+    // two empty lists. And the known, harmless asymmetry is pinned by name so that it changing is
+    // visible rather than silently absorbed into the assertion above.
+    assertThat(adapterCanWrite).isNotEmpty();
+    assertThat(adapter.getMessageConverters().size())
+        .as("the adapter's list is the larger one, and this is the measurement that says so")
+        .isGreaterThanOrEqualTo(converters.getConverters().size());
+  }
+
+  /**
+   * Review finding R4-C: {@code removeQualityValue()} is correct, and until now nothing asserted it.
+   *
+   * <p>Removing that call left twenty-two tests across three classes green. It is the right line —
+   * Spring strips the quality value before calling {@code canWrite}, so asking with it is asking a
+   * different question than the one that will be asked — but its absence could only ever produce a
+   * false negative, and no existing test could see one. Jackson's {@code canWrite} inspects
+   * {@code getCharset()} and nothing else, so {@code q} is invisible to every converter this
+   * application ships. A claim with no assertion under it is the thing this whole task has been
+   * about, so the claim is now measured directly: not through a converter that happens to care about
+   * {@code q}, but by recording the media type the responder actually passes.
+   *
+   * <p>Built by hand rather than autowired, so that adding a recording converter cannot disturb the
+   * application context or the {@code writableErrorTypes} pin that {@code ApiExceptionHandlerTest}
+   * holds.
+   */
+  @Test
+  @DisplayName("R4-C: the converters are asked with the quality value stripped, as Spring asks")
+  void theConvertersAreAskedWithTheQualityValueRemoved() {
+    RecordingConverter recorder = new RecordingConverter();
+    ApiErrorResponder isolated =
+        new ApiErrorResponder(
+            new com.vibecode.shared.logging.ExpectedHttpErrorLog(),
+            new HttpMessageConverters(
+                false,
+                List.of(recorder, new MappingJackson2HttpMessageConverter())));
+
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    request.addHeader(HttpHeaders.ACCEPT, "application/json;q=0.5, application/problem+json;q=0.25");
+    RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+    try {
+      isolated.callerAcceptsOurRepresentation();
+    } finally {
+      RequestContextHolder.resetRequestAttributes();
+    }
+
+    assertThat(recorder.asked)
+        .as("the recorder must actually have been consulted, or there is nothing to inspect")
+        .isNotEmpty();
+    assertThat(recorder.asked)
+        .as(
+            "R4-C: Spring removes the quality value before calling canWrite, and asking a different"
+                + " question than the one that will be asked is how this method came to be wrong in"
+                + " the first place")
+        .allSatisfy(asked -> assertThat(asked.getParameter("q")).isNull());
+    // And the rest of the media type survives intact, so this is stripping q rather than stripping
+    // parameters — which would undo the R3-A fix entirely.
+    assertThat(recorder.asked.stream().map(MediaType::toString).toList())
+        .containsExactly("application/json", "application/problem+json");
+  }
+
+  /** Records every media type it is asked about, and can write nothing. */
+  private static final class RecordingConverter implements HttpMessageConverter<ApiError> {
+
+    private final List<MediaType> asked = new java.util.ArrayList<>();
+
+    @Override
+    public boolean canRead(Class<?> clazz, MediaType mediaType) {
+      return false;
+    }
+
+    @Override
+    public boolean canWrite(Class<?> clazz, MediaType mediaType) {
+      if (mediaType != null) {
+        asked.add(mediaType);
+      }
+      return false;
+    }
+
+    @Override
+    public List<MediaType> getSupportedMediaTypes() {
+      return List.of();
+    }
+
+    @Override
+    public ApiError read(Class<? extends ApiError> clazz, org.springframework.http.HttpInputMessage in) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void write(ApiError body, MediaType contentType, org.springframework.http.HttpOutputMessage out) {
+      throw new UnsupportedOperationException();
+    }
   }
 
   private boolean decisionFor(String accept) {

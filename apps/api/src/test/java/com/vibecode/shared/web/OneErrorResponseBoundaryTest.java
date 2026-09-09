@@ -9,6 +9,7 @@ import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -52,16 +53,39 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
  * that "matching the family is what stops a caller sliding out of the rule by rearranging the
  * chain". It did not.
  *
- * <p>It is now scoped to the <b>class</b> rather than the method, and looks at constructor calls
- * and at the return type as well, which closes both. What it still cannot see is a helper in a
- * <em>different</em> class, or a handler that writes to the {@code HttpServletResponse} itself. So
+ * <p>A third was found afterwards and is also closed: {@code ResponseEntity.of(ProblemDetail)},
+ * the idiomatic Spring 6 spelling of this handler, which carries status and body in one call named
+ * neither {@code body} nor {@code ok} — and whose return type the bare-return check did not know
+ * about either, so it was invisible twice over.
+ *
+ * <p>It is now scoped to the <b>class</b> rather than the method, and looks at constructor calls,
+ * at three body-carrying factory names and at three body-carrying return types. What it still
+ * cannot see is a helper in a <em>different</em> class, or a handler that writes to the
+ * {@code HttpServletResponse} itself. So
  * the honest claim is the narrow one: <b>this rule documents the boundary and catches the
  * near-misses; the behavioural tests are what hold it.</b> Under the private-helper bypass this
  * rule was silent and {@code ContextHttpErrorSurfaceTest} still failed with three failures and an
- * error — those tests send requests, and a bypass has to survive an actual write to a caller who
- * cannot read it. A structural rule cannot make that guarantee, and this one no longer says it can.
+ * error; under the {@code ResponseEntity.of} bypass it was silent again and the same suite failed
+ * seven times. Those tests send requests, and a bypass has to survive an actual write to a caller
+ * who cannot read it. A structural rule cannot make that guarantee, and this one no longer says it
+ * can — every widening in it so far has been a blind spot someone found, which is the strongest
+ * available argument for not treating it as the guard.
  */
 class OneErrorResponseBoundaryTest {
+
+  /**
+   * Return types that are an error body in their own right.
+   *
+   * <p>{@code ProblemDetail} and {@code ErrorResponse} are here because of R4-D. A handler returning
+   * either one, with {@code @ResponseStatus} supplying the status, writes a body without ever
+   * touching a {@code ResponseEntity} — so neither the call detector nor a check that knew only
+   * about {@link ApiError} would see it.
+   */
+  private static final Set<String> BODY_RETURN_TYPES =
+      Set.of(
+          "com.vibecode.shared.web.ApiError",
+          "org.springframework.http.ProblemDetail",
+          "org.springframework.web.ErrorResponse");
 
   private static final JavaClasses PRODUCTION_CLASSES =
       new ClassFileImporter()
@@ -108,19 +132,22 @@ class OneErrorResponseBoundaryTest {
     // And the shape that carries a body without a ResponseEntity at all: a handler returning the
     // DTO directly, its status supplied by @ResponseStatus. Nothing writes one today, and a rule
     // that only knew about ResponseEntity would not notice the first one.
-    List<String> returnAnErrorDirectly =
+    // And the shapes that carry a body without a ResponseEntity at all: a handler returning the DTO
+    // directly, its status supplied by @ResponseStatus. R4-D widened this beyond ApiError —
+    // checking one type meant a handler returning ProblemDetail or ErrorResponse was invisible
+    // twice over, once here and once in the call detector.
+    List<String> returnABodyDirectly =
         PRODUCTION_CLASSES.stream()
             .flatMap(type -> type.getMethods().stream())
             .filter(method -> method.isAnnotatedWith(ExceptionHandler.class))
-            .filter(method -> method.getReturnType().getName().equals(ApiError.class.getName()))
+            .filter(method -> BODY_RETURN_TYPES.contains(method.getReturnType().getName()))
             .map(JavaMethod::getFullName)
             .sorted()
             .toList();
-    assertThat(returnAnErrorDirectly)
+    assertThat(returnABodyDirectly)
         .as(
-            "an @ExceptionHandler returning %s directly bypasses the boundary the same way, with"
-                + " the status supplied by @ResponseStatus instead of by a builder",
-            ApiError.class.getSimpleName())
+            "an @ExceptionHandler returning a body object directly bypasses the boundary the same"
+                + " way, with the status supplied by @ResponseStatus instead of by a builder")
         .isEmpty();
 
     assertThat(buildTheirOwnBody)
@@ -166,8 +193,10 @@ class OneErrorResponseBoundaryTest {
    *
    * <ul>
    *   <li>{@code body(x)} on a builder, the fluent chain;
-   *   <li>{@code ResponseEntity.ok(x)}, a static factory that takes the body directly and never
-   *       touches a builder;
+   *   <li>{@code ResponseEntity.ok(x)} and {@code ResponseEntity.of(x)}, static factories that take
+   *       the body directly and never touch a builder. {@code of(ProblemDetail)} is review finding
+   *       R4-D and is the idiomatic Spring 6 way to write exactly this handler — it carries the
+   *       status and the body in one call, under a name that is neither {@code body} nor {@code ok};
    *   <li>{@code new ResponseEntity<>(x, status)}, a <em>constructor</em> call, which
    *       {@code getMethodCallsFromSelf()} does not return at all. That was the second bypass, and
    *       it is the one that falsified the previous version of this comment.
@@ -177,9 +206,17 @@ class OneErrorResponseBoundaryTest {
    * owner is {@code ResponseEntity$BodyBuilder} for a chain, {@code ResponseEntity$HeadersBuilder}
    * in other shapes, and {@code ResponseEntity} itself for the factories and the constructor.
    */
+  /**
+   * The {@code ResponseEntity} members that carry a body. {@code of} is here because of R4-D:
+   * {@code ResponseEntity.of(ProblemDetail)} is a single call carrying status and body, named
+   * neither {@code body} nor {@code ok}, and it is what a reviewer reaching for idiomatic Spring 6
+   * would write. It also covers {@code of(Optional)}.
+   */
+  private static final Set<String> BODY_CARRYING = Set.of("body", "ok", "of");
+
   private static boolean buildsAResponseEntityWithABody(JavaMethod method) {
     for (JavaMethodCall call : method.getMethodCallsFromSelf()) {
-      if ((call.getName().equals("body") || call.getName().equals("ok"))
+      if (BODY_CARRYING.contains(call.getName())
           && isResponseEntity(call.getTargetOwner().getName())) {
         return true;
       }
