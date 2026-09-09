@@ -15,6 +15,7 @@ import com.vibecode.context.domain.ContextPack;
 import com.vibecode.identity.domain.User;
 import com.vibecode.project.application.ProjectService;
 import com.vibecode.project.domain.Project;
+import com.vibecode.shared.web.ApiExceptionHandler;
 import com.vibecode.support.TestIdentity;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -28,6 +29,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.OrderUtils;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -689,6 +692,12 @@ class ContextPackApiTest {
     // behaviour — answers sixteen here, and answers sixteen for 0x10 above.
     expected.put("01", "200 packs=1");
     expected.put("020", "200 packs=20");
+    // The ten-digit cap is a rule about length, not about value, and this is where a caller feels
+    // it: ten characters of zero-padded five is accepted, eleven is refused as a format error even
+    // though it denotes the same five. Pinned because the javadoc now says so, and a documented
+    // edge nobody measures is how a claim outlives the code under it.
+    expected.put("0000000005", "200 packs=5");
+    expected.put("00000000005", refused);
 
     Map<String, String> census = new LinkedHashMap<>();
     for (String spelling : expected.keySet()) {
@@ -803,5 +812,64 @@ class ContextPackApiTest {
             .andExpect(jsonPath("$.code").value("NOT_FOUND"));
       }
     }
+  }
+
+  @Test
+  @DisplayName("The local advice sorts ahead of the shared one, and not by luck of the scan order")
+  void theLimitAdviceOutranksTheSharedHandler() {
+    // WHY THIS TEST EXISTS AT ALL, because it looks like a test of an annotation.
+    //
+    // The shared ApiExceptionHandler ends in @ExceptionHandler(Exception.class). That handler is
+    // eligible for InvalidLimitException too, so which advice bean answers a refused limit is
+    // decided by the order of the advice beans and by nothing else. Inverted — the shared advice
+    // first — a refused limit is not a 400 at all: it reaches the last-resort branch, which is not
+    // an ErrorResponse, so it becomes a 500 with a stack trace in the log. The whole contract the
+    // census above pins collapses into a server fault.
+    //
+    // AND IT IS INVISIBLE WITHOUT THIS ASSERTION. Deleting @Order leaves every other test in this
+    // suite green, because classpath scanning happens to reach com.vibecode.context before
+    // com.vibecode.shared and unordered advices then keep discovery order. That is a coincidence of
+    // package names, not a guarantee: renaming this package, or Spring changing how it sorts
+    // equally-ordered advices, would silently turn every refusal into a 500. So the property is
+    // asserted where it is decided — the declared order — rather than where it currently happens to
+    // come out.
+    int local =
+        OrderUtils.getOrder(ContextPackController.InvalidLimitAdvice.class, Ordered.LOWEST_PRECEDENCE);
+    int shared = OrderUtils.getOrder(ApiExceptionHandler.class, Ordered.LOWEST_PRECEDENCE);
+
+    assertThat(local)
+        .as("the limit advice must declare an explicit precedence; without @Order it defaults to"
+            + " LOWEST and ties with the shared handler, and the winner is then scan order")
+        .isEqualTo(Ordered.HIGHEST_PRECEDENCE);
+    assertThat(local)
+        .as("and it must outrank the shared advice, whose catch-all would answer 500 instead")
+        .isLessThan(shared);
+
+    // The guard against this test decaying into a tautology. If the shared advice ever declared its
+    // own explicit precedence, "less than" could be satisfied while the two were adjacent, and a
+    // reader would no longer be able to tell from here that the local one wins outright. It is
+    // LOWEST today; asserting that is what makes the comparison above mean what it says.
+    assertThat(shared)
+        .as("the shared advice is unordered, so the local one wins by declaring anything at all")
+        .isEqualTo(Ordered.LOWEST_PRECEDENCE);
+  }
+
+  @Test
+  @DisplayName("A refused limit is answered by the local advice, not by the shared last resort")
+  void aRefusedLimitDoesNotReachTheLastResortHandler() throws Exception {
+    // The other half of the pin, from the outside. The order test above says which advice should
+    // win; this says what winning looks like on the wire, so an inverted precedence fails with a
+    // sentence about the response rather than only about a number. Under the inversion this is a
+    // 500 INTERNAL_ERROR with "Unexpected internal error." and a logged stack trace.
+    mvc.perform(
+            get("/api/projects/" + aliceProject + "/context")
+                .with(TestIdentity.as(alice))
+                .param("limit", "0"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.status").value(400))
+        .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+        .andExpect(jsonPath("$.message").value("The request could not be read."))
+        .andExpect(jsonPath("$.violations[0].field").value("limit"))
+        .andExpect(jsonPath("$.violations[0].message").value("limit must be at least 1"));
   }
 }

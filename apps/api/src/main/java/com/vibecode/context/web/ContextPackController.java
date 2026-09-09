@@ -275,6 +275,14 @@ public class ContextPackController {
    *       {@code Long.parseLong} cannot overflow on anything the pattern admits and
    *       {@code 2147483648} is a range refusal rather than a parse failure. Anything longer is a
    *       format refusal, which is why a value longer than a {@code long} is not an exception.
+   *       <p>That last clause is a rule about LENGTH and not about value, and one caller can feel
+   *       the difference: {@code 0000000005} is ten characters and is accepted as five, while
+   *       {@code 00000000005} is eleven and is refused as a format error — carrying the sentence
+   *       about decimal integers, though it plainly denotes five. Someone zero-padding to a fixed
+   *       width wider than ten gets a mildly misleading message. Left this way deliberately: the
+   *       alternative is stripping leading zeros before measuring, which means deciding how much
+   *       padding is too much and hands the parser an input of unbounded length again. The refusal
+   *       is right either way; what is lost is one word of precision in an edge nobody sends.
    * </ul>
    *
    * <p>Absent — and only absent — means the caller named no number, and is answered with
