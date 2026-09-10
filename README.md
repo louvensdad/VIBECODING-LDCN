@@ -100,3 +100,9 @@ Leia, nesta ordem:
 4. [Princípios de segurança](docs/security/SECURITY_PRINCIPLES.md)
 5. Os ADRs [004](docs/adr/ADR-004-roadmap-task-navigation.md) a
    [007](docs/adr/ADR-007-deterministic-prompt-builder.md) — por que o fluxo guiado é determinístico
+6. [Context Engine](docs/architecture/CONTEXT_ENGINE.md) — o contrato operacional da Fase 6, e
+   [ADR-022](docs/adr/ADR-022-context-compilation-is-not-provider-execution.md): compilar contexto
+   não é executar num provedor
+
+A Fase 6 está certificada em [PHASE6_CERTIFICATION.md](docs/PHASE6_CERTIFICATION.md), com a dívida
+conhecida em [PHASE6_DEBT.md](docs/PHASE6_DEBT.md).

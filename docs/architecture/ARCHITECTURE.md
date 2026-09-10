@@ -116,6 +116,7 @@ por decisão explícita e atribuída — nunca por inferência de um build verde
 | `state` | Leitura consolidada de onde o projeto está | **Implementado** |
 | `guide` | Próximo passo determinístico e orientação | **Implementado** |
 | `prompt` | Construção de prompts a partir do estado registrado | **Implementado** |
+| `context` | Coleta, política, redação, orçamento, persistência e inspeção do contexto oficial | **Implementado** (motor, API, Inspector, tabelas) |
 | `model` | Abstração de provider e modelo | Contrato de domínio |
 | `usage` | Tokens, custo, crédito, orçamento, autonomia | Contrato de domínio |
 | `guardian` | Inspeção determinística, findings, score e gate de segurança | **Implementado** |
@@ -243,6 +244,21 @@ a um callback e o limpa em seguida; não existe `getSecret` e não deve passar a
 
 Ver [ADR-017](../adr/ADR-017-envelope-encryption-for-stored-secrets.md) a
 [ADR-021](../adr/ADR-021-honest-credential-status-and-no-partial-disclosure.md).
+
+## Context Engine
+
+O contexto oficial de um projeto é reunido, julgado, redigido, cortado pelo teto e guardado:
+
+```
+fontes → coletores → política → redação → orçamento → ContextPack → API → Inspector → PARA
+```
+
+O módulo `context` não importa `vault` nem `provider`. Compilar um pacote não autoriza transmissão
+nenhuma, e não existe cliente HTTP de saída no backend.
+
+Contrato completo em [CONTEXT_ENGINE.md](CONTEXT_ENGINE.md). Ver
+[ADR-022](../adr/ADR-022-context-compilation-is-not-provider-execution.md) a
+[ADR-024](../adr/ADR-024-context-inspector-shows-only-stored-packs.md).
 
 ## O que não existe nesta fase
 
